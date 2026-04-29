@@ -9,8 +9,6 @@ internal enum FileEncodingKind
     Utf8,
     Utf16Le,
     Utf16Be,
-    Utf16LeNoBom,
-    Utf16BeNoBom,
     Windows1252
 }
 
@@ -34,13 +32,12 @@ internal sealed class LogFile : IDisposable
     }
 
     public string FilePath => _filePath;
+    public long DataOffset => _dataOffset;
     public string EncodingName => _kind switch
     {
-        FileEncodingKind.Utf8 => "UTF-8 (BOM)",
-        FileEncodingKind.Utf16Le => "UTF-16 LE (BOM)",
-        FileEncodingKind.Utf16Be => "UTF-16 BE (BOM)",
-        FileEncodingKind.Utf16LeNoBom => "UTF-16 LE (no BOM)",
-        FileEncodingKind.Utf16BeNoBom => "UTF-16 BE (no BOM)",
+        FileEncodingKind.Utf8 => "UTF-8 BOM",
+        FileEncodingKind.Utf16Le => "UTF-16 LE BOM",
+        FileEncodingKind.Utf16Be => "UTF-16 BE BOM",
         _ => "Windows-1252"
     };
     public long LineCount { get; private set; }
@@ -48,11 +45,76 @@ internal sealed class LogFile : IDisposable
 
     public static LogFile Open(string path)
     {
-        using FileStream fs = new(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 16, FileOptions.SequentialScan);
-        var detection = DetectEncoding(fs);
+        AppLog.Instance.Info("file.open.begin", "begin", new LogField("path", path));
+        using FileStream fs = OpenSourceStream(path);
+        (FileEncodingKind Kind, Encoding Encoding, long DataOffset) detection;
+        try
+        {
+            detection = DetectEncoding(fs);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Instance.Error(
+                "file.open.failed",
+                "failed",
+                new LogField("path", path),
+                new LogField("stage", "encoding_detect_failed"),
+                new LogField("reason", ex.Message),
+                new LogField("type", ex.GetType().FullName ?? ex.GetType().Name));
+            throw;
+        }
+
+        AppLog.Instance.Info(
+            "encoding.detected",
+            "detected",
+            new LogField("path", path),
+            new LogField("encoding", DescribeEncoding(detection.Kind)),
+            new LogField("dataOffset", detection.DataOffset.ToString()));
+
         var logFile = new LogFile(path, detection.Kind, detection.Encoding, detection.DataOffset);
-        logFile.BuildIndex();
+        AppLog.Instance.Info("index.begin", "begin", new LogField("path", path));
+        try
+        {
+            logFile.BuildIndex();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Instance.Error(
+                "file.open.failed",
+                "failed",
+                new LogField("path", path),
+                new LogField("stage", "index_build_failed"),
+                new LogField("reason", ex.Message),
+                new LogField("type", ex.GetType().FullName ?? ex.GetType().Name));
+            throw;
+        }
+
+        AppLog.Instance.Info(
+            "index.complete",
+            "complete",
+            new LogField("path", path),
+            new LogField("lineCount", logFile.LineCount.ToString()),
+            new LogField("checkpointCount", logFile.CheckpointCount.ToString()));
         return logFile;
+    }
+
+    private static FileStream OpenSourceStream(string path)
+    {
+        try
+        {
+            return new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 16, FileOptions.SequentialScan);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Instance.Error(
+                "file.open.failed",
+                "failed",
+                new LogField("path", path),
+                new LogField("stage", "open_failed"),
+                new LogField("reason", ex.Message),
+                new LogField("type", ex.GetType().FullName ?? ex.GetType().Name));
+            throw;
+        }
     }
 
     public string ReadLine(long lineNumber)
@@ -78,10 +140,40 @@ internal sealed class LogFile : IDisposable
         return reader.ReadLine() ?? string.Empty;
     }
 
-    public string GetStatusText(int cacheCount, long topLine, long visibleCount)
+    public List<KeyValuePair<long, string>> ReadLines(long startLine, long endLine)
     {
-        MemoryInfo memory = MemoryInfo.ReadCurrent();
-        return $"file={Path.GetFileName(_filePath)} | encoding={EncodingName} | lines={LineCount:n0} | checkpoints={CheckpointCount:n0} | cache={cacheCount:n0} | top={topLine:n0} | visible={visibleCount:n0} | workingSet={FormatBytes(memory.WorkingSetBytes)} | privateBytes={FormatBytes(memory.PrivateBytes)}";
+        List<KeyValuePair<long, string>> lines = new();
+        if (startLine < 1 || endLine < startLine || startLine > LineCount)
+        {
+            return lines;
+        }
+
+        endLine = Math.Min(endLine, LineCount);
+        Checkpoint checkpoint = FindCheckpoint(startLine);
+        using FileStream fs = new(_filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 16, FileOptions.SequentialScan);
+        fs.Position = checkpoint.ByteOffset;
+        using StreamReader reader = new(fs, _encoding, false, 4096, false);
+
+        for (long current = checkpoint.LineNumber; current < startLine; current++)
+        {
+            if (reader.ReadLine() is null)
+            {
+                return lines;
+            }
+        }
+
+        for (long current = startLine; current <= endLine; current++)
+        {
+            string? text = reader.ReadLine();
+            if (text is null)
+            {
+                break;
+            }
+
+            lines.Add(new KeyValuePair<long, string>(current, text));
+        }
+
+        return lines;
     }
 
     public void Dispose()
@@ -107,7 +199,7 @@ internal sealed class LogFile : IDisposable
         byte[] buffer = new byte[64 * 1024];
         long absoluteOffset = _dataOffset;
 
-        if (_kind is FileEncodingKind.Utf16Le or FileEncodingKind.Utf16Be or FileEncodingKind.Utf16LeNoBom or FileEncodingKind.Utf16BeNoBom)
+        if (_kind is FileEncodingKind.Utf16Le or FileEncodingKind.Utf16Be)
         {
             ScanUtf16(fs, buffer, ref absoluteOffset);
         }
@@ -185,7 +277,7 @@ internal sealed class LogFile : IDisposable
 
     private void ScanUtf16(FileStream fs, byte[] buffer, ref long absoluteOffset)
     {
-        bool littleEndian = _kind is FileEncodingKind.Utf16Le or FileEncodingKind.Utf16LeNoBom;
+        bool littleEndian = _kind is FileEncodingKind.Utf16Le;
         bool pendingCR = false;
         bool hasCarry = false;
         byte carry = 0;
@@ -302,7 +394,8 @@ internal sealed class LogFile : IDisposable
 
     private static (FileEncodingKind Kind, Encoding Encoding, long DataOffset) DetectEncoding(FileStream fs)
     {
-        byte[] sample = new byte[Math.Min(4096, (int)Math.Max(0, fs.Length))];
+        fs.Position = 0;
+        byte[] sample = new byte[Math.Min(65536, (int)Math.Min(int.MaxValue, Math.Max(0, fs.Length)))];
         int read = fs.Read(sample, 0, sample.Length);
 
         if (read >= 3 && sample[0] == 0xEF && sample[1] == 0xBB && sample[2] == 0xBF)
@@ -320,85 +413,18 @@ internal sealed class LogFile : IDisposable
             return (FileEncodingKind.Utf16Be, new UnicodeEncoding(true, false, true), 2);
         }
 
-        if (TryDetectUtf16(sample, read, out bool littleEndian))
-        {
-            return littleEndian
-                ? (FileEncodingKind.Utf16LeNoBom, new UnicodeEncoding(false, false, true), 0)
-                : (FileEncodingKind.Utf16BeNoBom, new UnicodeEncoding(true, false, true), 0);
-        }
-
+        fs.Position = 0;
         return (FileEncodingKind.Windows1252, Windows1252Encoding.Instance, 0);
     }
 
-    private static bool TryDetectUtf16(byte[] sample, int read, out bool littleEndian)
+    private static string DescribeEncoding(FileEncodingKind kind)
     {
-        littleEndian = true;
-        if (read < 8 || (read % 2) != 0)
+        return kind switch
         {
-            return false;
-        }
-
-        int evenZeros = 0;
-        int oddZeros = 0;
-        int evenCount = 0;
-        int oddCount = 0;
-
-        for (int i = 0; i < read; i++)
-        {
-            if ((i & 1) == 0)
-            {
-                evenCount++;
-                if (sample[i] == 0)
-                {
-                    evenZeros++;
-                }
-            }
-            else
-            {
-                oddCount++;
-                if (sample[i] == 0)
-                {
-                    oddZeros++;
-                }
-            }
-        }
-
-        bool leClear = oddZeros >= oddCount / 4 && evenZeros <= evenCount / 20;
-        bool beClear = evenZeros >= evenCount / 4 && oddZeros <= oddCount / 20;
-
-        if (leClear == beClear)
-        {
-            return false;
-        }
-
-        littleEndian = leClear;
-        return true;
-    }
-
-    private static string FormatBytes(long bytes)
-    {
-        return $"{bytes / 1024d / 1024d:0.0} MiB";
-    }
-}
-
-internal readonly struct MemoryInfo
-{
-    public long WorkingSetBytes { get; }
-    public long PrivateBytes { get; }
-
-    private MemoryInfo(long workingSetBytes, long privateBytes)
-    {
-        WorkingSetBytes = workingSetBytes;
-        PrivateBytes = privateBytes;
-    }
-
-    public static MemoryInfo ReadCurrent()
-    {
-        if (!NativeMethods.GetProcessMemoryInfo(NativeMethods.GetCurrentProcess(), out NativeMethods.PROCESS_MEMORY_COUNTERS_EX counters, Marshal.SizeOf<NativeMethods.PROCESS_MEMORY_COUNTERS_EX>()))
-        {
-            return new MemoryInfo(0, 0);
-        }
-
-        return new MemoryInfo((long)counters.WorkingSetSize, (long)counters.PrivateUsage);
+            FileEncodingKind.Utf8 => "UTF-8 BOM",
+            FileEncodingKind.Utf16Le => "UTF-16 LE BOM",
+            FileEncodingKind.Utf16Be => "UTF-16 BE BOM",
+            _ => "Windows-1252"
+        };
     }
 }

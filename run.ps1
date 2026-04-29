@@ -6,10 +6,20 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$exe = Join-Path $root 'artifacts\publish\LogViewer.exe'
+$buildExe = Join-Path $root 'artifacts\build\LogViewer-CSharp.exe'
+$publishExe = Join-Path $root 'artifacts\publish\LogViewer-CSharp.exe'
+$resolvedPath = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
 
-if (-not (Test-Path $exe)) {
-    throw "Build output not found: $exe. Run build.ps1 first."
+$exe = $null
+if (Test-Path $buildExe) {
+    $exe = $buildExe
+}
+elseif (Test-Path $publishExe) {
+    $exe = $publishExe
 }
 
-& $exe $Path
+if (-not $exe) {
+    throw "No runnable artifact was found. Run build.ps1 for the normal build or package.ps1 for the distribution publish."
+}
+
+Start-Process -FilePath $exe -WorkingDirectory $root -ArgumentList @($resolvedPath) | Out-Null

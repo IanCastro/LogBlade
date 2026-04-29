@@ -9,42 +9,26 @@ $nugetPackages = Join-Path $local 'nuget-packages'
 $nugetHttpCache = Join-Path $local 'nuget-http-cache'
 $src = Join-Path $root 'src'
 $artifacts = Join-Path $root 'artifacts'
-$publish = Join-Path $artifacts 'publish'
-$aotPublish = Join-Path $artifacts 'publish-aot'
+$build = Join-Path $artifacts 'build'
 $project = Join-Path $src 'LogViewer.csproj'
 
-New-Item -ItemType Directory -Force -Path $artifacts, $publish, $aotPublish, $dotnetHome, $dotnetTools, $appData, $nugetPackages, $nugetHttpCache | Out-Null
+New-Item -ItemType Directory -Force -Path $artifacts, $build, $dotnetHome, $dotnetTools, $appData, $nugetPackages, $nugetHttpCache | Out-Null
 
 $env:DOTNET_CLI_HOME = $dotnetHome
 $env:APPDATA = $appData
 $env:NUGET_PACKAGES = $nugetPackages
 $env:NUGET_HTTP_CACHE_PATH = $nugetHttpCache
 
-Remove-Item -Recurse -Force $aotPublish -ErrorAction SilentlyContinue
-Remove-Item -Recurse -Force $publish -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force -Path $aotPublish, $publish | Out-Null
+Remove-Item -Recurse -Force $build -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force -Path $build | Out-Null
 
-$nativeAotSucceeded = $false
-& dotnet publish $project -c Release -r win-x64 -o $aotPublish --nologo -p:RestoreIgnoreFailedSources=true -p:PublishAot=true -p:SelfContained=true
-if ($LASTEXITCODE -eq 0) {
-    $nativeAotSucceeded = $true
-    Remove-Item -Recurse -Force $publish -ErrorAction SilentlyContinue
-    Move-Item -Force -Path (Join-Path $aotPublish '*') -Destination $publish
-    Remove-Item -Recurse -Force $aotPublish -ErrorAction SilentlyContinue
+& dotnet build $project -c Release -o $build --nologo -p:RestoreIgnoreFailedSources=true -p:UseAppHost=true
+if ($LASTEXITCODE -ne 0) {
+    throw "dotnet build failed with exit code $LASTEXITCODE"
 }
 
-if (-not $nativeAotSucceeded) {
-    Write-Warning 'NativeAOT publish failed or was unavailable; falling back to a self-contained direct-Win32 publish.'
-    Remove-Item -Recurse -Force $publish -ErrorAction SilentlyContinue
-    New-Item -ItemType Directory -Force -Path $publish | Out-Null
-    & dotnet publish $project -c Release -o $publish --nologo -p:RestoreIgnoreFailedSources=true -p:PublishAot=false -p:UseAppHost=true
-    if ($LASTEXITCODE -ne 0) {
-        throw "dotnet publish fallback failed with exit code $LASTEXITCODE"
-    }
-}
-
-if (Test-Path (Join-Path $publish 'LogViewer.exe')) {
-    Write-Host "Published to $publish"
+if (Test-Path (Join-Path $build 'LogViewer-CSharp.exe')) {
+    Write-Host "Built to $build"
 } else {
-    throw "No runnable artifact was produced in $publish"
+    throw "No runnable artifact was produced in $build"
 }

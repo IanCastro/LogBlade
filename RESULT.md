@@ -1,27 +1,39 @@
 # RESULT
 
-## Artifact
+## Distribution status
 
-- `artifacts/publish/LogViewer.exe`
+- `PARTIALLY_PROVED`
 
-## Memory Measurement
+## Artifacts
 
-- Smoke snapshot on a running sample-log session:
-- Working set: `27.31 MB`
-- Private bytes: `6.16 MB`
-- The status bar also shows live working set and private bytes in the app itself.
+- Official launcher / bake-off artifact: `artifacts\build\LogViewer-CSharp.exe`
+- Distribution gate artifact: `artifacts\publish\LogViewer-CSharp.exe`
+
+## Build contract
+
+- Normal build: `.\build.ps1`
+- Distribution build: `.\package.ps1`
+- The root launcher and the official comparisons use the normal build artifact.
+- The distribution build remains a separate packaging gate and does not need to run on every iteration.
+
+## Memory measurement
+
+- Smoke snapshot on a sample log:
+  - Working set: `27.31 MB`
+  - Private bytes: `6.16 MB`
 
 ## PASS / FAIL
 
 - Total process memory < 10 MB: FAIL
-- The measured working set was above 10 MB during smoke testing.
+- The measured working set was above 10 MB.
 
 ## NativeAOT
 
-- NativeAOT blocker: offline restore cannot resolve `Microsoft.DotNet.ILCompiler` and related packs from `nuget.org` in this environment.
-- The build script falls back to a runnable self-contained direct-Win32 publish and still produces `artifacts/publish/LogViewer.exe`.
+- The final NativeAOT path is still not fully proved offline in this environment.
+- The self-contained distribution path is proved and produces `artifacts\publish\LogViewer-CSharp.exe`.
 
 ## Validation
 
-- Build: PASS
+- Normal build: PASS
+- Distribution publish: PASS with self-contained fallback
 - Smoke test: PASS

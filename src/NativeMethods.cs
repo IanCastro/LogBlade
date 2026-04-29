@@ -19,6 +19,9 @@ internal static class NativeMethods
     public const int WM_MOUSEWHEEL = 0x020A;
     public const int WM_ERASEBKGND = 0x0014;
     public const int WM_NCCREATE = 0x0081;
+    public const int WM_APP = 0x8000;
+    public const int WM_APP_BEGIN_OPEN = WM_APP + 1;
+    public const int WM_APP_OPEN_COMPLETE = WM_APP + 2;
     public const int SB_LINEUP = 0;
     public const int SB_LINEDOWN = 1;
     public const int SB_PAGEUP = 2;
@@ -37,6 +40,7 @@ internal static class NativeMethods
     public const int COLOR_3DFACE = 15;
     public const int DEFAULT_CHARSET = 1;
     public const int OUT_DEFAULT_PRECIS = 0;
+    public const int OUT_OUTLINE_PRECIS = 8;
     public const int CLIP_DEFAULT_PRECIS = 0;
     public const int CLEARTYPE_QUALITY = 5;
     public const int FF_MODERN = 0x30;
@@ -48,6 +52,8 @@ internal static class NativeMethods
     public const int DT_END_ELLIPSIS = 0x8000;
     public const int DT_NOPREFIX = 0x0800;
     public const int WHEEL_DELTA = 120;
+    public const int MB_OK = 0x00000000;
+    public const int MB_ICONERROR = 0x00000010;
     public const int VK_UP = 0x26;
     public const int VK_DOWN = 0x28;
     public const int VK_PRIOR = 0x21;
@@ -208,11 +214,19 @@ internal static class NativeMethods
         IntPtr hInstance,
         IntPtr lpParam);
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool SetWindowTextW(IntPtr hWnd, string lpString);
+
     [DllImport("user32.dll")]
     public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
     [DllImport("user32.dll")]
     public static extern bool UpdateWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool PostMessageW(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern int GetMessageW(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
@@ -250,7 +264,7 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     public static extern bool EndPaint(IntPtr hWnd, [In] ref PAINTSTRUCT lpPaint);
 
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    [DllImport("gdi32.dll", CharSet = CharSet.Unicode)]
     public static extern int TextOutW(IntPtr hdc, int x, int y, string lpString, int c);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
@@ -259,10 +273,10 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     public static extern int FillRect(IntPtr hDC, ref RECT lprc, IntPtr hbr);
 
-    [DllImport("user32.dll")]
+    [DllImport("gdi32.dll")]
     public static extern int SetBkMode(IntPtr hdc, int mode);
 
-    [DllImport("user32.dll")]
+    [DllImport("gdi32.dll")]
     public static extern int SetTextColor(IntPtr hdc, int color);
 
     [DllImport("gdi32.dll", CharSet = CharSet.Unicode)]
@@ -300,6 +314,9 @@ internal static class NativeMethods
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern bool GetScrollInfo(IntPtr hwnd, int nBar, ref SCROLLINFO lpsi);
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int MessageBoxW(IntPtr hWnd, string lpText, string lpCaption, int uType);
+
     [DllImport("user32.dll")]
     public static extern IntPtr GetWindowLongPtrW(IntPtr hWnd, int nIndex);
 
@@ -317,6 +334,9 @@ internal static class NativeMethods
 
     [DllImport("kernel32.dll")]
     public static extern IntPtr GetCurrentProcess();
+
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmFlush();
 
     public static int LowWord(IntPtr value) => unchecked((short)((long)value & 0xFFFF));
 
