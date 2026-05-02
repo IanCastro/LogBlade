@@ -75,6 +75,7 @@ internal readonly record struct ViewportRequest(long Id, ViewportRequestKind Kin
 
 internal sealed class ViewerWindow
 {
+    private const int SegmentChars = 4096;
     private const int WheelLinesPerNotch = 3;
     private const int ScrollRange = 1_000_000;
     private readonly string _path;
@@ -83,7 +84,11 @@ internal sealed class ViewerWindow
     private IntPtr _font;
     private GCHandle _selfHandle;
     private int _lineHeight = 16;
+    private int _charWidth = 8;
+    private int _clientWidth;
     private int _clientHeight;
+    private int _visibleColumnCount = 1;
+    private int _xOffsetChars;
     private long _visibleLineCount = 1;
     private bool _firstRenderLogged;
     private bool _closing;
@@ -136,7 +141,7 @@ internal sealed class ViewerWindow
             0,
             className,
             windowTitle,
-            NativeMethods.WS_OVERLAPPEDWINDOW | NativeMethods.WS_VSCROLL,
+            NativeMethods.WS_OVERLAPPEDWINDOW | NativeMethods.WS_VSCROLL | NativeMethods.WS_HSCROLL,
             NativeMethods.CW_USEDEFAULT,
             NativeMethods.CW_USEDEFAULT,
             1100,
@@ -216,6 +221,9 @@ internal sealed class ViewerWindow
                     return IntPtr.Zero;
                 case NativeMethods.WM_SIZE:
                     self.OnSize();
+                    return IntPtr.Zero;
+                case NativeMethods.WM_HSCROLL:
+                    self.OnHScroll(wParam);
                     return IntPtr.Zero;
                 case NativeMethods.WM_VSCROLL:
                     self.OnVScroll(wParam);
@@ -535,6 +543,7 @@ internal sealed class ViewerWindow
         if (NativeMethods.GetTextMetricsW(hdc, out tm))
         {
             _lineHeight = tm.tmHeight + tm.tmExternalLeading;
+            _charWidth = Math.Max(1, tm.tmAveCharWidth);
         }
 
         NativeMethods.SelectObject(hdc, oldFont);
@@ -544,6 +553,7 @@ internal sealed class ViewerWindow
     private void OnSize()
     {
         NativeMethods.GetClientRect(_hwnd, out NativeMethods.RECT rect);
+        _clientWidth = Math.Max(0, rect.right - rect.left);
         _clientHeight = rect.bottom - rect.top;
         long previousVisibleLineCount = _visibleLineCount;
         UpdateScrollBar();
@@ -559,6 +569,59 @@ internal sealed class ViewerWindow
                 visibleLines: (int)Math.Max(1, _visibleLineCount));
         }
         NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
+    }
+
+    private void OnHScroll(IntPtr wParam)
+    {
+        int command = NativeMethods.LowWord(wParam);
+        int trackPos = NativeMethods.HighWord(wParam);
+
+        if (command is NativeMethods.SB_THUMBPOSITION or NativeMethods.SB_THUMBTRACK)
+        {
+            NativeMethods.SCROLLINFO si = new()
+            {
+                cbSize = (uint)Marshal.SizeOf<NativeMethods.SCROLLINFO>(),
+                fMask = NativeMethods.SIF_TRACKPOS
+            };
+
+            if (NativeMethods.GetScrollInfo(_hwnd, NativeMethods.SB_HORZ, ref si))
+            {
+                trackPos = si.nTrackPos;
+            }
+        }
+
+        int maxOffset = Math.Max(0, SegmentChars - _visibleColumnCount);
+        int nextOffset = _xOffsetChars;
+
+        switch (command)
+        {
+            case NativeMethods.SB_LINELEFT:
+                nextOffset--;
+                break;
+            case NativeMethods.SB_LINERIGHT:
+                nextOffset++;
+                break;
+            case NativeMethods.SB_PAGELEFT:
+                nextOffset -= _visibleColumnCount;
+                break;
+            case NativeMethods.SB_PAGERIGHT:
+                nextOffset += _visibleColumnCount;
+                break;
+            case NativeMethods.SB_LEFT:
+                nextOffset = 0;
+                break;
+            case NativeMethods.SB_RIGHT:
+                nextOffset = maxOffset;
+                break;
+            case NativeMethods.SB_THUMBPOSITION:
+            case NativeMethods.SB_THUMBTRACK:
+                nextOffset = trackPos;
+                break;
+            default:
+                return;
+        }
+
+        SetHorizontalOffset(nextOffset);
     }
 
     private void OnVScroll(IntPtr wParam)
@@ -610,6 +673,7 @@ internal sealed class ViewerWindow
                 ScrollByLines((int)Math.Max(1, _visibleLineCount));
                 break;
             case NativeMethods.VK_HOME:
+                SetHorizontalOffset(0);
                 Scroll(NativeMethods.SB_TOP, 0);
                 break;
             case NativeMethods.VK_END:
@@ -675,6 +739,21 @@ internal sealed class ViewerWindow
         }
 
         _visibleLineCount = Math.Max(1, _clientHeight / Math.Max(1, _lineHeight));
+        _visibleColumnCount = Math.Max(1, _clientWidth / Math.Max(1, _charWidth));
+        int horizontalMax = Math.Max(0, SegmentChars - _visibleColumnCount);
+        _xOffsetChars = Math.Clamp(_xOffsetChars, 0, horizontalMax);
+
+        NativeMethods.SCROLLINFO horizontal = new()
+        {
+            cbSize = (uint)Marshal.SizeOf<NativeMethods.SCROLLINFO>(),
+            fMask = NativeMethods.SIF_RANGE | NativeMethods.SIF_PAGE | NativeMethods.SIF_POS,
+            nMin = 0,
+            nMax = SegmentChars,
+            nPage = (uint)Math.Max(1, Math.Min(SegmentChars, _visibleColumnCount)),
+            nPos = _xOffsetChars
+        };
+        NativeMethods.SetScrollInfo(_hwnd, NativeMethods.SB_HORZ, ref horizontal, true);
+
         if (_logFile is null || !_logFile.HasContent)
         {
             NativeMethods.SCROLLINFO empty = new()
@@ -740,8 +819,13 @@ internal sealed class ViewerWindow
         {
             foreach (LogFile.ViewportRow line in _logFile.ViewportRows)
             {
-                NativeMethods.TextOutW(hdc, 0, y, line.Text, line.Text.Length);
-                if (!string.IsNullOrEmpty(line.Text))
+                string visibleText = SliceVisibleText(line.Text);
+                if (visibleText.Length > 0)
+                {
+                    NativeMethods.TextOutW(hdc, 0, y, visibleText, visibleText.Length);
+                }
+
+                if (!string.IsNullOrEmpty(visibleText))
                 {
                     visibleNonEmptyLines++;
                 }
@@ -778,6 +862,38 @@ internal sealed class ViewerWindow
             new LogField("topOffset", _logFile.TopOffset.ToString()),
             new LogField("visibleLines", Math.Max(1, _visibleLineCount).ToString()),
             new LogField("viewportBytes", _logFile.ViewportBytes.ToString()));
+    }
+
+    private void SetHorizontalOffset(int requestedOffset)
+    {
+        int maxOffset = Math.Max(0, SegmentChars - _visibleColumnCount);
+        int nextOffset = Math.Clamp(requestedOffset, 0, maxOffset);
+        if (nextOffset == _xOffsetChars)
+        {
+            return;
+        }
+
+        _xOffsetChars = nextOffset;
+        UpdateScrollBar();
+        NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
+    }
+
+    private string SliceVisibleText(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return string.Empty;
+        }
+
+        int start = Math.Clamp(_xOffsetChars, 0, text.Length);
+        int available = text.Length - start;
+        if (available <= 0)
+        {
+            return string.Empty;
+        }
+
+        int count = Math.Min(_visibleColumnCount, available);
+        return text.Substring(start, count);
     }
 
     private void DisposeResources()

@@ -6,6 +6,7 @@ internal static class NativeMethods
     public const int CS_HREDRAW = 0x0002;
     public const int CS_VREDRAW = 0x0001;
     public const int WS_OVERLAPPEDWINDOW = 0x00CF0000;
+    public const int WS_HSCROLL = 0x00100000;
     public const int WS_VSCROLL = 0x00200000;
     public const int CW_USEDEFAULT = unchecked((int)0x80000000);
     public const int SW_SHOWDEFAULT = 10;
@@ -15,6 +16,7 @@ internal static class NativeMethods
     public const int WM_SIZE = 0x0005;
     public const int WM_PAINT = 0x000F;
     public const int WM_KEYDOWN = 0x0100;
+    public const int WM_HSCROLL = 0x0114;
     public const int WM_VSCROLL = 0x0115;
     public const int WM_MOUSEWHEEL = 0x020A;
     public const int WM_ERASEBKGND = 0x0014;
@@ -31,6 +33,13 @@ internal static class NativeMethods
     public const int SB_THUMBTRACK = 5;
     public const int SB_TOP = 6;
     public const int SB_BOTTOM = 7;
+    public const int SB_LINELEFT = 0;
+    public const int SB_LINERIGHT = 1;
+    public const int SB_PAGELEFT = 2;
+    public const int SB_PAGERIGHT = 3;
+    public const int SB_LEFT = 6;
+    public const int SB_RIGHT = 7;
+    public const int SB_HORZ = 0;
     public const int SB_VERT = 1;
     public const int SIF_RANGE = 0x0001;
     public const int SIF_PAGE = 0x0002;
