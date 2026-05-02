@@ -78,6 +78,7 @@ internal sealed class ViewerWindow
     private const int SegmentChars = 4096;
     private const int WheelLinesPerNotch = 3;
     private const int ScrollRange = 1_000_000;
+    private const int VerticalScrollVirtualRows = 4000;
     private readonly string _path;
     private readonly string _titleSuffix;
     private IntPtr _hwnd;
@@ -771,7 +772,7 @@ internal sealed class ViewerWindow
 
         long contentBytes = _logFile.FileSize - _logFile.DataOffset;
         long topBytes = _logFile.TopOffset - _logFile.DataOffset;
-        long pageBytes = Math.Max(1, _logFile.ViewportBytes);
+        long verticalPage = Math.Max(1, Math.Min(ScrollRange, (_visibleLineCount * ScrollRange) / VerticalScrollVirtualRows));
 
         NativeMethods.SCROLLINFO si = new()
         {
@@ -779,7 +780,7 @@ internal sealed class ViewerWindow
             fMask = NativeMethods.SIF_RANGE | NativeMethods.SIF_PAGE | NativeMethods.SIF_POS,
             nMin = 0,
             nMax = ScrollRange,
-            nPage = (uint)Math.Max(1, Math.Min(ScrollRange, (pageBytes * ScrollRange) / Math.Max(1, contentBytes))),
+            nPage = (uint)verticalPage,
             nPos = (int)Math.Min(ScrollRange, (topBytes * ScrollRange) / Math.Max(1, contentBytes))
         };
 
