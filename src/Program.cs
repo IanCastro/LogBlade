@@ -63,25 +63,36 @@ internal static class Program
     }
 }
 
+internal enum ViewportRequestKind
+{
+    LoadAtOffset,
+    ScrollByLines,
+    JumpHome,
+    JumpEnd
+}
+
+internal readonly record struct ViewportRequest(long Id, ViewportRequestKind Kind, int DeltaLines, long RequestedOffset, int VisibleLines);
+
 internal sealed class ViewerWindow
 {
     private const int WheelLinesPerNotch = 3;
+    private const int ScrollRange = 1_000_000;
     private readonly string _path;
-    private readonly LineCache _cache = new(300);
     private readonly string _titleSuffix;
     private IntPtr _hwnd;
     private IntPtr _font;
     private GCHandle _selfHandle;
     private int _lineHeight = 16;
     private int _clientHeight;
-    private long _topLine = 1;
     private long _visibleLineCount = 1;
     private bool _firstRenderLogged;
-    private bool _isLoading = true;
-    private bool _loadFailed;
     private bool _closing;
     private string _statusText = "Loading file...";
     private LogFile? _logFile;
+    private long _nextViewportRequestId;
+    private long _latestViewportRequestId;
+    private bool _viewportWorkerRunning;
+    private ViewportRequest? _pendingViewportRequest;
 
     private static readonly NativeMethods.WindowProc s_wndProc = WindowProc;
 
@@ -226,6 +237,9 @@ internal sealed class ViewerWindow
                 case NativeMethods.WM_APP_OPEN_COMPLETE:
                     self.OnOpenComplete(lParam);
                     return IntPtr.Zero;
+                case NativeMethods.WM_APP_VIEWPORT_COMPLETE:
+                    self.OnViewportComplete(lParam);
+                    return IntPtr.Zero;
                 case NativeMethods.WM_DESTROY:
                     self._closing = true;
                     self.DisposeResources();
@@ -284,6 +298,8 @@ internal sealed class ViewerWindow
             return;
         }
 
+        ResetViewportAsyncState();
+
         if (!File.Exists(_path))
         {
             AppLog.Instance.Info("file.open.begin", "begin", new LogField("path", _path));
@@ -294,36 +310,35 @@ internal sealed class ViewerWindow
                 new LogField("stage", "missing_file"),
                 new LogField("reason", "File not found"));
 
-            _isLoading = false;
-            _loadFailed = true;
             _statusText = "File not found.";
-            _topLine = 1;
             UpdateScrollBar();
             NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
             NativeMethods.MessageBoxW(_hwnd, "File not found: " + _path, Program.AppTitle, NativeMethods.MB_OK | NativeMethods.MB_ICONERROR);
             return;
         }
 
-        _cache.Clear();
         _logFile?.Dispose();
         _logFile = null;
-        _topLine = 1;
         _firstRenderLogged = false;
-        _isLoading = true;
-        _loadFailed = false;
         _statusText = "Loading file...";
         UpdateScrollBar();
         NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
 
         string workerPath = _path;
         IntPtr hwnd = _hwnd;
+        int visibleLines = (int)Math.Max(1, _visibleLineCount);
         ThreadPool.QueueUserWorkItem(_ =>
         {
             var result = new OpenWorkerResult();
             try
             {
                 result.LogFile = LogFile.Open(workerPath);
+                if (!result.LogFile.EnsureViewport(visibleLines))
+                {
+                    throw new InvalidOperationException("Failed to load the initial viewport.");
+                }
                 result.Success = true;
+                result.PreloadedVisibleLines = visibleLines;
             }
             catch (Exception ex)
             {
@@ -333,6 +348,93 @@ internal sealed class ViewerWindow
 
             GCHandle handle = GCHandle.Alloc(result);
             if (!NativeMethods.PostMessageW(hwnd, NativeMethods.WM_APP_OPEN_COMPLETE, IntPtr.Zero, GCHandle.ToIntPtr(handle)))
+            {
+                if (result.LogFile is not null)
+                {
+                    result.LogFile.Dispose();
+                }
+                handle.Free();
+            }
+        });
+    }
+
+    private void ResetViewportAsyncState()
+    {
+        _nextViewportRequestId = 0;
+        _latestViewportRequestId = 0;
+        _viewportWorkerRunning = false;
+        _pendingViewportRequest = null;
+    }
+
+    private void QueueViewportRequest(ViewportRequestKind kind, int deltaLines = 0, long requestedOffset = 0, int? visibleLines = null)
+    {
+        if (_closing || _hwnd == IntPtr.Zero || _logFile is null)
+        {
+            return;
+        }
+
+        int effectiveVisible = Math.Max(1, visibleLines ?? (int)Math.Max(1, _visibleLineCount));
+        var request = new ViewportRequest(
+            Id: ++_nextViewportRequestId,
+            Kind: kind,
+            DeltaLines: deltaLines,
+            RequestedOffset: requestedOffset,
+            VisibleLines: effectiveVisible);
+
+        _latestViewportRequestId = request.Id;
+        _pendingViewportRequest = request;
+        if (!_viewportWorkerRunning)
+        {
+            DispatchViewportRequest();
+        }
+    }
+
+    private void DispatchViewportRequest()
+    {
+        if (_closing || _logFile is null || _pendingViewportRequest is null || _viewportWorkerRunning)
+        {
+            return;
+        }
+
+        ViewportRequest request = _pendingViewportRequest.Value;
+        _pendingViewportRequest = null;
+        _viewportWorkerRunning = true;
+
+        LogFile workerLogFile = _logFile.CloneForWorker();
+        IntPtr hwnd = _hwnd;
+
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            var result = new ViewportWorkerResult { RequestId = request.Id };
+            try
+            {
+                switch (request.Kind)
+                {
+                    case ViewportRequestKind.LoadAtOffset:
+                        workerLogFile.ScrollToApproximateOffset(request.RequestedOffset, request.VisibleLines);
+                        break;
+                    case ViewportRequestKind.ScrollByLines:
+                        workerLogFile.ScrollByLinesForWorker(request.DeltaLines, request.VisibleLines);
+                        break;
+                    case ViewportRequestKind.JumpHome:
+                        workerLogFile.ScrollHome(request.VisibleLines);
+                        break;
+                    case ViewportRequestKind.JumpEnd:
+                        workerLogFile.ScrollEnd(request.VisibleLines);
+                        break;
+                }
+
+                result.Success = true;
+                result.LogFile = workerLogFile;
+            }
+            catch (Exception ex)
+            {
+                result.Success = false;
+                result.Message = ex.Message;
+            }
+
+            GCHandle handle = GCHandle.Alloc(result);
+            if (!NativeMethods.PostMessageW(hwnd, NativeMethods.WM_APP_VIEWPORT_COMPLETE, IntPtr.Zero, GCHandle.ToIntPtr(handle)))
             {
                 if (result.LogFile is not null)
                 {
@@ -359,17 +461,20 @@ internal sealed class ViewerWindow
             return;
         }
 
-        _isLoading = false;
-        _topLine = 1;
-
         if (result.Success && result.LogFile is not null)
         {
             _logFile?.Dispose();
             _logFile = result.LogFile;
-            _loadFailed = false;
             _statusText = string.Empty;
             _firstRenderLogged = false;
             UpdateScrollBar();
+            if ((int)Math.Max(1, _visibleLineCount) != result.PreloadedVisibleLines)
+            {
+                QueueViewportRequest(
+                    ViewportRequestKind.LoadAtOffset,
+                    requestedOffset: _logFile.TopOffset,
+                    visibleLines: (int)Math.Max(1, _visibleLineCount));
+            }
             NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
             return;
         }
@@ -377,11 +482,44 @@ internal sealed class ViewerWindow
         result.LogFile?.Dispose();
         _logFile?.Dispose();
         _logFile = null;
-        _loadFailed = true;
         _statusText = "Failed to open file.";
         UpdateScrollBar();
         NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
         NativeMethods.MessageBoxW(_hwnd, "Failed to open file: " + (result.Message ?? "unknown error"), Program.AppTitle, NativeMethods.MB_OK | NativeMethods.MB_ICONERROR);
+    }
+
+    private void OnViewportComplete(IntPtr lParam)
+    {
+        GCHandle handle = GCHandle.FromIntPtr(lParam);
+        var result = (ViewportWorkerResult?)handle.Target;
+        handle.Free();
+        if (result is null)
+        {
+            return;
+        }
+
+        _viewportWorkerRunning = false;
+
+        if (!_closing && result.RequestId == _latestViewportRequestId && result.Success && result.LogFile is not null)
+        {
+            _logFile?.Dispose();
+            _logFile = result.LogFile;
+            UpdateScrollBar();
+            NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
+        }
+        else
+        {
+            result.LogFile?.Dispose();
+            if (!_closing && result.RequestId == _latestViewportRequestId && !result.Success)
+            {
+                AppLog.Instance.Error("viewport.load.failed", "failed", new LogField("reason", result.Message ?? "unknown error"));
+            }
+        }
+
+        if (!_closing && _pendingViewportRequest is not null)
+        {
+            DispatchViewportRequest();
+        }
     }
 
     private void MeasureFont()
@@ -407,7 +545,19 @@ internal sealed class ViewerWindow
     {
         NativeMethods.GetClientRect(_hwnd, out NativeMethods.RECT rect);
         _clientHeight = rect.bottom - rect.top;
+        long previousVisibleLineCount = _visibleLineCount;
         UpdateScrollBar();
+        if (_logFile is not null &&
+            _logFile.HasContent &&
+            !_closing &&
+            _firstRenderLogged &&
+            _visibleLineCount != previousVisibleLineCount)
+        {
+            QueueViewportRequest(
+                ViewportRequestKind.LoadAtOffset,
+                requestedOffset: _logFile.TopOffset,
+                visibleLines: (int)Math.Max(1, _visibleLineCount));
+        }
         NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
     }
 
@@ -439,7 +589,7 @@ internal sealed class ViewerWindow
         int steps = (delta / NativeMethods.WHEEL_DELTA) * WheelLinesPerNotch;
         if (steps != 0)
         {
-            Scroll(steps < 0 ? NativeMethods.SB_LINEDOWN : NativeMethods.SB_LINEUP, 0, Math.Abs(steps));
+            ScrollByLines(-steps);
         }
     }
 
@@ -448,16 +598,16 @@ internal sealed class ViewerWindow
         switch (key)
         {
             case NativeMethods.VK_UP:
-                Scroll(NativeMethods.SB_LINEUP, 0);
+                ScrollByLines(-1);
                 break;
             case NativeMethods.VK_DOWN:
-                Scroll(NativeMethods.SB_LINEDOWN, 0);
+                ScrollByLines(1);
                 break;
             case NativeMethods.VK_PRIOR:
-                Scroll(NativeMethods.SB_PAGEUP, 0);
+                ScrollByLines(-(int)Math.Max(1, _visibleLineCount));
                 break;
             case NativeMethods.VK_NEXT:
-                Scroll(NativeMethods.SB_PAGEDOWN, 0);
+                ScrollByLines((int)Math.Max(1, _visibleLineCount));
                 break;
             case NativeMethods.VK_HOME:
                 Scroll(NativeMethods.SB_TOP, 0);
@@ -468,58 +618,52 @@ internal sealed class ViewerWindow
         }
     }
 
-    private void Scroll(int command, int trackPos, int? lineMultiplierOverride = null)
+    private void ScrollByLines(int deltaLines)
+    {
+        if (_logFile is null)
+        {
+            return;
+        }
+        QueueViewportRequest(ViewportRequestKind.ScrollByLines, deltaLines, visibleLines: (int)Math.Max(1, _visibleLineCount));
+    }
+
+    private void Scroll(int command, int trackPos)
     {
         if (_logFile is null)
         {
             return;
         }
 
-        long oldTop = _topLine;
-        long step = lineMultiplierOverride ?? 1;
-        long page = Math.Max(1, _visibleLineCount);
-        long maxTop = Math.Max(1, _logFile.LineCount > 0 ? _logFile.LineCount - page + 1 : 1);
+        int visible = (int)Math.Max(1, _visibleLineCount);
 
         switch (command)
         {
             case NativeMethods.SB_LINEUP:
-                _topLine -= step;
+                QueueViewportRequest(ViewportRequestKind.ScrollByLines, -1, visibleLines: visible);
                 break;
             case NativeMethods.SB_LINEDOWN:
-                _topLine += step;
+                QueueViewportRequest(ViewportRequestKind.ScrollByLines, 1, visibleLines: visible);
                 break;
             case NativeMethods.SB_PAGEUP:
-                _topLine -= page;
+                QueueViewportRequest(ViewportRequestKind.ScrollByLines, -visible, visibleLines: visible);
                 break;
             case NativeMethods.SB_PAGEDOWN:
-                _topLine += page;
+                QueueViewportRequest(ViewportRequestKind.ScrollByLines, visible, visibleLines: visible);
                 break;
             case NativeMethods.SB_TOP:
-                _topLine = 1;
+                QueueViewportRequest(ViewportRequestKind.JumpHome, visibleLines: visible);
                 break;
             case NativeMethods.SB_BOTTOM:
-                _topLine = maxTop;
+                QueueViewportRequest(ViewportRequestKind.JumpEnd, visibleLines: visible);
                 break;
             case NativeMethods.SB_THUMBPOSITION:
             case NativeMethods.SB_THUMBTRACK:
-                _topLine = Math.Max(1, Math.Min(trackPos, (int)maxTop));
+            {
+                long contentBytes = Math.Max(1, _logFile.FileSize - _logFile.DataOffset);
+                long rel = (Math.Max(0, trackPos) * contentBytes) / ScrollRange;
+                QueueViewportRequest(ViewportRequestKind.LoadAtOffset, requestedOffset: _logFile.DataOffset + rel, visibleLines: visible);
                 break;
-        }
-
-        if (_topLine < 1)
-        {
-            _topLine = 1;
-        }
-
-        if (_topLine > maxTop)
-        {
-            _topLine = maxTop;
-        }
-
-        if (_topLine != oldTop)
-        {
-            UpdateScrollBar();
-            NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
+            }
         }
     }
 
@@ -531,35 +675,33 @@ internal sealed class ViewerWindow
         }
 
         _visibleLineCount = Math.Max(1, _clientHeight / Math.Max(1, _lineHeight));
-        if (_logFile is null)
+        if (_logFile is null || !_logFile.HasContent)
         {
             NativeMethods.SCROLLINFO empty = new()
             {
                 cbSize = (uint)Marshal.SizeOf<NativeMethods.SCROLLINFO>(),
                 fMask = NativeMethods.SIF_RANGE | NativeMethods.SIF_PAGE | NativeMethods.SIF_POS,
-                nMin = 1,
+                nMin = 0,
                 nMax = 1,
                 nPage = 1,
-                nPos = 1
+                nPos = 0
             };
             NativeMethods.SetScrollInfo(_hwnd, NativeMethods.SB_VERT, ref empty, true);
             return;
         }
 
-        long maxTop = Math.Max(1, _logFile.LineCount > 0 ? _logFile.LineCount - _visibleLineCount + 1 : 1);
-        if (_topLine > maxTop)
-        {
-            _topLine = maxTop;
-        }
+        long contentBytes = _logFile.FileSize - _logFile.DataOffset;
+        long topBytes = _logFile.TopOffset - _logFile.DataOffset;
+        long pageBytes = Math.Max(1, _logFile.ViewportBytes);
 
         NativeMethods.SCROLLINFO si = new()
         {
             cbSize = (uint)Marshal.SizeOf<NativeMethods.SCROLLINFO>(),
             fMask = NativeMethods.SIF_RANGE | NativeMethods.SIF_PAGE | NativeMethods.SIF_POS,
-            nMin = 1,
-            nMax = (int)Math.Max(1, Math.Min(int.MaxValue, _logFile.LineCount > 0 ? _logFile.LineCount : 1)),
-            nPage = (uint)Math.Max(1, Math.Min(int.MaxValue, _visibleLineCount)),
-            nPos = (int)Math.Min(int.MaxValue, _topLine)
+            nMin = 0,
+            nMax = ScrollRange,
+            nPage = (uint)Math.Max(1, Math.Min(ScrollRange, (pageBytes * ScrollRange) / Math.Max(1, contentBytes))),
+            nPos = (int)Math.Min(ScrollRange, (topBytes * ScrollRange) / Math.Max(1, contentBytes))
         };
 
         NativeMethods.SetScrollInfo(_hwnd, NativeMethods.SB_VERT, ref si, true);
@@ -580,9 +722,6 @@ internal sealed class ViewerWindow
 
         NativeMethods.RECT client;
         NativeMethods.GetClientRect(_hwnd, out client);
-        int height = client.bottom - client.top;
-        int linesThatFit = Math.Max(0, height / Math.Max(1, _lineHeight));
-        long start = _topLine;
 
         NativeMethods.FillRect(hdc, ref client, NativeMethods.GetSysColorBrush(NativeMethods.COLOR_WINDOW));
 
@@ -592,72 +731,36 @@ internal sealed class ViewerWindow
         {
             NativeMethods.TextOutW(hdc, 0, y, _statusText, _statusText.Length);
         }
-        else if (_logFile.LineCount == 0)
+        else if (!_logFile.HasContent)
         {
             string empty = "(empty file)";
             NativeMethods.TextOutW(hdc, 0, y, empty, empty.Length);
         }
         else
         {
-            long end = Math.Min(_logFile.LineCount, start + linesThatFit - 1);
-            EnsureVisibleRange(start, end);
-            for (long line = start; line <= end; line++)
+            foreach (LogFile.ViewportRow line in _logFile.ViewportRows)
             {
-                if (!_cache.TryGet(line, out string text))
-                {
-                    break;
-                }
-
-                NativeMethods.TextOutW(hdc, 0, y, text, text.Length);
-                if (!string.IsNullOrEmpty(text))
+                NativeMethods.TextOutW(hdc, 0, y, line.Text, line.Text.Length);
+                if (!string.IsNullOrEmpty(line.Text))
                 {
                     visibleNonEmptyLines++;
                 }
+
                 y += _lineHeight;
             }
         }
 
         NativeMethods.SelectObject(hdc, oldFont);
         NativeMethods.EndPaint(_hwnd, ref ps);
-        bool useful = _logFile is not null && (_logFile.LineCount == 0 || visibleNonEmptyLines > 0);
+        bool useful = _logFile is not null && (!_logFile.HasContent || visibleNonEmptyLines > 0);
         if (useful)
         {
             NativeMethods.DwmFlush();
         }
-        TryLogFirstRenderComplete(start, linesThatFit, useful);
+        TryLogFirstRenderComplete(useful);
     }
 
-    private void EnsureVisibleRange(long startLine, long endLine)
-    {
-        if (_logFile is null || _logFile.LineCount == 0 || startLine > endLine)
-        {
-            return;
-        }
-
-        long line = startLine;
-        while (line <= endLine)
-        {
-            if (_cache.TryGet(line, out _))
-            {
-                line++;
-                continue;
-            }
-
-            long spanStart = line;
-            line++;
-            while (line <= endLine && !_cache.TryGet(line, out _))
-            {
-                line++;
-            }
-
-            foreach (KeyValuePair<long, string> entry in _logFile.ReadLines(spanStart, line - 1))
-            {
-                _cache.Set(entry.Key, entry.Value);
-            }
-        }
-    }
-
-    private void TryLogFirstRenderComplete(long startLine, int visibleLines, bool useful)
+    private void TryLogFirstRenderComplete(bool useful)
     {
         if (_firstRenderLogged || !useful || _logFile is null)
         {
@@ -671,9 +774,10 @@ internal sealed class ViewerWindow
             new LogField("path", _logFile.FilePath),
             new LogField("encoding", _logFile.EncodingName),
             new LogField("dataOffset", _logFile.DataOffset.ToString()),
-            new LogField("lineCount", _logFile.LineCount.ToString()),
-            new LogField("topLine", startLine.ToString()),
-            new LogField("visibleLines", Math.Max(1, visibleLines).ToString()));
+            new LogField("fileSize", _logFile.FileSize.ToString()),
+            new LogField("topOffset", _logFile.TopOffset.ToString()),
+            new LogField("visibleLines", Math.Max(1, _visibleLineCount).ToString()),
+            new LogField("viewportBytes", _logFile.ViewportBytes.ToString()));
     }
 
     private void DisposeResources()
@@ -697,6 +801,15 @@ internal sealed class ViewerWindow
 
 internal sealed class OpenWorkerResult
 {
+    public bool Success { get; set; }
+    public string? Message { get; set; }
+    public LogFile? LogFile { get; set; }
+    public int PreloadedVisibleLines { get; set; }
+}
+
+internal sealed class ViewportWorkerResult
+{
+    public long RequestId { get; set; }
     public bool Success { get; set; }
     public string? Message { get; set; }
     public LogFile? LogFile { get; set; }

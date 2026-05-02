@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Runtime.InteropServices;
 using System.Text;
 
 internal enum FileEncodingKind
@@ -12,23 +11,30 @@ internal enum FileEncodingKind
     Windows1252
 }
 
-internal readonly record struct Checkpoint(long LineNumber, long ByteOffset);
-
 internal sealed class LogFile : IDisposable
 {
-    private const int CheckpointInterval = 4096;
+    internal sealed record ViewportRow(long StartOffset, long EndOffset, string Text);
+
     private readonly string _filePath;
     private readonly FileEncodingKind _kind;
     private readonly Encoding _encoding;
     private readonly long _dataOffset;
-    private readonly List<Checkpoint> _checkpoints = new();
+    private readonly long _fileSize;
+    private readonly List<ViewportRow> _viewportRows = new();
+    private long _topOffset;
+    private long _viewportEndOffset;
+    private int _viewportVisibleLines;
+    private bool _viewportLoaded;
 
-    private LogFile(string filePath, FileEncodingKind kind, Encoding encoding, long dataOffset)
+    private LogFile(string filePath, FileEncodingKind kind, Encoding encoding, long dataOffset, long fileSize)
     {
         _filePath = filePath;
         _kind = kind;
         _encoding = encoding;
         _dataOffset = dataOffset;
+        _fileSize = fileSize;
+        _topOffset = dataOffset;
+        _viewportEndOffset = dataOffset;
     }
 
     public string FilePath => _filePath;
@@ -40,8 +46,12 @@ internal sealed class LogFile : IDisposable
         FileEncodingKind.Utf16Be => "UTF-16 BE BOM",
         _ => "Windows-1252"
     };
-    public long LineCount { get; private set; }
-    public int CheckpointCount => _checkpoints.Count;
+    public long FileSize => _fileSize;
+    public long TopOffset => _topOffset;
+    public long ViewportEndOffset => _viewportEndOffset;
+    public long ViewportBytes => _viewportEndOffset >= _topOffset ? _viewportEndOffset - _topOffset : 0;
+    public bool HasContent => _fileSize > _dataOffset;
+    public IReadOnlyList<ViewportRow> ViewportRows => _viewportRows;
 
     public static LogFile Open(string path)
     {
@@ -71,31 +81,142 @@ internal sealed class LogFile : IDisposable
             new LogField("encoding", DescribeEncoding(detection.Kind)),
             new LogField("dataOffset", detection.DataOffset.ToString()));
 
-        var logFile = new LogFile(path, detection.Kind, detection.Encoding, detection.DataOffset);
-        AppLog.Instance.Info("index.begin", "begin", new LogField("path", path));
-        try
+        return new LogFile(path, detection.Kind, detection.Encoding, detection.DataOffset, fs.Length);
+    }
+
+    public bool EnsureViewport(int visibleLines) => LoadViewportAt(_topOffset, visibleLines);
+
+    public bool ScrollLineDown(int visibleLines)
+    {
+        if (!EnsureViewport(visibleLines) || _viewportRows.Count == 0)
         {
-            logFile.BuildIndex();
-        }
-        catch (Exception ex)
-        {
-            AppLog.Instance.Error(
-                "file.open.failed",
-                "failed",
-                new LogField("path", path),
-                new LogField("stage", "index_build_failed"),
-                new LogField("reason", ex.Message),
-                new LogField("type", ex.GetType().FullName ?? ex.GetType().Name));
-            throw;
+            return false;
         }
 
-        AppLog.Instance.Info(
-            "index.complete",
-            "complete",
-            new LogField("path", path),
-            new LogField("lineCount", logFile.LineCount.ToString()),
-            new LogField("checkpointCount", logFile.CheckpointCount.ToString()));
-        return logFile;
+        if (_viewportRows.Count > 1)
+        {
+            return LoadViewportAt(_viewportRows[1].StartOffset, visibleLines);
+        }
+
+        if (_viewportEndOffset > _topOffset && _viewportEndOffset < _fileSize)
+        {
+            return LoadViewportAt(_viewportEndOffset, visibleLines);
+        }
+
+        return false;
+    }
+
+    public bool ScrollLineUp(int visibleLines)
+    {
+        if (!HasContent)
+        {
+            return false;
+        }
+
+        return LoadViewportAt(PreviousLineStart(_topOffset), visibleLines);
+    }
+
+    public bool ScrollPageDown(int visibleLines)
+    {
+        if (!EnsureViewport(visibleLines) || _viewportRows.Count == 0)
+        {
+            return false;
+        }
+
+        if (_viewportEndOffset > _topOffset && _viewportEndOffset < _fileSize)
+        {
+            return LoadViewportAt(_viewportEndOffset, visibleLines);
+        }
+
+        return false;
+    }
+
+    public bool ScrollPageUp(int visibleLines)
+    {
+        if (!HasContent)
+        {
+            return false;
+        }
+
+        int steps = Math.Max(1, visibleLines);
+        long nextTop = _topOffset;
+        for (int i = 0; i < steps; i++)
+        {
+            long previous = PreviousLineStart(nextTop);
+            if (previous == nextTop)
+            {
+                break;
+            }
+
+            nextTop = previous;
+        }
+
+        return LoadViewportAt(nextTop, visibleLines);
+    }
+
+    public bool ScrollHome(int visibleLines) => LoadViewportAt(_dataOffset, visibleLines);
+
+    public bool ScrollEnd(int visibleLines)
+    {
+        if (!HasContent)
+        {
+            return LoadViewportAt(_dataOffset, visibleLines);
+        }
+
+        long nextTop = NormalizeRequestedOffset(_fileSize);
+        int steps = Math.Max(0, visibleLines - 1);
+        for (int i = 0; i < steps; i++)
+        {
+            long previous = PreviousLineStart(nextTop);
+            if (previous == nextTop)
+            {
+                break;
+            }
+
+            nextTop = previous;
+        }
+
+        return LoadViewportAt(nextTop, visibleLines);
+    }
+
+    public bool ScrollToApproximateOffset(long requestedOffset, int visibleLines) =>
+        LoadViewportAt(NormalizeRequestedOffset(requestedOffset), visibleLines);
+
+    internal LogFile CloneForWorker()
+    {
+        LogFile clone = new(_filePath, _kind, _encoding, _dataOffset, _fileSize)
+        {
+            _topOffset = _topOffset,
+            _viewportEndOffset = _viewportEndOffset,
+            _viewportVisibleLines = _viewportVisibleLines,
+            _viewportLoaded = _viewportLoaded
+        };
+        clone._viewportRows.AddRange(_viewportRows);
+        return clone;
+    }
+
+    internal bool ScrollByLinesForWorker(int deltaLines, int visibleLines)
+    {
+        if (deltaLines == 0)
+        {
+            return EnsureViewport(visibleLines);
+        }
+
+        int steps = Math.Abs(deltaLines);
+        for (int i = 0; i < steps; i++)
+        {
+            bool moved = deltaLines >= 0 ? ScrollLineDown(visibleLines) : ScrollLineUp(visibleLines);
+            if (!moved)
+            {
+                break;
+            }
+        }
+
+        return true;
+    }
+
+    public void Dispose()
+    {
     }
 
     private static FileStream OpenSourceStream(string path)
@@ -117,314 +238,663 @@ internal sealed class LogFile : IDisposable
         }
     }
 
-    public string ReadLine(long lineNumber)
-    {
-        if (lineNumber < 1 || lineNumber > LineCount)
-        {
-            return string.Empty;
-        }
-
-        Checkpoint checkpoint = FindCheckpoint(lineNumber);
-        using FileStream fs = new(_filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 16, FileOptions.SequentialScan);
-        fs.Position = checkpoint.ByteOffset;
-        using StreamReader reader = new(fs, _encoding, false, 4096, false);
-
-        for (long current = checkpoint.LineNumber; current < lineNumber; current++)
-        {
-            if (reader.ReadLine() is null)
-            {
-                return string.Empty;
-            }
-        }
-
-        return reader.ReadLine() ?? string.Empty;
-    }
-
-    public List<KeyValuePair<long, string>> ReadLines(long startLine, long endLine)
-    {
-        List<KeyValuePair<long, string>> lines = new();
-        if (startLine < 1 || endLine < startLine || startLine > LineCount)
-        {
-            return lines;
-        }
-
-        endLine = Math.Min(endLine, LineCount);
-        Checkpoint checkpoint = FindCheckpoint(startLine);
-        using FileStream fs = new(_filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 16, FileOptions.SequentialScan);
-        fs.Position = checkpoint.ByteOffset;
-        using StreamReader reader = new(fs, _encoding, false, 4096, false);
-
-        for (long current = checkpoint.LineNumber; current < startLine; current++)
-        {
-            if (reader.ReadLine() is null)
-            {
-                return lines;
-            }
-        }
-
-        for (long current = startLine; current <= endLine; current++)
-        {
-            string? text = reader.ReadLine();
-            if (text is null)
-            {
-                break;
-            }
-
-            lines.Add(new KeyValuePair<long, string>(current, text));
-        }
-
-        return lines;
-    }
-
-    public void Dispose()
-    {
-    }
-
-    private void BuildIndex()
-    {
-        using FileStream fs = new(_filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 16, FileOptions.SequentialScan);
-        fs.Position = _dataOffset;
-
-        if (fs.Position < fs.Length)
-        {
-            _checkpoints.Add(new Checkpoint(1, _dataOffset));
-            LineCount = 1;
-        }
-        else
-        {
-            LineCount = 0;
-            return;
-        }
-
-        byte[] buffer = new byte[64 * 1024];
-        long absoluteOffset = _dataOffset;
-
-        if (_kind is FileEncodingKind.Utf16Le or FileEncodingKind.Utf16Be)
-        {
-            ScanUtf16(fs, buffer, ref absoluteOffset);
-        }
-        else
-        {
-            ScanSingleByte(fs, buffer, ref absoluteOffset);
-        }
-    }
-
-    private void ScanSingleByte(FileStream fs, byte[] buffer, ref long absoluteOffset)
-    {
-        bool pendingCR = false;
-        int read;
-        while ((read = fs.Read(buffer, 0, buffer.Length)) > 0)
-        {
-            long chunkStart = absoluteOffset;
-            int index = 0;
-            if (pendingCR)
-            {
-                pendingCR = false;
-                if (buffer[0] == 0x0A)
-                {
-                    index = 1;
-                    FinishLine(chunkStart + 1);
-                }
-                else
-                {
-                    FinishLine(chunkStart);
-                }
-            }
-
-            while (index < read)
-            {
-                byte b = buffer[index];
-                if (b == 0x0D)
-                {
-                    if (index + 1 < read)
-                    {
-                        if (buffer[index + 1] == 0x0A)
-                        {
-                            index += 2;
-                        }
-                        else
-                        {
-                            index += 1;
-                        }
-
-                        FinishLine(chunkStart + index);
-                    }
-                    else
-                    {
-                        pendingCR = true;
-                        index++;
-                    }
-                }
-                else if (b == 0x0A)
-                {
-                    index++;
-                    FinishLine(chunkStart + index);
-                }
-                else
-                {
-                    index++;
-                }
-            }
-
-            absoluteOffset += read;
-        }
-
-        if (pendingCR)
-        {
-            FinishLine(absoluteOffset);
-        }
-    }
-
-    private void ScanUtf16(FileStream fs, byte[] buffer, ref long absoluteOffset)
-    {
-        bool littleEndian = _kind is FileEncodingKind.Utf16Le;
-        bool pendingCR = false;
-        bool hasCarry = false;
-        byte carry = 0;
-        int read;
-
-        while ((read = fs.Read(buffer, 0, buffer.Length)) > 0)
-        {
-            long chunkStart = absoluteOffset;
-            int index = 0;
-            if (hasCarry)
-            {
-                byte first = carry;
-                byte second = buffer[0];
-                ushort unit = littleEndian ? (ushort)(first | (second << 8)) : (ushort)((first << 8) | second);
-                long carriedUnitStart = chunkStart - 1;
-                index = 1;
-                hasCarry = false;
-                if (pendingCR)
-                {
-                    if (unit == 0x000A)
-                    {
-                        FinishLine(carriedUnitStart + 2);
-                        pendingCR = false;
-                    }
-                    else
-                    {
-                        FinishLine(carriedUnitStart);
-                        pendingCR = false;
-                    }
-                }
-
-                if (unit == 0x000D)
-                {
-                    pendingCR = true;
-                }
-                else if (unit == 0x000A)
-                {
-                    FinishLine(carriedUnitStart + 2);
-                }
-            }
-
-            while (index + 1 < read)
-            {
-                ushort unit = littleEndian
-                    ? (ushort)(buffer[index] | (buffer[index + 1] << 8))
-                    : (ushort)((buffer[index] << 8) | buffer[index + 1]);
-
-                index += 2;
-                long lineStart = chunkStart + index;
-
-                if (pendingCR)
-                {
-                    if (unit == 0x000A)
-                    {
-                        FinishLine(lineStart);
-                        pendingCR = false;
-                        continue;
-                    }
-
-                    FinishLine(lineStart - 2);
-                    pendingCR = false;
-                }
-
-                if (unit == 0x000D)
-                {
-                    pendingCR = true;
-                }
-                else if (unit == 0x000A)
-                {
-                    FinishLine(absoluteOffset);
-                }
-            }
-
-            if (index < read)
-            {
-                carry = buffer[index];
-                hasCarry = true;
-            }
-
-            absoluteOffset += read;
-        }
-
-        if (pendingCR)
-        {
-            FinishLine(absoluteOffset);
-        }
-    }
-
-    private void FinishLine(long nextLineStartOffset)
-    {
-        LineCount++;
-        if (LineCount > 1 && (LineCount % CheckpointInterval == 0))
-        {
-            _checkpoints.Add(new Checkpoint(LineCount, nextLineStartOffset));
-        }
-    }
-
-    private Checkpoint FindCheckpoint(long lineNumber)
-    {
-        Checkpoint best = _checkpoints[0];
-        for (int i = 1; i < _checkpoints.Count; i++)
-        {
-            Checkpoint candidate = _checkpoints[i];
-            if (candidate.LineNumber > lineNumber)
-            {
-                break;
-            }
-
-            best = candidate;
-        }
-
-        return best;
-    }
-
     private static (FileEncodingKind Kind, Encoding Encoding, long DataOffset) DetectEncoding(FileStream fs)
     {
         fs.Position = 0;
-        byte[] sample = new byte[Math.Min(65536, (int)Math.Min(int.MaxValue, Math.Max(0, fs.Length)))];
-        int read = fs.Read(sample, 0, sample.Length);
+        Span<byte> sample = stackalloc byte[3];
+        int read = fs.Read(sample);
+        fs.Position = 0;
 
         if (read >= 3 && sample[0] == 0xEF && sample[1] == 0xBB && sample[2] == 0xBF)
         {
-            return (FileEncodingKind.Utf8, new UTF8Encoding(false, true), 3);
+            return (FileEncodingKind.Utf8, Encoding.UTF8, 3);
         }
 
         if (read >= 2 && sample[0] == 0xFF && sample[1] == 0xFE)
         {
-            return (FileEncodingKind.Utf16Le, new UnicodeEncoding(false, false, true), 2);
+            return (FileEncodingKind.Utf16Le, Encoding.Unicode, 2);
         }
 
         if (read >= 2 && sample[0] == 0xFE && sample[1] == 0xFF)
         {
-            return (FileEncodingKind.Utf16Be, new UnicodeEncoding(true, false, true), 2);
+            return (FileEncodingKind.Utf16Be, Encoding.BigEndianUnicode, 2);
         }
 
-        fs.Position = 0;
         return (FileEncodingKind.Windows1252, Windows1252Encoding.Instance, 0);
     }
 
-    private static string DescribeEncoding(FileEncodingKind kind)
+    private static string DescribeEncoding(FileEncodingKind kind) => kind switch
     {
-        return kind switch
+        FileEncodingKind.Utf8 => "UTF-8 BOM",
+        FileEncodingKind.Utf16Le => "UTF-16 LE BOM",
+        FileEncodingKind.Utf16Be => "UTF-16 BE BOM",
+        _ => "Windows-1252"
+    };
+
+    private int CodeUnitSize => _kind is FileEncodingKind.Utf16Le or FileEncodingKind.Utf16Be ? 2 : 1;
+
+    private static bool IsLineBreakUnit(ushort unit) => unit is 0x000D or 0x000A;
+
+    private long AlignCodeUnitOffset(long offset)
+    {
+        if (CodeUnitSize == 1 || offset <= _dataOffset)
         {
-            FileEncodingKind.Utf8 => "UTF-8 BOM",
-            FileEncodingKind.Utf16Le => "UTF-16 LE BOM",
-            FileEncodingKind.Utf16Be => "UTF-16 BE BOM",
-            _ => "Windows-1252"
-        };
+            return offset <= _dataOffset ? _dataOffset : offset;
+        }
+
+        long delta = offset - _dataOffset;
+        return _dataOffset + (delta - (delta % 2));
+    }
+
+    private byte[] ReadExact(long offset, int bytesToRead)
+    {
+        using FileStream fs = OpenSourceStream(_filePath);
+        fs.Position = offset;
+        byte[] buffer = new byte[bytesToRead];
+        int total = 0;
+        while (total < bytesToRead)
+        {
+            int read = fs.Read(buffer, total, bytesToRead - total);
+            if (read <= 0)
+            {
+                throw new IOException("Unexpected EOF while reading.");
+            }
+
+            total += read;
+        }
+
+        return buffer;
+    }
+
+    private string DecodeSingleByteLine(List<byte> bytes)
+    {
+        if (bytes.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        byte[] raw = bytes.ToArray();
+        return _encoding.GetString(raw, 0, raw.Length);
+    }
+
+    private static string DecodeUtf16Line(List<ushort> units)
+    {
+        if (units.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        char[] chars = new char[units.Count];
+        for (int i = 0; i < units.Count; i++)
+        {
+            chars[i] = (char)units[i];
+        }
+
+        return new string(chars);
+    }
+
+    private long TrimTrailingBreaks()
+    {
+        if (!HasContent)
+        {
+            return _dataOffset;
+        }
+
+        long cursor = _fileSize;
+        if (CodeUnitSize == 2)
+        {
+            cursor = AlignCodeUnitOffset(cursor);
+            while (cursor >= _dataOffset + 2)
+            {
+                byte[] bytes = ReadExact(cursor - 2, 2);
+                ushort unit = _kind == FileEncodingKind.Utf16Le
+                    ? (ushort)(bytes[0] | (bytes[1] << 8))
+                    : (ushort)((bytes[0] << 8) | bytes[1]);
+                if (!IsLineBreakUnit(unit))
+                {
+                    break;
+                }
+
+                cursor -= 2;
+            }
+
+            return cursor;
+        }
+
+        while (cursor > _dataOffset)
+        {
+            byte[] bytes = ReadExact(cursor - 1, 1);
+            byte value = bytes[0];
+            if (value is not (0x0D or 0x0A))
+            {
+                break;
+            }
+
+            cursor--;
+        }
+
+        return cursor;
+    }
+
+    private long FindLineStartForOffset(long offset)
+    {
+        if (!HasContent || offset <= _dataOffset)
+        {
+            return _dataOffset;
+        }
+
+        if (CodeUnitSize == 2)
+        {
+            bool littleEndian = _kind == FileEncodingKind.Utf16Le;
+            byte[] buffer = new byte[64 * 1024];
+            long searchEnd = AlignCodeUnitOffset(Math.Min(offset, _fileSize));
+            while (searchEnd > _dataOffset)
+            {
+                long chunkStart = searchEnd > buffer.Length
+                    ? Math.Max(_dataOffset, searchEnd - buffer.Length)
+                    : _dataOffset;
+                chunkStart = AlignCodeUnitOffset(chunkStart);
+                long bytesToRead = searchEnd - chunkStart;
+                if (bytesToRead == 0)
+                {
+                    break;
+                }
+
+                using FileStream fs = OpenSourceStream(_filePath);
+                fs.Position = chunkStart;
+                int total = 0;
+                while (total < bytesToRead)
+                {
+                    int read = fs.Read(buffer, total, (int)bytesToRead - total);
+                    if (read <= 0)
+                    {
+                        break;
+                    }
+
+                    total += read;
+                }
+
+                for (int i = total; i >= 2; i -= 2)
+                {
+                    ushort unit = littleEndian
+                        ? (ushort)(buffer[i - 2] | (buffer[i - 1] << 8))
+                        : (ushort)((buffer[i - 2] << 8) | buffer[i - 1]);
+                    if (IsLineBreakUnit(unit))
+                    {
+                        return chunkStart + i;
+                    }
+
+                    if (i == 2)
+                    {
+                        break;
+                    }
+                }
+
+                if (chunkStart == _dataOffset)
+                {
+                    break;
+                }
+
+                searchEnd = chunkStart;
+            }
+
+            return _dataOffset;
+        }
+
+        {
+            byte[] buffer = new byte[64 * 1024];
+            long searchEnd = Math.Min(offset, _fileSize);
+            while (searchEnd > _dataOffset)
+            {
+                long chunkStart = searchEnd > buffer.Length
+                    ? Math.Max(_dataOffset, searchEnd - buffer.Length)
+                    : _dataOffset;
+                long bytesToRead = searchEnd - chunkStart;
+                if (bytesToRead == 0)
+                {
+                    break;
+                }
+
+                using FileStream fs = OpenSourceStream(_filePath);
+                fs.Position = chunkStart;
+                int total = 0;
+                while (total < bytesToRead)
+                {
+                    int read = fs.Read(buffer, total, (int)bytesToRead - total);
+                    if (read <= 0)
+                    {
+                        break;
+                    }
+
+                    total += read;
+                }
+
+                for (int i = total; i > 0; i--)
+                {
+                    byte value = buffer[i - 1];
+                    if (value is 0x0D or 0x0A)
+                    {
+                        return chunkStart + i;
+                    }
+                }
+
+                if (chunkStart == _dataOffset)
+                {
+                    break;
+                }
+
+                searchEnd = chunkStart;
+            }
+
+            return _dataOffset;
+        }
+    }
+
+    private long NormalizeRequestedOffset(long requestedOffset)
+    {
+        if (!HasContent)
+        {
+            return _dataOffset;
+        }
+
+        if (requestedOffset <= _dataOffset)
+        {
+            return _dataOffset;
+        }
+
+        long bounded = Math.Min(requestedOffset, _fileSize);
+        if (bounded >= _fileSize)
+        {
+            bounded = TrimTrailingBreaks();
+            if (bounded <= _dataOffset)
+            {
+                return _dataOffset;
+            }
+        }
+
+        if (CodeUnitSize == 2)
+        {
+            bounded = AlignCodeUnitOffset(bounded);
+        }
+
+        return FindLineStartForOffset(bounded);
+    }
+
+    private long PreviousLineStart(long currentStart)
+    {
+        if (currentStart <= _dataOffset)
+        {
+            return _dataOffset;
+        }
+
+        if (CodeUnitSize == 2)
+        {
+            if (currentStart <= _dataOffset + 2)
+            {
+                return _dataOffset;
+            }
+
+            using FileStream fs = OpenSourceStream(_filePath);
+            Span<byte> bytes = stackalloc byte[2];
+            fs.Position = currentStart - 2;
+            fs.ReadExactly(bytes);
+
+            ushort DecodeUnit(ReadOnlySpan<byte> unitBytes) =>
+                _kind == FileEncodingKind.Utf16Le
+                    ? (ushort)(unitBytes[0] | (unitBytes[1] << 8))
+                    : (ushort)((unitBytes[0] << 8) | unitBytes[1]);
+
+            long cursor = currentStart;
+            ushort unit = DecodeUnit(bytes);
+            if (unit == 0x000A)
+            {
+                if (currentStart >= _dataOffset + 4)
+                {
+                    Span<byte> prevBytes = stackalloc byte[2];
+                    fs.Position = currentStart - 4;
+                    fs.ReadExactly(prevBytes);
+                    ushort previousUnit = DecodeUnit(prevBytes);
+                    cursor = previousUnit == 0x000D ? currentStart - 4 : currentStart - 2;
+                }
+                else
+                {
+                    cursor = currentStart - 2;
+                }
+            }
+            else if (unit == 0x000D)
+            {
+                cursor = currentStart - 2;
+            }
+            else
+            {
+                return _dataOffset;
+            }
+
+            if (cursor <= _dataOffset)
+            {
+                return _dataOffset;
+            }
+
+            return FindLineStartForOffset(cursor);
+        }
+
+        if (currentStart <= _dataOffset + 1)
+        {
+            return _dataOffset;
+        }
+
+        using (FileStream fs = OpenSourceStream(_filePath))
+        {
+            fs.Position = currentStart - 1;
+            int value = fs.ReadByte();
+            if (value < 0)
+            {
+                return _dataOffset;
+            }
+
+            long cursor = currentStart;
+            if (value == 0x0A)
+            {
+                if (currentStart >= _dataOffset + 2)
+                {
+                    fs.Position = currentStart - 2;
+                    int previousValue = fs.ReadByte();
+                    if (previousValue < 0)
+                    {
+                        return _dataOffset;
+                    }
+
+                    cursor = previousValue == 0x0D ? currentStart - 2 : currentStart - 1;
+                }
+                else
+                {
+                    cursor = currentStart - 1;
+                }
+            }
+            else if (value == 0x0D)
+            {
+                cursor = currentStart - 1;
+            }
+            else
+            {
+                return _dataOffset;
+            }
+
+            if (cursor <= _dataOffset)
+            {
+                return _dataOffset;
+            }
+
+            return FindLineStartForOffset(cursor);
+        }
+    }
+
+    private bool LoadViewportAt(long requestedTopOffset, int visibleLines)
+    {
+        visibleLines = Math.Max(1, visibleLines);
+        long normalizedTopOffset = NormalizeRequestedOffset(requestedTopOffset);
+        if (_viewportLoaded &&
+            normalizedTopOffset == _topOffset &&
+            visibleLines == _viewportVisibleLines)
+        {
+            return true;
+        }
+
+        _topOffset = normalizedTopOffset;
+        _viewportVisibleLines = visibleLines;
+        _viewportRows.Clear();
+        _viewportEndOffset = _topOffset;
+        _viewportLoaded = false;
+
+        if (!HasContent || _topOffset >= _fileSize)
+        {
+            _viewportLoaded = true;
+            return true;
+        }
+
+        using FileStream fs = OpenSourceStream(_filePath);
+        fs.Position = _topOffset;
+
+        if (CodeUnitSize == 2)
+        {
+            byte[] buffer = new byte[64 * 1024];
+            List<ushort> lineUnits = new();
+            bool littleEndian = _kind == FileEncodingKind.Utf16Le;
+            long currentLineStart = _topOffset;
+            long absoluteOffset = _topOffset;
+            bool pendingCR = false;
+            bool hasCarry = false;
+            byte carry = 0;
+
+            void EmitLine(long endOffset)
+            {
+                _viewportRows.Add(new ViewportRow(currentLineStart, endOffset, DecodeUtf16Line(lineUnits)));
+                lineUnits.Clear();
+                currentLineStart = endOffset;
+                _viewportEndOffset = endOffset;
+            }
+
+            while (true)
+            {
+                int read = fs.Read(buffer, 0, buffer.Length);
+                if (read == 0)
+                {
+                    break;
+                }
+
+                long chunkStart = absoluteOffset;
+                int index = 0;
+
+                if (hasCarry)
+                {
+                    ushort unit = littleEndian
+                        ? (ushort)(carry | (buffer[0] << 8))
+                        : (ushort)((carry << 8) | buffer[0]);
+                    long unitStart = chunkStart - 1;
+                    index = 1;
+                    hasCarry = false;
+
+                    if (pendingCR)
+                    {
+                        pendingCR = false;
+                        if (unit == 0x000A)
+                        {
+                            EmitLine(unitStart + 2);
+                            if (_viewportRows.Count >= visibleLines)
+                            {
+                                _viewportLoaded = true;
+                                return true;
+                            }
+
+                            continue;
+                        }
+
+                        EmitLine(unitStart);
+                        if (_viewportRows.Count >= visibleLines)
+                        {
+                            _viewportLoaded = true;
+                            return true;
+                        }
+                    }
+
+                    if (unit == 0x000D)
+                    {
+                        pendingCR = true;
+                    }
+                    else if (unit == 0x000A)
+                    {
+                        EmitLine(unitStart + 2);
+                        if (_viewportRows.Count >= visibleLines)
+                        {
+                            _viewportLoaded = true;
+                            return true;
+                        }
+                    }
+                    else
+                    {
+                        lineUnits.Add(unit);
+                    }
+                }
+
+                while (index + 1 < read && _viewportRows.Count < visibleLines)
+                {
+                    ushort unit = littleEndian
+                        ? (ushort)(buffer[index] | (buffer[index + 1] << 8))
+                        : (ushort)((buffer[index] << 8) | buffer[index + 1]);
+                    long unitStart = chunkStart + index;
+                    index += 2;
+
+                    if (pendingCR)
+                    {
+                        pendingCR = false;
+                        if (unit == 0x000A)
+                        {
+                            EmitLine(unitStart + 2);
+                            continue;
+                        }
+
+                        EmitLine(unitStart);
+                        if (_viewportRows.Count >= visibleLines)
+                        {
+                            break;
+                        }
+                    }
+
+                    if (unit == 0x000D)
+                    {
+                        pendingCR = true;
+                    }
+                    else if (unit == 0x000A)
+                    {
+                        EmitLine(unitStart + 2);
+                    }
+                    else
+                    {
+                        lineUnits.Add(unit);
+                    }
+                }
+
+                if (index < read)
+                {
+                    carry = buffer[index];
+                    hasCarry = true;
+                }
+
+                absoluteOffset += read;
+                if (_viewportRows.Count >= visibleLines)
+                {
+                    break;
+                }
+            }
+
+            if (pendingCR && _viewportRows.Count < visibleLines)
+            {
+                EmitLine(absoluteOffset);
+            }
+            else if (currentLineStart < _fileSize && _viewportRows.Count < visibleLines)
+            {
+                EmitLine(_fileSize);
+            }
+
+            if (_viewportRows.Count == 0)
+            {
+                _viewportEndOffset = _topOffset;
+            }
+
+            _viewportLoaded = true;
+            return true;
+        }
+
+        {
+            byte[] buffer = new byte[64 * 1024];
+            List<byte> lineBytes = new();
+            long currentLineStart = _topOffset;
+            long absoluteOffset = _topOffset;
+            bool pendingCR = false;
+
+            void EmitLine(long endOffset)
+            {
+                _viewportRows.Add(new ViewportRow(currentLineStart, endOffset, DecodeSingleByteLine(lineBytes)));
+                lineBytes.Clear();
+                currentLineStart = endOffset;
+                _viewportEndOffset = endOffset;
+            }
+
+            while (true)
+            {
+                int read = fs.Read(buffer, 0, buffer.Length);
+                if (read == 0)
+                {
+                    break;
+                }
+
+                long chunkStart = absoluteOffset;
+                int index = 0;
+                while (index < read && _viewportRows.Count < visibleLines)
+                {
+                    byte b = buffer[index];
+                    long byteOffset = chunkStart + index;
+
+                    if (pendingCR)
+                    {
+                        pendingCR = false;
+                        if (b == 0x0A)
+                        {
+                            index++;
+                            EmitLine(byteOffset + 1);
+                            continue;
+                        }
+
+                        EmitLine(byteOffset);
+                        if (_viewportRows.Count >= visibleLines)
+                        {
+                            break;
+                        }
+
+                        continue;
+                    }
+
+                    if (b == 0x0D)
+                    {
+                        pendingCR = true;
+                        index++;
+                        continue;
+                    }
+
+                    if (b == 0x0A)
+                    {
+                        index++;
+                        EmitLine(byteOffset + 1);
+                        continue;
+                    }
+
+                    lineBytes.Add(b);
+                    index++;
+                }
+
+                absoluteOffset += read;
+                if (_viewportRows.Count >= visibleLines)
+                {
+                    break;
+                }
+            }
+
+            if (pendingCR && _viewportRows.Count < visibleLines)
+            {
+                EmitLine(absoluteOffset);
+            }
+            else if (currentLineStart < _fileSize && _viewportRows.Count < visibleLines)
+            {
+                EmitLine(_fileSize);
+            }
+
+            if (_viewportRows.Count == 0)
+            {
+                _viewportEndOffset = _topOffset;
+            }
+
+            _viewportLoaded = true;
+            return true;
+        }
     }
 }

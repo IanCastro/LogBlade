@@ -4,11 +4,11 @@ Viewer Win32 direto em C# para o repo `mvp-csharp-nativeaot-win32`.
 
 ## O que ele faz
 
-- Abre um arquivo real pela linha de comando: `LogViewer.exe <path>`
-- Cria indice esparso com checkpoints a cada 4096 linhas
-- Decodifica so as linhas visiveis sob demanda
-- Mantem no maximo 300 linhas decodificadas em memoria
-- Usa Win32 + GDI para janela, pintura, scrollbar, mouse wheel e teclado
+- Abre um arquivo real pela linha de comando: `LogViewer.exe <path>`.
+- Cria a janela primeiro, mostra `Loading file...` e monta a primeira viewport em background.
+- Usa scroll offset-based: thumb grande por offset aproximado e navegacao fina por linha descoberta sob demanda.
+- Mantem somente a viewport visivel no caminho ativo; nao faz indice global por linha no startup.
+- Usa Win32 + GDI para janela, pintura, scrollbar, mouse wheel e teclado.
 
 ## Build normal
 
@@ -57,6 +57,7 @@ O `run.ps1` prefere o artefato do build normal e tambem aceita o publish de dist
 
 - Sem WPF, WinForms, Avalonia, MAUI ou WebView.
 - O viewer desenha direto com GDI via Win32 P/Invoke.
+- `Windows-1252` usa a implementacao local de [Windows1252Encoding.cs](/C:/Users/Ian/Documents/Code/LogReader/mvp-csharp-nativeaot-win32/src/Windows1252Encoding.cs), sem depender de provider global.
 - Cada execucao grava um log UTF-8 em `%LOCALAPPDATA%\LogReaderMvp\mvp-csharp-nativeaot-win32\logs`, com fallback para `%TEMP%\LogReaderMvp\mvp-csharp-nativeaot-win32\logs`.
 - Retencao de logs e best-effort e mantem os 20 mais recentes.
 - Falhas de startup e runtime sao fail-fast, visiveis e registradas antes do encerramento quando o log persistente esta disponivel.
