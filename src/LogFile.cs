@@ -525,75 +525,33 @@ internal sealed class LogFile : IDisposable
         long searchStart = Math.Max(_dataOffset, bounded - (BackSearchLimitChars * 4L));
         byte[] buffer = ReadWindow(searchStart, bounded);
 
-        List<long> runeStartOffsets = new();
-        List<int> runeCharsBefore = new();
-        List<(long OffsetAfterBreak, int CharsAfterBreak)> breaks = new();
-        int totalChars = 0;
-        int index = 0;
-
-        while (index < buffer.Length)
+        for (int i = buffer.Length; i > 0; i--)
         {
-            byte value = buffer[index];
-            if (value == 0x0D)
+            if (buffer[i - 1] is 0x0D or 0x0A)
             {
-                index++;
-                if (index < buffer.Length && buffer[index] == 0x0A)
-                {
-                    index++;
-                }
-
-                breaks.Add((searchStart + index, totalChars));
-                continue;
-            }
-
-            if (value == 0x0A)
-            {
-                index++;
-                breaks.Add((searchStart + index, totalChars));
-                continue;
-            }
-
-            runeStartOffsets.Add(searchStart + index);
-            runeCharsBefore.Add(totalChars);
-
-            int bytesConsumed = DecodeUtf8CharLength(buffer.AsSpan(index), out int charCount);
-            totalChars += charCount;
-            index += bytesConsumed;
-        }
-
-        for (int i = breaks.Count - 1; i >= 0; i--)
-        {
-            if (totalChars - breaks[i].CharsAfterBreak <= BackSearchLimitChars)
-            {
-                return new(breaks[i].OffsetAfterBreak, RealLineStartKind.TrueBreak);
+                return new(searchStart + i, RealLineStartKind.TrueBreak);
             }
         }
 
-        if (searchStart == _dataOffset && totalChars <= BackSearchLimitChars)
+        if (searchStart == _dataOffset)
         {
             return new(_dataOffset, RealLineStartKind.TrueBreak);
         }
 
-        if (runeStartOffsets.Count == 0)
+        // We didn't find a real break within the back-search limit. Fall back to a provisional start,
+        // but avoid starting in the middle of a UTF-8 sequence (continuation byte: 0b10xxxxxx).
+        int idx = 0;
+        while (idx < buffer.Length && (buffer[idx] & 0b1100_0000) == 0b1000_0000)
         {
-            return searchStart == _dataOffset
-                ? new(_dataOffset, RealLineStartKind.TrueBreak)
-                : new(searchStart, RealLineStartKind.SearchLimit);
+            idx++;
         }
 
-        int targetCharsBefore = Math.Max(0, totalChars - BackSearchLimitChars);
-        long provisionalStart = runeStartOffsets[0];
-        for (int i = 0; i < runeStartOffsets.Count; i++)
+        if (idx >= buffer.Length)
         {
-            if (runeCharsBefore[i] >= targetCharsBefore)
-            {
-                provisionalStart = runeStartOffsets[i];
-                break;
-            }
-
-            provisionalStart = runeStartOffsets[i];
+            return new(searchStart, RealLineStartKind.SearchLimit);
         }
 
+        long provisionalStart = searchStart + idx;
         if (provisionalStart <= _dataOffset)
         {
             return new(_dataOffset, RealLineStartKind.TrueBreak);
