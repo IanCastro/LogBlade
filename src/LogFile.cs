@@ -1,6 +1,7 @@
 using System;
 using System.Buffers;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Text;
 
@@ -516,7 +517,69 @@ internal sealed class LogFile : IDisposable
             return new(_dataOffset, RealLineStartKind.TrueBreak);
         }
 
-        return new(searchStart, RealLineStartKind.SearchLimit);
+        // We didn't find a real break within the back-search limit. Fall back to a provisional start,
+        // but avoid starting at a combining mark (Mn/Mc/Me) to reduce cases where the first rendered
+        // glyph is a diacritic without a base character.
+        int idx = 0;
+        while (idx + 1 < buffer.Length)
+        {
+            ushort unit0 = littleEndian
+                ? (ushort)(buffer[idx] | (buffer[idx + 1] << 8))
+                : (ushort)((buffer[idx] << 8) | buffer[idx + 1]);
+
+            Rune rune;
+            int unitsConsumed = 1;
+
+            if (char.IsLowSurrogate((char)unit0))
+            {
+                idx += 2;
+                continue;
+            }
+
+            if (char.IsHighSurrogate((char)unit0) && idx + 3 < buffer.Length)
+            {
+                ushort unit1 = littleEndian
+                    ? (ushort)(buffer[idx + 2] | (buffer[idx + 3] << 8))
+                    : (ushort)((buffer[idx + 2] << 8) | buffer[idx + 3]);
+
+                if (char.IsLowSurrogate((char)unit1))
+                {
+                    rune = new Rune(char.ConvertToUtf32((char)unit0, (char)unit1));
+                    unitsConsumed = 2;
+                }
+                else
+                {
+                    idx += 2;
+                    continue;
+                }
+            }
+            else if (char.IsHighSurrogate((char)unit0))
+            {
+                idx += 2;
+                continue;
+            }
+            else
+            {
+                rune = new Rune((char)unit0);
+            }
+
+            UnicodeCategory cat = Rune.GetUnicodeCategory(rune);
+            if (cat is UnicodeCategory.NonSpacingMark or UnicodeCategory.SpacingCombiningMark or UnicodeCategory.EnclosingMark)
+            {
+                idx += unitsConsumed * 2;
+                continue;
+            }
+
+            break;
+        }
+
+        long provisionalStart = AlignCodeUnitOffset(searchStart + idx);
+        if (provisionalStart <= _dataOffset)
+        {
+            return new(_dataOffset, RealLineStartKind.TrueBreak);
+        }
+
+        return new(provisionalStart, RealLineStartKind.SearchLimit);
     }
 
     private RealLineStartInfo FindUtf8RealLineStartContaining(long offset)
@@ -549,6 +612,26 @@ internal sealed class LogFile : IDisposable
         if (idx >= buffer.Length)
         {
             return new(searchStart, RealLineStartKind.SearchLimit);
+        }
+
+        // Avoid starting at a combining mark (Mn/Mc/Me) to reduce cases where the first rendered
+        // glyph is a diacritic without a base character.
+        while (idx < buffer.Length)
+        {
+            OperationStatus status = Rune.DecodeFromUtf8(buffer.AsSpan(idx), out Rune rune, out int consumed);
+            if (status != OperationStatus.Done || consumed <= 0)
+            {
+                break;
+            }
+
+            UnicodeCategory cat = Rune.GetUnicodeCategory(rune);
+            if (cat is UnicodeCategory.NonSpacingMark or UnicodeCategory.SpacingCombiningMark or UnicodeCategory.EnclosingMark)
+            {
+                idx += consumed;
+                continue;
+            }
+
+            break;
         }
 
         long provisionalStart = searchStart + idx;
