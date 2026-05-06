@@ -4,12 +4,23 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 
-internal enum FileEncodingKind
+public enum LogEncodingKind
 {
     Utf8,
     Utf16Le,
     Utf16Be,
     Windows1252
+}
+
+public readonly record struct DetectedEncodingInfo(LogEncodingKind Kind, Encoding Encoding, long DataOffset);
+
+public static class LogEncodingDetector
+{
+    public static DetectedEncodingInfo DetectEncoding(string path)
+    {
+        using FileStream fs = VisualRowReader.OpenSourceStream(path);
+        return VisualRowReader.DetectEncoding(fs);
+    }
 }
 
 internal enum RealLineStartKind
@@ -24,9 +35,10 @@ internal enum VisualStartKind
     ForcedWrap
 }
 
-internal sealed class LogFile : IDisposable
+public sealed class VisualRowReader : IDisposable
 {
-    internal const int SegmentChars = 4096;
+    public const int VisibleSegmentChars = 4096;
+    internal const int SegmentChars = VisibleSegmentChars;
     internal const int BackSearchSegments = 100;
     internal const int BackSearchLimitChars = SegmentChars * BackSearchSegments;
 
@@ -53,7 +65,7 @@ internal sealed class LogFile : IDisposable
     private readonly record struct VisualReadResult(ViewportRow Row, VisualPosition? NextPosition);
 
     private readonly string _filePath;
-    private readonly FileEncodingKind _kind;
+    private readonly LogEncodingKind _kind;
     private readonly Encoding _encoding;
     private readonly long _dataOffset;
     private readonly long _fileSize;
@@ -63,7 +75,7 @@ internal sealed class LogFile : IDisposable
     private int _viewportVisibleLines;
     private bool _viewportLoaded;
 
-    private LogFile(string filePath, FileEncodingKind kind, Encoding encoding, long dataOffset, long fileSize)
+    private VisualRowReader(string filePath, LogEncodingKind kind, Encoding encoding, long dataOffset, long fileSize)
     {
         _filePath = filePath;
         _kind = kind;
@@ -74,13 +86,25 @@ internal sealed class LogFile : IDisposable
         _viewportEndOffset = dataOffset;
     }
 
+    public VisualRowReader(string filePath, Encoding encoding, long dataOffset)
+        : this(
+            Path.GetFullPath(filePath),
+            InferKind(encoding, dataOffset),
+            encoding,
+            dataOffset,
+            new FileInfo(Path.GetFullPath(filePath)).Length)
+    {
+    }
+
     public string FilePath => _filePath;
     public long DataOffset => _dataOffset;
+    public LogEncodingKind Kind => _kind;
+    public Encoding Encoding => _encoding;
     public string EncodingName => _kind switch
     {
-        FileEncodingKind.Utf8 => "UTF-8 BOM",
-        FileEncodingKind.Utf16Le => "UTF-16 LE BOM",
-        FileEncodingKind.Utf16Be => "UTF-16 BE BOM",
+        LogEncodingKind.Utf8 => "UTF-8 BOM",
+        LogEncodingKind.Utf16Le => "UTF-16 LE BOM",
+        LogEncodingKind.Utf16Be => "UTF-16 BE BOM",
         _ => "Windows-1252"
     };
     public long FileSize => _fileSize;
@@ -88,40 +112,96 @@ internal sealed class LogFile : IDisposable
     public long ViewportEndOffset => _viewportEndOffset;
     public long ViewportBytes => _viewportEndOffset >= _topOffset ? _viewportEndOffset - _topOffset : 0;
     public bool HasContent => _fileSize > _dataOffset;
-    public IReadOnlyList<ViewportRow> ViewportRows => _viewportRows;
-
-    public static LogFile Open(string path)
+    public IReadOnlyList<string> CurrentRows
     {
-        AppLog.Instance.Info("file.open.begin", "begin", new LogField("path", path));
-        using FileStream fs = OpenSourceStream(path);
-        (FileEncodingKind Kind, Encoding Encoding, long DataOffset) detection;
-        try
+        get
         {
-            detection = DetectEncoding(fs);
-        }
-        catch (Exception ex)
-        {
-            AppLog.Instance.Error(
-                "file.open.failed",
-                "failed",
-                new LogField("path", path),
-                new LogField("stage", "encoding_detect_failed"),
-                new LogField("reason", ex.Message),
-                new LogField("type", ex.GetType().FullName ?? ex.GetType().Name));
-            throw;
-        }
+            string[] rows = new string[_viewportRows.Count];
+            for (int i = 0; i < _viewportRows.Count; i++)
+            {
+                rows[i] = _viewportRows[i].Text;
+            }
 
-        AppLog.Instance.Info(
-            "encoding.detected",
-            "detected",
-            new LogField("path", path),
-            new LogField("encoding", DescribeEncoding(detection.Kind)),
-            new LogField("dataOffset", detection.DataOffset.ToString()));
-
-        return new LogFile(path, detection.Kind, detection.Encoding, detection.DataOffset, fs.Length);
+            return rows;
+        }
     }
 
-    public bool EnsureViewport(int visibleLines)
+    internal IReadOnlyList<ViewportRow> ViewportRows => _viewportRows;
+
+    public IReadOnlyList<string> ReadNext(int count)
+    {
+        if (count <= 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        if (!_viewportLoaded || _viewportRows.Count == 0)
+        {
+            EnsureViewport(count);
+        }
+        else
+        {
+            ScrollByLinesForWorker(count, _viewportVisibleLines);
+        }
+
+        return CurrentRows;
+    }
+
+    public IReadOnlyList<string> ReadPrevious(int count)
+    {
+        if (count <= 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        if (!_viewportLoaded || _viewportRows.Count == 0)
+        {
+            EnsureViewport(count);
+        }
+        else
+        {
+            ScrollByLinesForWorker(-count, _viewportVisibleLines);
+        }
+
+        return CurrentRows;
+    }
+
+    public IReadOnlyList<string> ReadFromPercentage(double percentage, int count)
+    {
+        if (count <= 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        double clamped = Math.Clamp(percentage, 0d, 100d);
+        if (!HasContent)
+        {
+            _viewportVisibleLines = Math.Max(1, count);
+            _viewportRows.Clear();
+            _topOffset = _dataOffset;
+            _viewportEndOffset = _dataOffset;
+            _viewportLoaded = true;
+            return Array.Empty<string>();
+        }
+
+        if (clamped >= 100d)
+        {
+            ScrollEnd(count);
+            return CurrentRows;
+        }
+
+        long contentBytes = Math.Max(1, _fileSize - _dataOffset);
+        long requestedOffset = _dataOffset + (long)((clamped / 100d) * contentBytes);
+        ScrollToApproximateOffset(requestedOffset, count);
+        if (_viewportRows.Count < count && _viewportEndOffset >= _fileSize)
+        {
+            ScrollEnd(count);
+        }
+
+        return CurrentRows;
+    }
+
+    private bool EnsureViewport(int visibleLines)
     {
         if (_viewportLoaded && _viewportRows.Count > 0)
         {
@@ -131,7 +211,7 @@ internal sealed class LogFile : IDisposable
         return LoadViewportAt(DefaultTopPosition(), visibleLines);
     }
 
-    public bool ScrollLineDown(int visibleLines)
+    private bool ScrollLineDown(int visibleLines)
     {
         if (!EnsureViewport(visibleLines) || _viewportRows.Count == 0)
         {
@@ -151,7 +231,7 @@ internal sealed class LogFile : IDisposable
         return LoadViewportAt(_viewportEndOffset, visibleLines);
     }
 
-    public bool ScrollLineUp(int visibleLines)
+    private bool ScrollLineUp(int visibleLines)
     {
         if (!HasContent || !EnsureViewport(visibleLines) || _viewportRows.Count == 0)
         {
@@ -166,7 +246,7 @@ internal sealed class LogFile : IDisposable
         return LoadViewportAt(previous, visibleLines);
     }
 
-    public bool ScrollPageDown(int visibleLines)
+    private bool ScrollPageDown(int visibleLines)
     {
         if (!EnsureViewport(visibleLines) || _viewportRows.Count == 0)
         {
@@ -181,7 +261,7 @@ internal sealed class LogFile : IDisposable
         return LoadViewportAt(_viewportEndOffset, visibleLines);
     }
 
-    public bool ScrollPageUp(int visibleLines)
+    private bool ScrollPageUp(int visibleLines)
     {
         if (!HasContent || !EnsureViewport(visibleLines) || _viewportRows.Count == 0)
         {
@@ -203,9 +283,9 @@ internal sealed class LogFile : IDisposable
         return LoadViewportAt(nextTop, visibleLines);
     }
 
-    public bool ScrollHome(int visibleLines) => LoadViewportAt(DefaultTopPosition(), visibleLines);
+    private bool ScrollHome(int visibleLines) => LoadViewportAt(DefaultTopPosition(), visibleLines);
 
-    public bool ScrollEnd(int visibleLines)
+    private bool ScrollEnd(int visibleLines)
     {
         if (!HasContent)
         {
@@ -227,12 +307,12 @@ internal sealed class LogFile : IDisposable
         return LoadViewportAt(nextTop, visibleLines);
     }
 
-    public bool ScrollToApproximateOffset(long requestedOffset, int visibleLines) =>
+    private bool ScrollToApproximateOffset(long requestedOffset, int visibleLines) =>
         LoadViewportAt(LocateVisualPositionForOffset(requestedOffset), visibleLines);
 
-    internal LogFile CloneForWorker()
+    public VisualRowReader CloneForWorker()
     {
-        LogFile clone = new(_filePath, _kind, _encoding, _dataOffset, _fileSize)
+        VisualRowReader clone = new(_filePath, _kind, _encoding, _dataOffset, _fileSize)
         {
             _topOffset = _topOffset,
             _viewportEndOffset = _viewportEndOffset,
@@ -267,26 +347,12 @@ internal sealed class LogFile : IDisposable
     {
     }
 
-    private static FileStream OpenSourceStream(string path)
+    internal static FileStream OpenSourceStream(string path)
     {
-        try
-        {
-            return new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 16, FileOptions.SequentialScan);
-        }
-        catch (Exception ex)
-        {
-            AppLog.Instance.Error(
-                "file.open.failed",
-                "failed",
-                new LogField("path", path),
-                new LogField("stage", "open_failed"),
-                new LogField("reason", ex.Message),
-                new LogField("type", ex.GetType().FullName ?? ex.GetType().Name));
-            throw;
-        }
+        return new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 16, FileOptions.SequentialScan);
     }
 
-    private static (FileEncodingKind Kind, Encoding Encoding, long DataOffset) DetectEncoding(FileStream fs)
+    internal static DetectedEncodingInfo DetectEncoding(FileStream fs)
     {
         fs.Position = 0;
         Span<byte> sample = stackalloc byte[3];
@@ -295,31 +361,51 @@ internal sealed class LogFile : IDisposable
 
         if (read >= 3 && sample[0] == 0xEF && sample[1] == 0xBB && sample[2] == 0xBF)
         {
-            return (FileEncodingKind.Utf8, Encoding.UTF8, 3);
+            return new(LogEncodingKind.Utf8, Encoding.UTF8, 3);
         }
 
         if (read >= 2 && sample[0] == 0xFF && sample[1] == 0xFE)
         {
-            return (FileEncodingKind.Utf16Le, Encoding.Unicode, 2);
+            return new(LogEncodingKind.Utf16Le, Encoding.Unicode, 2);
         }
 
         if (read >= 2 && sample[0] == 0xFE && sample[1] == 0xFF)
         {
-            return (FileEncodingKind.Utf16Be, Encoding.BigEndianUnicode, 2);
+            return new(LogEncodingKind.Utf16Be, Encoding.BigEndianUnicode, 2);
         }
 
-        return (FileEncodingKind.Windows1252, Windows1252Encoding.Instance, 0);
+        return new(LogEncodingKind.Windows1252, Windows1252Encoding.Instance, 0);
     }
 
-    private static string DescribeEncoding(FileEncodingKind kind) => kind switch
+    private static LogEncodingKind InferKind(Encoding encoding, long dataOffset)
     {
-        FileEncodingKind.Utf8 => "UTF-8 BOM",
-        FileEncodingKind.Utf16Le => "UTF-16 LE BOM",
-        FileEncodingKind.Utf16Be => "UTF-16 BE BOM",
+        if (dataOffset == 3 && string.Equals(encoding.WebName, Encoding.UTF8.WebName, StringComparison.OrdinalIgnoreCase))
+        {
+            return LogEncodingKind.Utf8;
+        }
+
+        if (dataOffset == 2 && string.Equals(encoding.WebName, Encoding.Unicode.WebName, StringComparison.OrdinalIgnoreCase))
+        {
+            return LogEncodingKind.Utf16Le;
+        }
+
+        if (dataOffset == 2 && string.Equals(encoding.WebName, Encoding.BigEndianUnicode.WebName, StringComparison.OrdinalIgnoreCase))
+        {
+            return LogEncodingKind.Utf16Be;
+        }
+
+        return LogEncodingKind.Windows1252;
+    }
+
+    private static string DescribeEncoding(LogEncodingKind kind) => kind switch
+    {
+        LogEncodingKind.Utf8 => "UTF-8 BOM",
+        LogEncodingKind.Utf16Le => "UTF-16 LE BOM",
+        LogEncodingKind.Utf16Be => "UTF-16 BE BOM",
         _ => "Windows-1252"
     };
 
-    private int CodeUnitSize => _kind is FileEncodingKind.Utf16Le or FileEncodingKind.Utf16Be ? 2 : 1;
+    private int CodeUnitSize => _kind is LogEncodingKind.Utf16Le or LogEncodingKind.Utf16Be ? 2 : 1;
 
     private static bool IsLineBreakUnit(ushort unit) => unit is 0x000D or 0x000A;
 
@@ -428,7 +514,7 @@ internal sealed class LogFile : IDisposable
             while (cursor >= _dataOffset + 2)
             {
                 byte[] bytes = ReadExact(cursor - 2, 2);
-                ushort unit = _kind == FileEncodingKind.Utf16Le
+                ushort unit = _kind == LogEncodingKind.Utf16Le
                     ? (ushort)(bytes[0] | (bytes[1] << 8))
                     : (ushort)((bytes[0] << 8) | bytes[1]);
                 if (!IsLineBreakUnit(unit))
@@ -466,8 +552,8 @@ internal sealed class LogFile : IDisposable
 
         return _kind switch
         {
-            FileEncodingKind.Utf16Le or FileEncodingKind.Utf16Be => FindUtf16RealLineStartContaining(offset),
-            FileEncodingKind.Utf8 => FindUtf8RealLineStartContaining(offset),
+            LogEncodingKind.Utf16Le or LogEncodingKind.Utf16Be => FindUtf16RealLineStartContaining(offset),
+            LogEncodingKind.Utf8 => FindUtf8RealLineStartContaining(offset),
             _ => FindSingleByteRealLineStartContaining(offset)
         };
     }
@@ -498,7 +584,7 @@ internal sealed class LogFile : IDisposable
         long bounded = AlignCodeUnitOffset(Math.Min(Math.Max(offset, _dataOffset), _fileSize));
         long searchStart = AlignCodeUnitOffset(Math.Max(_dataOffset, bounded - (BackSearchLimitChars * 2L)));
         byte[] buffer = ReadWindow(searchStart, bounded);
-        bool littleEndian = _kind == FileEncodingKind.Utf16Le;
+        bool littleEndian = _kind == LogEncodingKind.Utf16Le;
 
         for (int i = buffer.Length; i >= 2; i -= 2)
         {
@@ -566,7 +652,7 @@ internal sealed class LogFile : IDisposable
 
         return _kind switch
         {
-            FileEncodingKind.Utf16Le or FileEncodingKind.Utf16Be => FindPreviousUtf16RealLineStart(currentRealLineStart),
+            LogEncodingKind.Utf16Le or LogEncodingKind.Utf16Be => FindPreviousUtf16RealLineStart(currentRealLineStart),
             _ => FindPreviousSingleByteRealLineStart(currentRealLineStart)
         };
     }
@@ -624,7 +710,7 @@ internal sealed class LogFile : IDisposable
         }
 
         long cursor;
-        bool littleEndian = _kind == FileEncodingKind.Utf16Le;
+        bool littleEndian = _kind == LogEncodingKind.Utf16Le;
         using (FileStream fs = OpenSourceStream(_filePath))
         {
             fs.Position = currentRealLineStart - 2;
@@ -863,8 +949,8 @@ internal sealed class LogFile : IDisposable
     private VisualReadResult ReadVisualRow(FileStream fs, VisualPosition position) =>
         _kind switch
         {
-            FileEncodingKind.Utf16Le or FileEncodingKind.Utf16Be => ReadUtf16VisualRow(fs, position),
-            FileEncodingKind.Utf8 => ReadUtf8VisualRow(fs, position),
+            LogEncodingKind.Utf16Le or LogEncodingKind.Utf16Be => ReadUtf16VisualRow(fs, position),
+            LogEncodingKind.Utf8 => ReadUtf8VisualRow(fs, position),
             _ => ReadSingleByteVisualRow(fs, position)
         };
 
@@ -990,7 +1076,7 @@ internal sealed class LogFile : IDisposable
     private VisualReadResult ReadUtf16VisualRow(FileStream fs, VisualPosition position)
     {
         List<ushort> lineUnits = new(Math.Min(SegmentChars, 256));
-        bool littleEndian = _kind == FileEncodingKind.Utf16Le;
+        bool littleEndian = _kind == LogEncodingKind.Utf16Le;
         byte[] unitBytes = new byte[2];
         while (fs.Position + 1 < _fileSize)
         {

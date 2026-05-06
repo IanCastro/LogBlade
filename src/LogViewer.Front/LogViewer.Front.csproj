@@ -1,4 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\LogViewer.Back\LogViewer.Back.csproj" />
+  </ItemGroup>
+
   <PropertyGroup>
     <AssemblyName>LogViewer-CSharp</AssemblyName>
     <OutputType>WinExe</OutputType>

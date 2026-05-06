@@ -11,7 +11,7 @@ $src = Join-Path $root 'src'
 $artifacts = Join-Path $root 'artifacts'
 $publish = Join-Path $artifacts 'publish'
 $aotPublish = Join-Path $artifacts 'publish-aot'
-$project = Join-Path $src 'LogViewer.csproj'
+$project = Join-Path $src 'LogViewer.Front\LogViewer.Front.csproj'
 
 New-Item -ItemType Directory -Force -Path $artifacts, $publish, $aotPublish, $dotnetHome, $dotnetTools, $appData, $nugetPackages, $nugetHttpCache | Out-Null
 
