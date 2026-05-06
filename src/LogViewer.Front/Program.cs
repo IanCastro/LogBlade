@@ -78,6 +78,8 @@ internal sealed class ViewerWindow
     private const int WheelLinesPerNotch = 3;
     private const int ScrollRange = 1_000_000;
     private const int VerticalScrollVirtualRows = 4000;
+    private const int FutureSearchBarNominalHeight = 32;
+    private const int FutureSearchResultsNominalHeight = 180;
     private readonly string _path;
     private readonly string _titleSuffix;
     private IntPtr _hwnd;
@@ -85,8 +87,6 @@ internal sealed class ViewerWindow
     private GCHandle _selfHandle;
     private int _lineHeight = 16;
     private int _charWidth = 8;
-    private int _clientWidth;
-    private int _clientHeight;
     private int _visibleColumnCount = 1;
     private int _xOffsetChars;
     private long _visibleLineCount = 1;
@@ -94,12 +94,19 @@ internal sealed class ViewerWindow
     private bool _closing;
     private string _statusText = "Loading file...";
     private VisualRowReader? _reader;
+    private WindowLayout _layout;
     private long _nextViewportRequestId;
     private long _latestViewportRequestId;
     private bool _viewportWorkerRunning;
     private ViewportRequest? _pendingViewportRequest;
 
     private static readonly NativeMethods.WindowProc s_wndProc = WindowProc;
+
+    private readonly record struct WindowLayout(
+        NativeMethods.RECT ClientRect,
+        NativeMethods.RECT ViewerRect,
+        NativeMethods.RECT FutureSearchBarRect,
+        NativeMethods.RECT FutureSearchResultsRect);
 
     public ViewerWindow(string path)
     {
@@ -296,6 +303,7 @@ internal sealed class ViewerWindow
         }
 
         MeasureFont();
+        RecalculateLayout();
         UpdateScrollBar();
     }
 
@@ -567,10 +575,8 @@ internal sealed class ViewerWindow
 
     private void OnSize()
     {
-        NativeMethods.GetClientRect(_hwnd, out NativeMethods.RECT rect);
-        _clientWidth = Math.Max(0, rect.right - rect.left);
-        _clientHeight = rect.bottom - rect.top;
         long previousVisibleLineCount = _visibleLineCount;
+        RecalculateLayout();
         UpdateScrollBar();
         if (_reader is not null &&
             _reader.HasContent &&
@@ -752,8 +758,7 @@ internal sealed class ViewerWindow
             return;
         }
 
-        _visibleLineCount = Math.Max(1, _clientHeight / Math.Max(1, _lineHeight));
-        _visibleColumnCount = Math.Max(1, _clientWidth / Math.Max(1, _charWidth));
+        UpdateViewerMetrics();
         int horizontalMax = Math.Max(0, VisualRowReader.VisibleSegmentChars - _visibleColumnCount);
         _xOffsetChars = Math.Clamp(_xOffsetChars, 0, horizontalMax);
 
@@ -812,41 +817,8 @@ internal sealed class ViewerWindow
         IntPtr oldFont = NativeMethods.SelectObject(hdc, _font);
         NativeMethods.SetBkMode(hdc, NativeMethods.TRANSPARENT);
         NativeMethods.SetTextColor(hdc, NativeMethods.RGB(0, 0, 0));
-
-        NativeMethods.RECT client;
-        NativeMethods.GetClientRect(_hwnd, out client);
-
-        NativeMethods.FillRect(hdc, ref client, NativeMethods.GetSysColorBrush(NativeMethods.COLOR_WINDOW));
-
-        int y = 0;
-        int visibleNonEmptyLines = 0;
-        if (_reader is null)
-        {
-            NativeMethods.TextOutW(hdc, 0, y, _statusText, _statusText.Length);
-        }
-        else if (!_reader.HasContent)
-        {
-            string empty = "(empty file)";
-            NativeMethods.TextOutW(hdc, 0, y, empty, empty.Length);
-        }
-        else
-        {
-            foreach (string row in _reader.CurrentRows)
-            {
-                string visibleText = SliceVisibleText(row);
-                if (visibleText.Length > 0)
-                {
-                    NativeMethods.TextOutW(hdc, 0, y, visibleText, visibleText.Length);
-                }
-
-                if (!string.IsNullOrEmpty(visibleText))
-                {
-                    visibleNonEmptyLines++;
-                }
-
-                y += _lineHeight;
-            }
-        }
+        PaintWindowBackground(hdc);
+        int visibleNonEmptyLines = PaintViewerContent(hdc, _layout.ViewerRect);
 
         NativeMethods.SelectObject(hdc, oldFont);
         NativeMethods.EndPaint(_hwnd, ref ps);
@@ -876,6 +848,68 @@ internal sealed class ViewerWindow
             new LogField("topOffset", _reader.TopOffset.ToString()),
             new LogField("visibleLines", Math.Max(1, _visibleLineCount).ToString()),
             new LogField("viewportBytes", _reader.ViewportBytes.ToString()));
+    }
+
+    private void RecalculateLayout()
+    {
+        NativeMethods.GetClientRect(_hwnd, out NativeMethods.RECT clientRect);
+        _layout = new WindowLayout(
+            ClientRect: clientRect,
+            ViewerRect: clientRect,
+            FutureSearchBarRect: CreateZeroRect(),
+            FutureSearchResultsRect: CreateZeroRect());
+    }
+
+    private void UpdateViewerMetrics()
+    {
+        int viewerWidth = GetRectWidth(_layout.ViewerRect);
+        int viewerHeight = GetRectHeight(_layout.ViewerRect);
+        _visibleLineCount = Math.Max(1, viewerHeight / Math.Max(1, _lineHeight));
+        _visibleColumnCount = Math.Max(1, viewerWidth / Math.Max(1, _charWidth));
+    }
+
+    private void PaintWindowBackground(IntPtr hdc)
+    {
+        NativeMethods.RECT clientRect = _layout.ClientRect;
+        NativeMethods.FillRect(hdc, ref clientRect, NativeMethods.GetSysColorBrush(NativeMethods.COLOR_WINDOW));
+    }
+
+    private int PaintViewerContent(IntPtr hdc, NativeMethods.RECT viewerRect)
+    {
+        int x = viewerRect.left;
+        int y = viewerRect.top;
+        int visibleNonEmptyLines = 0;
+
+        if (_reader is null)
+        {
+            NativeMethods.TextOutW(hdc, x, y, _statusText, _statusText.Length);
+            return visibleNonEmptyLines;
+        }
+
+        if (!_reader.HasContent)
+        {
+            string empty = "(empty file)";
+            NativeMethods.TextOutW(hdc, x, y, empty, empty.Length);
+            return visibleNonEmptyLines;
+        }
+
+        foreach (string row in _reader.CurrentRows)
+        {
+            string visibleText = SliceVisibleText(row);
+            if (visibleText.Length > 0)
+            {
+                NativeMethods.TextOutW(hdc, x, y, visibleText, visibleText.Length);
+                visibleNonEmptyLines++;
+            }
+
+            y += _lineHeight;
+            if (y >= viewerRect.bottom)
+            {
+                break;
+            }
+        }
+
+        return visibleNonEmptyLines;
     }
 
     private void SetHorizontalOffset(int requestedOffset)
@@ -939,6 +973,12 @@ internal sealed class ViewerWindow
         long topBytes = Math.Clamp(_reader.TopOffset - _reader.DataOffset, 0, contentBytes);
         return (topBytes * 100d) / contentBytes;
     }
+
+    private static NativeMethods.RECT CreateZeroRect() => new();
+
+    private static int GetRectWidth(NativeMethods.RECT rect) => Math.Max(0, rect.right - rect.left);
+
+    private static int GetRectHeight(NativeMethods.RECT rect) => Math.Max(0, rect.bottom - rect.top);
 }
 
 internal sealed class OpenWorkerResult
