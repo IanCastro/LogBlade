@@ -326,24 +326,7 @@ public sealed class VisualRowReader : IDisposable
 
     private bool ScrollPageUp(int visibleLines)
     {
-        if (!HasContent || !EnsureViewport(visibleLines) || _viewportRows.Count == 0)
-        {
-            return false;
-        }
-
-        VisualPosition nextTop = ToVisualPosition(_viewportRows[0]);
-        int steps = Math.Max(1, visibleLines);
-        for (int i = 0; i < steps; i++)
-        {
-            if (!TryGetPreviousVisualPosition(nextTop, out VisualPosition previous))
-            {
-                break;
-            }
-
-            nextTop = previous;
-        }
-
-        return LoadViewportAt(nextTop, visibleLines);
+        return ScrollUpByVisualRows(Math.Max(1, visibleLines), visibleLines);
     }
 
     private bool ScrollHome(int visibleLines) => LoadViewportAt(DefaultTopPosition(), visibleLines);
@@ -756,75 +739,73 @@ public sealed class VisualRowReader : IDisposable
 
     private RealLineStartInfo FindPreviousSingleByteRealLineStart(FileStream fs, long currentRealLineStart)
     {
+        long cursor;
+        fs.Position = currentRealLineStart - 1;
+        int value = fs.ReadByte();
+        if (value < 0)
         {
-            long cursor;
-            fs.Position = currentRealLineStart - 1;
-            int value = fs.ReadByte();
-            if (value < 0)
-            {
-                return new(_dataOffset, RealLineStartKind.TrueBreak);
-            }
-
-            if (value == 0x0A)
-            {
-                long breakStart = currentRealLineStart - 1;
-                if (currentRealLineStart >= _dataOffset + 2)
-                {
-                    fs.Position = currentRealLineStart - 2;
-                    int previousValue = fs.ReadByte();
-                    if (previousValue == 0x0D)
-                    {
-                        breakStart = currentRealLineStart - 2;
-                    }
-                }
-
-                cursor = breakStart - 1;
-            }
-            else if (value == 0x0D)
-            {
-                cursor = currentRealLineStart - 2;
-            }
-            else
-            {
-                cursor = currentRealLineStart - 1;
-            }
-
-            if (cursor < _dataOffset)
-            {
-                return new(_dataOffset, RealLineStartKind.TrueBreak);
-            }
-
-            long bounded = Math.Min(Math.Max(cursor, _dataOffset), _fileSize);
-            long searchStart = _kind == LogEncodingKind.Utf8
-                ? Math.Max(_dataOffset, bounded - (BackSearchLimitChars * 4L))
-                : Math.Max(_dataOffset, bounded - BackSearchLimitChars);
-
-            if (TryFindPreviousSingleByteBreakByBlocks(fs, searchStart, bounded, out long lineStart))
-            {
-                return new(lineStart, RealLineStartKind.TrueBreak);
-            }
-
-            if (searchStart == _dataOffset)
-            {
-                return new(_dataOffset, RealLineStartKind.TrueBreak);
-            }
-
-            if (_kind != LogEncodingKind.Utf8)
-            {
-                return new(searchStart, RealLineStartKind.SearchLimit);
-            }
-
-            long prefixEnd = Math.Min(bounded, searchStart + Utf8SearchLimitProbeBytes);
-            byte[] prefix = ReadWindow(fs, searchStart, prefixEnd);
-            int idx = AdvanceToValidUtf8Start(prefix);
-            long provisionalStart = searchStart + idx;
-            if (provisionalStart <= _dataOffset)
-            {
-                return new(_dataOffset, RealLineStartKind.TrueBreak);
-            }
-
-            return new(provisionalStart, RealLineStartKind.SearchLimit);
+            return new(_dataOffset, RealLineStartKind.TrueBreak);
         }
+
+        if (value == 0x0A)
+        {
+            long breakStart = currentRealLineStart - 1;
+            if (currentRealLineStart >= _dataOffset + 2)
+            {
+                fs.Position = currentRealLineStart - 2;
+                int previousValue = fs.ReadByte();
+                if (previousValue == 0x0D)
+                {
+                    breakStart = currentRealLineStart - 2;
+                }
+            }
+
+            cursor = breakStart - 1;
+        }
+        else if (value == 0x0D)
+        {
+            cursor = currentRealLineStart - 2;
+        }
+        else
+        {
+            cursor = currentRealLineStart - 1;
+        }
+
+        if (cursor < _dataOffset)
+        {
+            return new(_dataOffset, RealLineStartKind.TrueBreak);
+        }
+
+        long bounded = Math.Min(Math.Max(cursor, _dataOffset), _fileSize);
+        long searchStart = _kind == LogEncodingKind.Utf8
+            ? Math.Max(_dataOffset, bounded - (BackSearchLimitChars * 4L))
+            : Math.Max(_dataOffset, bounded - BackSearchLimitChars);
+
+        if (TryFindPreviousSingleByteBreakByBlocks(fs, searchStart, bounded, out long lineStart))
+        {
+            return new(lineStart, RealLineStartKind.TrueBreak);
+        }
+
+        if (searchStart == _dataOffset)
+        {
+            return new(_dataOffset, RealLineStartKind.TrueBreak);
+        }
+
+        if (_kind != LogEncodingKind.Utf8)
+        {
+            return new(searchStart, RealLineStartKind.SearchLimit);
+        }
+
+        long prefixEnd = Math.Min(bounded, searchStart + Utf8SearchLimitProbeBytes);
+        byte[] prefix = ReadWindow(fs, searchStart, prefixEnd);
+        int idx = AdvanceToValidUtf8Start(prefix);
+        long provisionalStart = searchStart + idx;
+        if (provisionalStart <= _dataOffset)
+        {
+            return new(_dataOffset, RealLineStartKind.TrueBreak);
+        }
+
+        return new(provisionalStart, RealLineStartKind.SearchLimit);
     }
 
     private RealLineStartInfo FindPreviousUtf16RealLineStart(long currentRealLineStart)
@@ -848,73 +829,71 @@ public sealed class VisualRowReader : IDisposable
         }
 
         bool littleEndian = _kind == LogEncodingKind.Utf16Le;
+        long cursor;
+        fs.Position = currentRealLineStart - 2;
+        Span<byte> bytes = stackalloc byte[2];
+        fs.ReadExactly(bytes);
+        ushort unit = littleEndian
+            ? (ushort)(bytes[0] | (bytes[1] << 8))
+            : (ushort)((bytes[0] << 8) | bytes[1]);
+
+        if (unit == 0x000A)
         {
-            long cursor;
-            fs.Position = currentRealLineStart - 2;
-            Span<byte> bytes = stackalloc byte[2];
-            fs.ReadExactly(bytes);
-            ushort unit = littleEndian
-                ? (ushort)(bytes[0] | (bytes[1] << 8))
-                : (ushort)((bytes[0] << 8) | bytes[1]);
-
-            if (unit == 0x000A)
+            long breakStart = currentRealLineStart - 2;
+            if (currentRealLineStart >= _dataOffset + 4)
             {
-                long breakStart = currentRealLineStart - 2;
-                if (currentRealLineStart >= _dataOffset + 4)
+                fs.Position = currentRealLineStart - 4;
+                Span<byte> prevBytes = stackalloc byte[2];
+                fs.ReadExactly(prevBytes);
+                ushort previousUnit = littleEndian
+                    ? (ushort)(prevBytes[0] | (prevBytes[1] << 8))
+                    : (ushort)((prevBytes[0] << 8) | prevBytes[1]);
+                if (previousUnit == 0x000D)
                 {
-                    fs.Position = currentRealLineStart - 4;
-                    Span<byte> prevBytes = stackalloc byte[2];
-                    fs.ReadExactly(prevBytes);
-                    ushort previousUnit = littleEndian
-                        ? (ushort)(prevBytes[0] | (prevBytes[1] << 8))
-                        : (ushort)((prevBytes[0] << 8) | prevBytes[1]);
-                    if (previousUnit == 0x000D)
-                    {
-                        breakStart = currentRealLineStart - 4;
-                    }
+                    breakStart = currentRealLineStart - 4;
                 }
-
-                cursor = breakStart - 2;
-            }
-            else if (unit == 0x000D)
-            {
-                cursor = currentRealLineStart - 4;
-            }
-            else
-            {
-                cursor = currentRealLineStart - 2;
             }
 
-            if (cursor < _dataOffset)
-            {
-                return new(_dataOffset, RealLineStartKind.TrueBreak);
-            }
-
-            long bounded = AlignCodeUnitOffset(Math.Min(Math.Max(cursor, _dataOffset), _fileSize));
-            long searchStart = AlignCodeUnitOffset(Math.Max(_dataOffset, bounded - (BackSearchLimitChars * 2L)));
-
-            if (TryFindPreviousUtf16BreakByBlocks(fs, searchStart, bounded, littleEndian, out long lineStart))
-            {
-                return new(lineStart, RealLineStartKind.TrueBreak);
-            }
-
-            if (searchStart == _dataOffset)
-            {
-                return new(_dataOffset, RealLineStartKind.TrueBreak);
-            }
-
-            long prefixEnd = AlignCodeUnitOffset(Math.Min(bounded, searchStart + Utf16SearchLimitProbeBytes));
-            byte[] prefix = ReadWindow(fs, searchStart, prefixEnd);
-            int idx = AdvanceToValidUtf16Start(prefix, littleEndian);
-
-            long provisionalStart = AlignCodeUnitOffset(searchStart + idx);
-            if (provisionalStart <= _dataOffset)
-            {
-                return new(_dataOffset, RealLineStartKind.TrueBreak);
-            }
-
-            return new(provisionalStart, RealLineStartKind.SearchLimit);
+            cursor = breakStart - 2;
         }
+        else if (unit == 0x000D)
+        {
+            cursor = currentRealLineStart - 4;
+        }
+        else
+        {
+            cursor = currentRealLineStart - 2;
+        }
+
+        if (cursor < _dataOffset)
+        {
+            return new(_dataOffset, RealLineStartKind.TrueBreak);
+        }
+
+        long bounded = AlignCodeUnitOffset(Math.Min(Math.Max(cursor, _dataOffset), _fileSize));
+        long searchStart = AlignCodeUnitOffset(Math.Max(_dataOffset, bounded - (BackSearchLimitChars * 2L)));
+
+        if (TryFindPreviousUtf16BreakByBlocks(fs, searchStart, bounded, littleEndian, out long lineStart))
+        {
+            return new(lineStart, RealLineStartKind.TrueBreak);
+        }
+
+        if (searchStart == _dataOffset)
+        {
+            return new(_dataOffset, RealLineStartKind.TrueBreak);
+        }
+
+        long prefixEnd = AlignCodeUnitOffset(Math.Min(bounded, searchStart + Utf16SearchLimitProbeBytes));
+        byte[] prefix = ReadWindow(fs, searchStart, prefixEnd);
+        int idx = AdvanceToValidUtf16Start(prefix, littleEndian);
+
+        long provisionalStart = AlignCodeUnitOffset(searchStart + idx);
+        if (provisionalStart <= _dataOffset)
+        {
+            return new(_dataOffset, RealLineStartKind.TrueBreak);
+        }
+
+        return new(provisionalStart, RealLineStartKind.SearchLimit);
     }
 
     private List<RealLineStartInfo> CollectPreviousRealLineStarts(FileStream fs, long currentRealLineStart, int maxRealLines)
@@ -1074,7 +1053,6 @@ public sealed class VisualRowReader : IDisposable
 
     private VisualPosition LocateLastVisualPositionOfRealLine(RealLineStartInfo realLineStart)
     {
-        VisualPosition current = new(realLineStart.StartOffset, realLineStart.StartOffset, realLineStart.Kind, VisualStartKind.RealStart, 0);
         using FileStream fs = OpenSourceStream(_filePath);
         return LocateLastVisualPositionOfRealLine(fs, realLineStart);
     }
