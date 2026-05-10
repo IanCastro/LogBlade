@@ -161,9 +161,13 @@ public sealed class VisualRowReader : IDisposable
         {
             EnsureViewport(count);
         }
-        else
+        else if (count == 1)
         {
             ScrollByLinesForWorker(-count, _viewportVisibleLines);
+        }
+        else
+        {
+            ScrollUpByVisualRows(count, _viewportVisibleLines);
         }
 
         return CurrentRows;
@@ -247,6 +251,62 @@ public sealed class VisualRowReader : IDisposable
         }
 
         return LoadViewportAt(previous, visibleLines);
+    }
+
+    private bool ScrollUpByVisualRows(int rowsToMove, int visibleLines)
+    {
+        if (rowsToMove <= 0)
+        {
+            return EnsureViewport(visibleLines);
+        }
+
+        if (!HasContent || !EnsureViewport(visibleLines) || _viewportRows.Count == 0)
+        {
+            return false;
+        }
+
+        using FileStream fs = OpenSourceStream(_filePath);
+        VisualPosition current = NormalizePreviousNavigationStart(ToVisualPosition(_viewportRows[0]));
+        int remainingRows = rowsToMove;
+
+        if (current.VisualStartKind == VisualStartKind.ForcedWrap && current.SegmentIndex > 0)
+        {
+            int stepsWithinLine = Math.Min(remainingRows, current.SegmentIndex);
+            current = GetVisualPositionForSegment(fs, current.RealLineStartOffset, current.RealLineStartKind, current.SegmentIndex - stepsWithinLine);
+            remainingRows -= stepsWithinLine;
+            if (remainingRows == 0)
+            {
+                return LoadViewportAt(current, visibleLines);
+            }
+        }
+
+        List<RealLineStartInfo> previousLines = CollectPreviousRealLineStarts(fs, current.RealLineStartOffset, remainingRows);
+        if (previousLines.Count == 0)
+        {
+            return false;
+        }
+
+        foreach (RealLineStartInfo realLineStart in previousLines)
+        {
+            VisualPosition lastSegment = LocateLastVisualPositionOfRealLine(fs, realLineStart);
+            int segmentCount = lastSegment.SegmentIndex + 1;
+            if (remainingRows <= segmentCount)
+            {
+                int targetSegmentIndex = segmentCount - remainingRows;
+                VisualPosition targetTop = GetVisualPositionForSegment(fs, realLineStart.StartOffset, realLineStart.Kind, targetSegmentIndex);
+                return LoadViewportAt(targetTop, visibleLines);
+            }
+
+            remainingRows -= segmentCount;
+        }
+
+        RealLineStartInfo earliest = previousLines[^1];
+        return LoadViewportAt(new VisualPosition(
+            earliest.StartOffset,
+            earliest.StartOffset,
+            earliest.Kind,
+            VisualStartKind.RealStart,
+            0), visibleLines);
     }
 
     private bool ScrollPageDown(int visibleLines)
@@ -690,6 +750,13 @@ public sealed class VisualRowReader : IDisposable
     {
         using (FileStream fs = OpenSourceStream(_filePath))
         {
+            return FindPreviousSingleByteRealLineStart(fs, currentRealLineStart);
+        }
+    }
+
+    private RealLineStartInfo FindPreviousSingleByteRealLineStart(FileStream fs, long currentRealLineStart)
+    {
+        {
             long cursor;
             fs.Position = currentRealLineStart - 1;
             int value = fs.ReadByte();
@@ -767,8 +834,20 @@ public sealed class VisualRowReader : IDisposable
             return new(_dataOffset, RealLineStartKind.TrueBreak);
         }
 
-        bool littleEndian = _kind == LogEncodingKind.Utf16Le;
         using (FileStream fs = OpenSourceStream(_filePath))
+        {
+            return FindPreviousUtf16RealLineStart(fs, currentRealLineStart);
+        }
+    }
+
+    private RealLineStartInfo FindPreviousUtf16RealLineStart(FileStream fs, long currentRealLineStart)
+    {
+        if (currentRealLineStart <= _dataOffset + 1)
+        {
+            return new(_dataOffset, RealLineStartKind.TrueBreak);
+        }
+
+        bool littleEndian = _kind == LogEncodingKind.Utf16Le;
         {
             long cursor;
             fs.Position = currentRealLineStart - 2;
@@ -836,6 +915,30 @@ public sealed class VisualRowReader : IDisposable
 
             return new(provisionalStart, RealLineStartKind.SearchLimit);
         }
+    }
+
+    private List<RealLineStartInfo> CollectPreviousRealLineStarts(FileStream fs, long currentRealLineStart, int maxRealLines)
+    {
+        List<RealLineStartInfo> starts = new(Math.Max(0, maxRealLines));
+        long scanFrom = currentRealLineStart;
+        for (int i = 0; i < maxRealLines; i++)
+        {
+            RealLineStartInfo previous = _kind switch
+            {
+                LogEncodingKind.Utf16Le or LogEncodingKind.Utf16Be => FindPreviousUtf16RealLineStart(fs, scanFrom),
+                _ => FindPreviousSingleByteRealLineStart(fs, scanFrom)
+            };
+
+            if (previous.StartOffset >= scanFrom)
+            {
+                break;
+            }
+
+            starts.Add(previous);
+            scanFrom = previous.StartOffset;
+        }
+
+        return starts;
     }
 
     private static bool TryFindPreviousSingleByteBreakByBlocks(FileStream fs, long searchStart, long scanEndExclusive, out long lineStart)
@@ -956,22 +1059,7 @@ public sealed class VisualRowReader : IDisposable
             return true;
         }
 
-        if (current.VisualStartKind == VisualStartKind.RealStart && current.RealLineStartKind == RealLineStartKind.SearchLimit)
-        {
-            RealLineStartInfo correctedRealStart = FindPreviousRealLineStart(current.RealLineStartOffset);
-            if (correctedRealStart.StartOffset < current.RealLineStartOffset)
-            {
-                VisualPosition correctedCurrent = LocateVisualPositionForOffset(current.StartOffset, correctedRealStart);
-                if (correctedCurrent.StartOffset != current.StartOffset ||
-                    correctedCurrent.RealLineStartOffset != current.RealLineStartOffset ||
-                    correctedCurrent.RealLineStartKind != current.RealLineStartKind ||
-                    correctedCurrent.VisualStartKind != current.VisualStartKind ||
-                    correctedCurrent.SegmentIndex != current.SegmentIndex)
-                {
-                    return TryGetPreviousVisualPosition(correctedCurrent, out previous);
-                }
-            }
-        }
+        current = NormalizePreviousNavigationStart(current);
 
         RealLineStartInfo previousRealLine = FindPreviousRealLineStart(current.RealLineStartOffset);
         if (previousRealLine.StartOffset == current.RealLineStartOffset)
@@ -988,6 +1076,12 @@ public sealed class VisualRowReader : IDisposable
     {
         VisualPosition current = new(realLineStart.StartOffset, realLineStart.StartOffset, realLineStart.Kind, VisualStartKind.RealStart, 0);
         using FileStream fs = OpenSourceStream(_filePath);
+        return LocateLastVisualPositionOfRealLine(fs, realLineStart);
+    }
+
+    private VisualPosition LocateLastVisualPositionOfRealLine(FileStream fs, RealLineStartInfo realLineStart)
+    {
+        VisualPosition current = new(realLineStart.StartOffset, realLineStart.StartOffset, realLineStart.Kind, VisualStartKind.RealStart, 0);
         fs.Position = current.StartOffset;
         while (true)
         {
@@ -1012,6 +1106,17 @@ public sealed class VisualRowReader : IDisposable
         }
 
         using FileStream fs = OpenSourceStream(_filePath);
+        return GetVisualPositionForSegment(fs, realLineStartOffset, kind, targetSegmentIndex);
+    }
+
+    private VisualPosition GetVisualPositionForSegment(FileStream fs, long realLineStartOffset, RealLineStartKind kind, int targetSegmentIndex)
+    {
+        VisualPosition current = new(realLineStartOffset, realLineStartOffset, kind, VisualStartKind.RealStart, 0);
+        if (targetSegmentIndex <= 0)
+        {
+            return current;
+        }
+
         fs.Position = current.StartOffset;
         while (current.SegmentIndex < targetSegmentIndex)
         {
@@ -1024,6 +1129,32 @@ public sealed class VisualRowReader : IDisposable
             }
 
             current = read.NextPosition.Value;
+        }
+
+        return current;
+    }
+
+    private VisualPosition NormalizePreviousNavigationStart(VisualPosition current)
+    {
+        while (current.VisualStartKind == VisualStartKind.RealStart && current.RealLineStartKind == RealLineStartKind.SearchLimit)
+        {
+            RealLineStartInfo correctedRealStart = FindPreviousRealLineStart(current.RealLineStartOffset);
+            if (correctedRealStart.StartOffset >= current.RealLineStartOffset)
+            {
+                break;
+            }
+
+            VisualPosition correctedCurrent = LocateVisualPositionForOffset(current.StartOffset, correctedRealStart);
+            if (correctedCurrent.StartOffset == current.StartOffset &&
+                correctedCurrent.RealLineStartOffset == current.RealLineStartOffset &&
+                correctedCurrent.RealLineStartKind == current.RealLineStartKind &&
+                correctedCurrent.VisualStartKind == current.VisualStartKind &&
+                correctedCurrent.SegmentIndex == current.SegmentIndex)
+            {
+                break;
+            }
+
+            current = correctedCurrent;
         }
 
         return current;
