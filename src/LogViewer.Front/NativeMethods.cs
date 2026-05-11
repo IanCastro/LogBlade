@@ -60,7 +60,10 @@ internal static class NativeMethods
     public const int SIF_TRACKPOS = 0x0010;
     public const int TRANSPARENT = 1;
     public const int COLOR_WINDOW = 5;
+    public const int COLOR_WINDOWTEXT = 8;
+    public const int COLOR_HIGHLIGHT = 13;
     public const int COLOR_3DFACE = 15;
+    public const int COLOR_BTNSHADOW = 16;
     public const int DEFAULT_CHARSET = 1;
     public const int OUT_DEFAULT_PRECIS = 0;
     public const int OUT_OUTLINE_PRECIS = 8;
@@ -310,6 +313,9 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     public static extern int FillRect(IntPtr hDC, ref RECT lprc, IntPtr hbr);
+
+    [DllImport("user32.dll")]
+    public static extern int FrameRect(IntPtr hDC, ref RECT lprc, IntPtr hbr);
 
     [DllImport("gdi32.dll")]
     public static extern int SetBkMode(IntPtr hdc, int mode);

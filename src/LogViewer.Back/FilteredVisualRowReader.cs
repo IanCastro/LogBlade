@@ -5,20 +5,21 @@ using System.Text;
 
 public sealed class FilteredVisualRowReader : IViewportReader
 {
-    private readonly string _filePath;
-    private readonly LogEncodingKind _kind;
-    private readonly Encoding _encoding;
-    private readonly long _dataOffset;
-    private readonly long _fileSize;
-    private readonly FilteredLineDescriptor[] _descriptors;
-    private readonly long[] _descriptorRowStarts;
+    private string _filePath;
+    private LogEncodingKind _kind;
+    private Encoding _encoding;
+    private long _dataOffset;
+    private long _fileSize;
+    private FilteredLineDescriptor[] _descriptors;
+    private long[] _descriptorRowStarts;
     private readonly List<string> _currentRows = new();
-    private readonly long _totalVisualRows;
+    private long _totalVisualRows;
     private long _topRowOrdinal;
     private long _viewportBytes;
     private int _viewportVisibleLines;
     private int _topDescriptorIndex;
     private bool _viewportLoaded;
+    private bool _disposed;
 
     internal FilteredVisualRowReader(string filePath, LogEncodingKind kind, Encoding encoding, long dataOffset, long fileSize, IReadOnlyList<FilteredLineDescriptor> descriptors)
     {
@@ -88,6 +89,7 @@ public sealed class FilteredVisualRowReader : IViewportReader
 
     public IReadOnlyList<string> ReadNext(int count)
     {
+        ThrowIfDisposed();
         if (count <= 0)
         {
             return Array.Empty<string>();
@@ -108,6 +110,7 @@ public sealed class FilteredVisualRowReader : IViewportReader
 
     public IReadOnlyList<string> ReadPrevious(int count)
     {
+        ThrowIfDisposed();
         if (count <= 0)
         {
             return Array.Empty<string>();
@@ -127,6 +130,7 @@ public sealed class FilteredVisualRowReader : IViewportReader
 
     public IReadOnlyList<string> ReadFromPercentage(double percentage, int count)
     {
+        ThrowIfDisposed();
         if (count <= 0)
         {
             return Array.Empty<string>();
@@ -153,6 +157,7 @@ public sealed class FilteredVisualRowReader : IViewportReader
 
     public IViewportReader CloneForWorker()
     {
+        ThrowIfDisposed();
         var clone = new FilteredVisualRowReader(_filePath, _kind, _encoding, _dataOffset, _fileSize, _descriptors)
         {
             _topRowOrdinal = _topRowOrdinal,
@@ -167,6 +172,26 @@ public sealed class FilteredVisualRowReader : IViewportReader
 
     public void Dispose()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _currentRows.Clear();
+        _descriptors = Array.Empty<FilteredLineDescriptor>();
+        _descriptorRowStarts = Array.Empty<long>();
+        _totalVisualRows = 0;
+        _topRowOrdinal = 0;
+        _viewportBytes = 0;
+        _viewportVisibleLines = 0;
+        _topDescriptorIndex = 0;
+        _viewportLoaded = false;
+        _filePath = string.Empty;
+        _encoding = Encoding.UTF8;
+        _dataOffset = 0;
+        _fileSize = 0;
+        _kind = LogEncodingKind.Windows1252;
+        _disposed = true;
     }
 
     private void LoadViewportAtRow(long topRowOrdinal, int visibleLines)
@@ -229,5 +254,10 @@ public sealed class FilteredVisualRowReader : IViewportReader
         long rowStart = _descriptorRowStarts[index];
         int segmentIndex = (int)Math.Max(0, rowOrdinal - rowStart);
         return (index, segmentIndex);
+    }
+
+    private void ThrowIfDisposed()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
     }
 }

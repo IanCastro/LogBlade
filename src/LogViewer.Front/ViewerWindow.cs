@@ -20,6 +20,8 @@ internal sealed class SearchWorkerResult
     public string? Message { get; set; }
     public IViewportReader? Reader { get; set; }
     public int PreloadedVisibleLines { get; set; }
+    public double ProgressPercentage { get; set; }
+    public bool IsFinal { get; set; }
 }
 
 internal sealed class ViewerWindow
@@ -30,6 +32,9 @@ internal sealed class ViewerWindow
     private const int SearchDebounceMs = 200;
     private const nuint SearchDebounceTimerId = 1;
     private const int SearchInnerPadding = 4;
+    private const int SearchProgressMinWidth = 120;
+    private const int SearchProgressMaxWidth = 180;
+    private const int SearchProgressGap = 8;
 
     private readonly string _path;
     private readonly string _titleSuffix;
@@ -48,6 +53,8 @@ internal sealed class ViewerWindow
     private WindowLayout _layout;
     private long _nextSearchRequestId;
     private long _latestSearchRequestId;
+    private bool _searchInProgress;
+    private double _searchProgressPercentage;
 
     private static readonly NativeMethods.WindowProc s_wndProc = WindowProc;
 
@@ -55,7 +62,9 @@ internal sealed class ViewerWindow
         NativeMethods.RECT ClientRect,
         NativeMethods.RECT ViewerRect,
         NativeMethods.RECT SearchBarRect,
-        NativeMethods.RECT SearchResultsRect);
+        NativeMethods.RECT SearchResultsRect,
+        NativeMethods.RECT SearchEditRect,
+        NativeMethods.RECT SearchProgressRect);
 
     public ViewerWindow(string path)
     {
@@ -197,7 +206,7 @@ internal sealed class ViewerWindow
                     self.OnOpenComplete(lParam);
                     return IntPtr.Zero;
                 case NativeMethods.WM_APP_SEARCH_COMPLETE:
-                    self.OnSearchComplete(lParam);
+                    self.OnSearchUpdate(lParam);
                     return IntPtr.Zero;
                 case NativeMethods.WM_DESTROY:
                     self._closing = true;
@@ -292,8 +301,11 @@ internal sealed class ViewerWindow
         NativeMethods.KillTimer(_hwnd, SearchDebounceTimerId);
         _detectedEncoding = null;
         _firstRenderLogged = false;
+        _searchInProgress = false;
+        _searchProgressPercentage = 0d;
         _mainPane.SetStatus("Loading file...");
         _filteredPane?.SetStatus(string.Empty);
+        NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
 
         if (!File.Exists(_path))
         {
@@ -407,16 +419,22 @@ internal sealed class ViewerWindow
 
         if (string.IsNullOrEmpty(_searchQuery))
         {
+            _searchInProgress = false;
+            _searchProgressPercentage = 0d;
             _filteredPane?.SetStatus(string.Empty);
             RecalculateLayout();
             ApplyLayout();
+            NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
             return;
         }
 
+        _searchInProgress = true;
+        _searchProgressPercentage = 0d;
         _filteredPane?.SetEmptyContentText("(no matches)");
         _filteredPane?.SetStatus("Searching...");
         RecalculateLayout();
         ApplyLayout();
+        NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
         NativeMethods.SetTimer(_hwnd, SearchDebounceTimerId, SearchDebounceMs, IntPtr.Zero);
     }
 
@@ -443,31 +461,46 @@ internal sealed class ViewerWindow
         IntPtr hwnd = _hwnd;
         ThreadPool.QueueUserWorkItem(_ =>
         {
-            var result = new SearchWorkerResult { RequestId = requestId };
             try
             {
-                IViewportReader reader = LogSearchBuilder.BuildFilteredReader(workerPath, detected.Encoding, detected.DataOffset, query);
-                reader.ReadFromPercentage(0d, visibleLines);
-                result.Reader = reader;
-                result.PreloadedVisibleLines = visibleLines;
-                result.Success = true;
+                LogSearchBuilder.BuildFilteredReaderIncremental(workerPath, detected.Encoding, detected.DataOffset, query, visibleLines, update =>
+                {
+                    PostSearchWorkerResult(new SearchWorkerResult
+                    {
+                        RequestId = requestId,
+                        Success = true,
+                        Reader = update.Reader,
+                        PreloadedVisibleLines = visibleLines,
+                        ProgressPercentage = update.ProgressPercentage,
+                        IsFinal = update.IsFinal
+                    });
+                });
             }
             catch (Exception ex)
             {
-                result.Success = false;
-                result.Message = ex.Message;
+                PostSearchWorkerResult(new SearchWorkerResult
+                {
+                    RequestId = requestId,
+                    Success = false,
+                    Message = ex.Message,
+                    ProgressPercentage = _searchProgressPercentage,
+                    IsFinal = true
+                });
             }
 
-            GCHandle handle = GCHandle.Alloc(result);
-            if (!NativeMethods.PostMessageW(hwnd, NativeMethods.WM_APP_SEARCH_COMPLETE, IntPtr.Zero, GCHandle.ToIntPtr(handle)))
+            void PostSearchWorkerResult(SearchWorkerResult result)
             {
-                result.Reader?.Dispose();
-                handle.Free();
+                GCHandle handle = GCHandle.Alloc(result);
+                if (!NativeMethods.PostMessageW(hwnd, NativeMethods.WM_APP_SEARCH_COMPLETE, IntPtr.Zero, GCHandle.ToIntPtr(handle)))
+                {
+                    result.Reader?.Dispose();
+                    handle.Free();
+                }
             }
         });
     }
 
-    private void OnSearchComplete(IntPtr lParam)
+    private void OnSearchUpdate(IntPtr lParam)
     {
         GCHandle handle = GCHandle.FromIntPtr(lParam);
         var result = (SearchWorkerResult?)handle.Target;
@@ -483,22 +516,39 @@ internal sealed class ViewerWindow
             return;
         }
 
+        _searchProgressPercentage = Math.Clamp(result.ProgressPercentage, 0d, 100d);
+        _searchInProgress = !result.IsFinal;
+
         if (_filteredPane is null)
         {
             result.Reader?.Dispose();
             return;
         }
 
-        if (result.Success && result.Reader is not null)
+        if (!result.Success)
         {
-            _filteredPane.SetEmptyContentText("(no matches)");
-            _filteredPane.SetReader(result.Reader, result.PreloadedVisibleLines);
+            _searchInProgress = false;
+            _searchProgressPercentage = 0d;
+            result.Reader?.Dispose();
+            _filteredPane.SetStatus("Search failed.");
+            NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
+            AppLog.Instance.Error("search.failed", "failed", new LogField("reason", result.Message ?? "unknown error"));
             return;
         }
 
-        result.Reader?.Dispose();
-        _filteredPane.SetStatus("Search failed.");
-        AppLog.Instance.Error("search.failed", "failed", new LogField("reason", result.Message ?? "unknown error"));
+        if (result.Reader is not null)
+        {
+            _filteredPane.SetEmptyContentText("(no matches)");
+            _filteredPane.SetReader(result.Reader, result.PreloadedVisibleLines);
+        }
+
+        if (result.IsFinal)
+        {
+            _searchInProgress = false;
+            _searchProgressPercentage = 0d;
+        }
+
+        NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
     }
 
     private void OnPaint()
@@ -512,6 +562,7 @@ internal sealed class ViewerWindow
 
         NativeMethods.GetClientRect(_hwnd, out NativeMethods.RECT clientRect);
         NativeMethods.FillRect(hdc, ref clientRect, NativeMethods.GetSysColorBrush(NativeMethods.COLOR_3DFACE));
+        PaintSearchProgress(hdc);
         NativeMethods.EndPaint(_hwnd, ref ps);
     }
 
@@ -593,7 +644,29 @@ internal sealed class ViewerWindow
             }
             : CreateZeroRect();
 
-        _layout = new WindowLayout(clientRect, viewerRect, searchBarRect, searchResultsRect);
+        NativeMethods.RECT searchBarInner = InsetRect(searchBarRect, SearchInnerPadding);
+        int progressWidth = Math.Clamp(clientWidth / 6, SearchProgressMinWidth, SearchProgressMaxWidth);
+        progressWidth = Math.Min(progressWidth, Math.Max(0, GetRectWidth(searchBarInner) - 80));
+        NativeMethods.RECT progressRect = progressWidth > 0
+            ? new NativeMethods.RECT
+            {
+                left = Math.Max(searchBarInner.left, searchBarInner.right - progressWidth),
+                top = searchBarInner.top,
+                right = searchBarInner.right,
+                bottom = searchBarInner.bottom
+            }
+            : CreateZeroRect();
+        NativeMethods.RECT editRect = progressWidth > 0
+            ? new NativeMethods.RECT
+            {
+                left = searchBarInner.left,
+                top = searchBarInner.top,
+                right = Math.Max(searchBarInner.left, progressRect.left - SearchProgressGap),
+                bottom = searchBarInner.bottom
+            }
+            : searchBarInner;
+
+        _layout = new WindowLayout(clientRect, viewerRect, searchBarRect, searchResultsRect, editRect, progressRect);
     }
 
     private void ApplyLayout()
@@ -601,13 +674,12 @@ internal sealed class ViewerWindow
         _mainPane?.SetBounds(_layout.ViewerRect, true);
         _filteredPane?.SetBounds(_layout.SearchResultsRect, !IsZeroRect(_layout.SearchResultsRect));
 
-        NativeMethods.RECT editRect = InsetRect(_layout.SearchBarRect, SearchInnerPadding);
         NativeMethods.MoveWindow(
             _searchEdit,
-            editRect.left,
-            editRect.top,
-            GetRectWidth(editRect),
-            GetRectHeight(editRect),
+            _layout.SearchEditRect.left,
+            _layout.SearchEditRect.top,
+            GetRectWidth(_layout.SearchEditRect),
+            GetRectHeight(_layout.SearchEditRect),
             true);
         NativeMethods.ShowWindow(_searchEdit, NativeMethods.SW_SHOW);
     }
@@ -622,6 +694,9 @@ internal sealed class ViewerWindow
         _filteredPane?.SetStatus("Searching...");
         RecalculateLayout();
         ApplyLayout();
+        _searchInProgress = true;
+        _searchProgressPercentage = 0d;
+        NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
         NativeMethods.KillTimer(_hwnd, SearchDebounceTimerId);
         NativeMethods.SetTimer(_hwnd, SearchDebounceTimerId, SearchDebounceMs, IntPtr.Zero);
     }
@@ -649,6 +724,45 @@ internal sealed class ViewerWindow
 
         _searchEdit = IntPtr.Zero;
         _font = IntPtr.Zero;
+    }
+
+    private void PaintSearchProgress(IntPtr hdc)
+    {
+        if (!_searchInProgress || IsZeroRect(_layout.SearchProgressRect))
+        {
+            return;
+        }
+
+        NativeMethods.RECT frameRect = _layout.SearchProgressRect;
+        NativeMethods.RECT fillRect = frameRect;
+        NativeMethods.FrameRect(hdc, ref frameRect, NativeMethods.GetSysColorBrush(NativeMethods.COLOR_BTNSHADOW));
+
+        fillRect.left += 1;
+        fillRect.top += 1;
+        fillRect.right = Math.Max(fillRect.left, fillRect.right - 1);
+        fillRect.bottom = Math.Max(fillRect.top, fillRect.bottom - 1);
+        NativeMethods.FillRect(hdc, ref fillRect, NativeMethods.GetSysColorBrush(NativeMethods.COLOR_WINDOW));
+
+        int innerWidth = GetRectWidth(fillRect);
+        if (innerWidth > 0)
+        {
+            int filledWidth = (int)Math.Round(innerWidth * Math.Clamp(_searchProgressPercentage, 0d, 100d) / 100d);
+            if (filledWidth > 0)
+            {
+                NativeMethods.RECT progressFill = fillRect;
+                progressFill.right = Math.Min(progressFill.right, progressFill.left + filledWidth);
+                NativeMethods.FillRect(hdc, ref progressFill, NativeMethods.GetSysColorBrush(NativeMethods.COLOR_HIGHLIGHT));
+            }
+        }
+
+        string progressText = $"{Math.Round(_searchProgressPercentage):0}%";
+        NativeMethods.SetTextColor(hdc, NativeMethods.RGB(0, 0, 0));
+        NativeMethods.DrawTextW(
+            hdc,
+            progressText,
+            progressText.Length,
+            ref fillRect,
+            NativeMethods.DT_LEFT | NativeMethods.DT_VCENTER | NativeMethods.DT_SINGLELINE | NativeMethods.DT_END_ELLIPSIS | NativeMethods.DT_NOPREFIX);
     }
 
     private static string ReadWindowText(IntPtr hwnd)
