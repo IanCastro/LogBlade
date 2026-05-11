@@ -5,26 +5,39 @@ internal static class NativeMethods
 {
     public const int CS_HREDRAW = 0x0002;
     public const int CS_VREDRAW = 0x0001;
+    public const int WS_CHILD = 0x40000000;
+    public const int WS_VISIBLE = 0x10000000;
+    public const int WS_TABSTOP = 0x00010000;
+    public const int WS_BORDER = 0x00800000;
     public const int WS_OVERLAPPEDWINDOW = 0x00CF0000;
     public const int WS_HSCROLL = 0x00100000;
     public const int WS_VSCROLL = 0x00200000;
+    public const int ES_AUTOHSCROLL = 0x0080;
     public const int CW_USEDEFAULT = unchecked((int)0x80000000);
+    public const int SW_HIDE = 0;
+    public const int SW_SHOW = 5;
     public const int SW_SHOWDEFAULT = 10;
     public const int GWLP_USERDATA = -21;
     public const int WM_CREATE = 0x0001;
     public const int WM_DESTROY = 0x0002;
+    public const int WM_COMMAND = 0x0111;
     public const int WM_SIZE = 0x0005;
     public const int WM_PAINT = 0x000F;
+    public const int WM_SETFONT = 0x0030;
     public const int WM_KEYDOWN = 0x0100;
+    public const int WM_TIMER = 0x0113;
     public const int WM_HSCROLL = 0x0114;
     public const int WM_VSCROLL = 0x0115;
+    public const int WM_LBUTTONDOWN = 0x0201;
     public const int WM_MOUSEWHEEL = 0x020A;
     public const int WM_ERASEBKGND = 0x0014;
     public const int WM_NCCREATE = 0x0081;
+    public const int WM_NCDESTROY = 0x0082;
     public const int WM_APP = 0x8000;
     public const int WM_APP_BEGIN_OPEN = WM_APP + 1;
     public const int WM_APP_OPEN_COMPLETE = WM_APP + 2;
     public const int WM_APP_VIEWPORT_COMPLETE = WM_APP + 3;
+    public const int WM_APP_SEARCH_COMPLETE = WM_APP + 4;
     public const int SB_LINEUP = 0;
     public const int SB_LINEDOWN = 1;
     public const int SB_PAGEUP = 2;
@@ -64,6 +77,7 @@ internal static class NativeMethods
     public const int WHEEL_DELTA = 120;
     public const int MB_OK = 0x00000000;
     public const int MB_ICONERROR = 0x00000010;
+    public const int EN_CHANGE = 0x0300;
     public const int VK_UP = 0x26;
     public const int VK_DOWN = 0x28;
     public const int VK_PRIOR = 0x21;
@@ -224,12 +238,26 @@ internal static class NativeMethods
         IntPtr hInstance,
         IntPtr lpParam);
 
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool DestroyWindow(IntPtr hWnd);
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool SetWindowTextW(IntPtr hWnd, string lpString);
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern int GetWindowTextLengthW(IntPtr hWnd);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern int GetWindowTextW(IntPtr hWnd, System.Text.StringBuilder lpString, int nMaxCount);
+
     [DllImport("user32.dll")]
     public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool MoveWindow(IntPtr hWnd, int X, int Y, int nWidth, int nHeight, bool bRepaint);
 
     [DllImport("user32.dll")]
     public static extern bool UpdateWindow(IntPtr hWnd);
@@ -326,6 +354,19 @@ internal static class NativeMethods
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern int MessageBoxW(IntPtr hWnd, string lpText, string lpCaption, int uType);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr SetFocus(IntPtr hWnd);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr SendMessageW(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern nuint SetTimer(IntPtr hWnd, nuint nIDEvent, uint uElapse, IntPtr lpTimerFunc);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool KillTimer(IntPtr hWnd, nuint uIDEvent);
 
     [DllImport("user32.dll")]
     public static extern IntPtr GetWindowLongPtrW(IntPtr hWnd, int nIndex);

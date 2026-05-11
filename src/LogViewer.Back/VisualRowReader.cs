@@ -35,7 +35,7 @@ internal enum VisualStartKind
     ForcedWrap
 }
 
-public sealed class VisualRowReader : IDisposable
+public sealed class VisualRowReader : IViewportReader
 {
     public const int VisibleSegmentChars = 4096;
     internal const int SegmentChars = VisibleSegmentChars;
@@ -114,6 +114,20 @@ public sealed class VisualRowReader : IDisposable
     public long TopOffset => _topOffset;
     public long ViewportEndOffset => _viewportEndOffset;
     public long ViewportBytes => _viewportEndOffset >= _topOffset ? _viewportEndOffset - _topOffset : 0;
+    public double ScrollPercentage
+    {
+        get
+        {
+            if (!HasContent)
+            {
+                return 0d;
+            }
+
+            long contentBytes = Math.Max(1, _fileSize - _dataOffset);
+            long topBytes = Math.Clamp(_topOffset - _dataOffset, 0, contentBytes);
+            return (topBytes * 100d) / contentBytes;
+        }
+    }
     public bool HasContent => _fileSize > _dataOffset;
     public IReadOnlyList<string> CurrentRows
     {
@@ -369,6 +383,8 @@ public sealed class VisualRowReader : IDisposable
         return clone;
     }
 
+    IViewportReader IViewportReader.CloneForWorker() => CloneForWorker();
+
     internal bool ScrollByLinesForWorker(int deltaLines, int visibleLines)
     {
         if (deltaLines == 0)
@@ -423,7 +439,7 @@ public sealed class VisualRowReader : IDisposable
         return new(LogEncodingKind.Windows1252, Windows1252Encoding.Instance, 0);
     }
 
-    private static LogEncodingKind InferKind(Encoding encoding, long dataOffset)
+    internal static LogEncodingKind InferKind(Encoding encoding, long dataOffset)
     {
         if (dataOffset == 3 && string.Equals(encoding.WebName, Encoding.UTF8.WebName, StringComparison.OrdinalIgnoreCase))
         {

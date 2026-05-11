@@ -1,0 +1,19 @@
+using System;
+using System.Collections.Generic;
+
+public interface IViewportReader : IDisposable
+{
+    string FilePath { get; }
+    string EncodingName { get; }
+    long DataOffset { get; }
+    long FileSize { get; }
+    long TopOffset { get; }
+    long ViewportBytes { get; }
+    double ScrollPercentage { get; }
+    bool HasContent { get; }
+    IReadOnlyList<string> CurrentRows { get; }
+    IReadOnlyList<string> ReadNext(int count);
+    IReadOnlyList<string> ReadPrevious(int count);
+    IReadOnlyList<string> ReadFromPercentage(double percentage, int count);
+    IViewportReader CloneForWorker();
+}

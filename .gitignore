@@ -1,5 +1,5 @@
-src/bin/
-src/obj/
+src/**/bin/
+src/**/obj/
 artifacts/build/
 artifacts/publish/
 artifacts/publish-aot/
