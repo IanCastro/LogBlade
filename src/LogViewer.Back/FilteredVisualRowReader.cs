@@ -53,6 +53,8 @@ public sealed class FilteredVisualRowReader : IViewportReader
     public long DataOffset => _dataOffset;
     public long FileSize => _fileSize;
     public long TopOffset => HasContent ? _descriptors[_topDescriptorIndex].StartOffset : _dataOffset;
+    public long TopRowOrdinal => _topRowOrdinal;
+    public long MatchedLineCount => _descriptors.Length;
     public long ViewportBytes => _viewportBytes;
     public double ScrollPercentage
     {
@@ -152,6 +154,28 @@ public sealed class FilteredVisualRowReader : IViewportReader
             ? maxTopRow
             : Math.Min(maxTopRow, (long)((clamped / 100d) * _totalVisualRows));
         LoadViewportAtRow(nextTop, count);
+        return CurrentRows;
+    }
+
+    public IReadOnlyList<string> ReadFromRowOrdinal(long topRowOrdinal, int visibleLines)
+    {
+        ThrowIfDisposed();
+        if (visibleLines <= 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        if (!HasContent)
+        {
+            _viewportVisibleLines = Math.Max(1, visibleLines);
+            _topRowOrdinal = 0;
+            _viewportBytes = 0;
+            _currentRows.Clear();
+            _viewportLoaded = true;
+            return Array.Empty<string>();
+        }
+
+        LoadViewportAtRow(topRowOrdinal, visibleLines);
         return CurrentRows;
     }
 

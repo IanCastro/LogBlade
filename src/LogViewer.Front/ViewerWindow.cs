@@ -21,6 +21,7 @@ internal sealed class SearchWorkerResult
     public IViewportReader? Reader { get; set; }
     public int PreloadedVisibleLines { get; set; }
     public double ProgressPercentage { get; set; }
+    public long MatchedLineCount { get; set; }
     public bool IsFinal { get; set; }
 }
 
@@ -32,8 +33,8 @@ internal sealed class ViewerWindow
     private const int SearchDebounceMs = 200;
     private const nuint SearchDebounceTimerId = 1;
     private const int SearchInnerPadding = 4;
-    private const int SearchProgressMinWidth = 120;
-    private const int SearchProgressMaxWidth = 180;
+    private const int SearchProgressMinWidth = 180;
+    private const int SearchProgressMaxWidth = 280;
     private const int SearchProgressGap = 8;
 
     private readonly string _path;
@@ -54,7 +55,9 @@ internal sealed class ViewerWindow
     private long _nextSearchRequestId;
     private long _latestSearchRequestId;
     private bool _searchInProgress;
+    private bool _searchDisplayActive;
     private double _searchProgressPercentage;
+    private long _searchMatchedLineCount;
 
     private static readonly NativeMethods.WindowProc s_wndProc = WindowProc;
 
@@ -302,7 +305,9 @@ internal sealed class ViewerWindow
         _detectedEncoding = null;
         _firstRenderLogged = false;
         _searchInProgress = false;
+        _searchDisplayActive = false;
         _searchProgressPercentage = 0d;
+        _searchMatchedLineCount = 0;
         _mainPane.SetStatus("Loading file...");
         _filteredPane?.SetStatus(string.Empty);
         NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
@@ -420,7 +425,9 @@ internal sealed class ViewerWindow
         if (string.IsNullOrEmpty(_searchQuery))
         {
             _searchInProgress = false;
+            _searchDisplayActive = false;
             _searchProgressPercentage = 0d;
+            _searchMatchedLineCount = 0;
             _filteredPane?.SetStatus(string.Empty);
             RecalculateLayout();
             ApplyLayout();
@@ -429,7 +436,9 @@ internal sealed class ViewerWindow
         }
 
         _searchInProgress = true;
+        _searchDisplayActive = true;
         _searchProgressPercentage = 0d;
+        _searchMatchedLineCount = 0;
         _filteredPane?.SetEmptyContentText("(no matches)");
         _filteredPane?.SetStatus("Searching...");
         RecalculateLayout();
@@ -472,6 +481,7 @@ internal sealed class ViewerWindow
                         Reader = update.Reader,
                         PreloadedVisibleLines = visibleLines,
                         ProgressPercentage = update.ProgressPercentage,
+                        MatchedLineCount = update.MatchedLineCount,
                         IsFinal = update.IsFinal
                     });
                 });
@@ -484,6 +494,7 @@ internal sealed class ViewerWindow
                     Success = false,
                     Message = ex.Message,
                     ProgressPercentage = _searchProgressPercentage,
+                    MatchedLineCount = _searchMatchedLineCount,
                     IsFinal = true
                 });
             }
@@ -517,7 +528,9 @@ internal sealed class ViewerWindow
         }
 
         _searchProgressPercentage = Math.Clamp(result.ProgressPercentage, 0d, 100d);
+        _searchMatchedLineCount = Math.Max(0, result.MatchedLineCount);
         _searchInProgress = !result.IsFinal;
+        _searchDisplayActive = true;
 
         if (_filteredPane is null)
         {
@@ -529,6 +542,8 @@ internal sealed class ViewerWindow
         {
             _searchInProgress = false;
             _searchProgressPercentage = 0d;
+            _searchMatchedLineCount = 0;
+            _searchDisplayActive = false;
             result.Reader?.Dispose();
             _filteredPane.SetStatus("Search failed.");
             NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
@@ -538,14 +553,25 @@ internal sealed class ViewerWindow
 
         if (result.Reader is not null)
         {
+            if (result.Reader is FilteredVisualRowReader nextFilteredReader)
+            {
+                long desiredTopRow = 0;
+                if (_filteredPane.Reader is FilteredVisualRowReader currentFilteredReader)
+                {
+                    desiredTopRow = currentFilteredReader.TopRowOrdinal;
+                }
+
+                nextFilteredReader.ReadFromRowOrdinal(desiredTopRow, _filteredPane.VisibleLineCount);
+            }
+
             _filteredPane.SetEmptyContentText("(no matches)");
-            _filteredPane.SetReader(result.Reader, result.PreloadedVisibleLines);
+            _filteredPane.SetReader(result.Reader, _filteredPane.VisibleLineCount);
         }
 
         if (result.IsFinal)
         {
             _searchInProgress = false;
-            _searchProgressPercentage = 0d;
+            _searchProgressPercentage = 100d;
         }
 
         NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
@@ -695,7 +721,9 @@ internal sealed class ViewerWindow
         RecalculateLayout();
         ApplyLayout();
         _searchInProgress = true;
+        _searchDisplayActive = true;
         _searchProgressPercentage = 0d;
+        _searchMatchedLineCount = 0;
         NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
         NativeMethods.KillTimer(_hwnd, SearchDebounceTimerId);
         NativeMethods.SetTimer(_hwnd, SearchDebounceTimerId, SearchDebounceMs, IntPtr.Zero);
@@ -728,7 +756,7 @@ internal sealed class ViewerWindow
 
     private void PaintSearchProgress(IntPtr hdc)
     {
-        if (!_searchInProgress || IsZeroRect(_layout.SearchProgressRect))
+        if (!_searchDisplayActive || IsZeroRect(_layout.SearchProgressRect))
         {
             return;
         }
@@ -755,7 +783,7 @@ internal sealed class ViewerWindow
             }
         }
 
-        string progressText = $"{Math.Round(_searchProgressPercentage):0}%";
+        string progressText = FormatSearchProgressText();
         NativeMethods.SetTextColor(hdc, NativeMethods.RGB(0, 0, 0));
         NativeMethods.DrawTextW(
             hdc,
@@ -763,6 +791,13 @@ internal sealed class ViewerWindow
             progressText.Length,
             ref fillRect,
             NativeMethods.DT_LEFT | NativeMethods.DT_VCENTER | NativeMethods.DT_SINGLELINE | NativeMethods.DT_END_ELLIPSIS | NativeMethods.DT_NOPREFIX);
+    }
+
+    private string FormatSearchProgressText()
+    {
+        long matches = Math.Max(0, _searchMatchedLineCount);
+        string label = matches == 1 ? "linha" : "linhas";
+        return $"{Math.Round(_searchProgressPercentage):0}% • {matches} {label}";
     }
 
     private static string ReadWindowText(IntPtr hwnd)

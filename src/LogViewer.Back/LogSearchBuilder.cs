@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 
-public readonly record struct SearchProgressUpdate(double ProgressPercentage, FilteredVisualRowReader? Reader, bool IsFinal);
+public readonly record struct SearchProgressUpdate(double ProgressPercentage, long MatchedLineCount, FilteredVisualRowReader? Reader, bool IsFinal);
 
 public static class LogSearchBuilder
 {
@@ -85,7 +85,7 @@ public static class LogSearchBuilder
                 lastPublishedDescriptorCount = descriptors.Count;
             }
 
-            onProgress(new SearchProgressUpdate(progress, reader, isFinal));
+            onProgress(new SearchProgressUpdate(progress, descriptors.Count, reader, isFinal));
             lastPublishedTick = Environment.TickCount64;
             partialPublished = partialPublished || reader is not null;
         }
