@@ -99,14 +99,14 @@ internal sealed class ViewportPaneWindow : IDisposable
         NativeMethods.ShowWindow(_hwnd, _isVisible ? NativeMethods.SW_SHOW : NativeMethods.SW_HIDE);
         if (_isVisible)
         {
-            NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
+            NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
         }
     }
 
     public void SetEmptyContentText(string text)
     {
         _emptyContentText = text;
-        NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
+        NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
     }
 
     public void SetStatus(string statusText, bool disposeReader = true)
@@ -120,7 +120,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         _statusText = statusText;
         ResetViewportAsyncState();
         UpdateScrollBar();
-        NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
+        NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
     }
 
     public void SetReader(IViewportReader reader, int preloadedVisibleLines)
@@ -138,7 +138,7 @@ internal sealed class ViewportPaneWindow : IDisposable
                 visibleLines: VisibleLineCount);
         }
 
-        NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
+        NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
     }
 
     public void Focus()
@@ -293,7 +293,7 @@ internal sealed class ViewportPaneWindow : IDisposable
             _reader?.Dispose();
             _reader = result.Reader;
             UpdateScrollBar();
-            NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
+            NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
         }
         else
         {
@@ -320,7 +320,7 @@ internal sealed class ViewportPaneWindow : IDisposable
                 visibleLines: VisibleLineCount);
         }
 
-        NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
+        NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
     }
 
     private void OnHScroll(IntPtr wParam)
@@ -557,7 +557,7 @@ internal sealed class ViewportPaneWindow : IDisposable
 
         _xOffsetChars = nextOffset;
         UpdateScrollBar();
-        NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
+        NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
     }
 
     private string SliceVisibleText(string text)

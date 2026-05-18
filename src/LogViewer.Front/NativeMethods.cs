@@ -9,6 +9,7 @@ internal static class NativeMethods
     public const int WS_VISIBLE = 0x10000000;
     public const int WS_TABSTOP = 0x00010000;
     public const int WS_BORDER = 0x00800000;
+    public const int WS_CLIPCHILDREN = 0x02000000;
     public const int WS_OVERLAPPEDWINDOW = 0x00CF0000;
     public const int WS_HSCROLL = 0x00100000;
     public const int WS_VSCROLL = 0x00200000;
@@ -298,6 +299,9 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     public static extern bool InvalidateRect(IntPtr hWnd, IntPtr lpRect, bool bErase);
+
+    [DllImport("user32.dll")]
+    public static extern bool InvalidateRect(IntPtr hWnd, [In] ref RECT lpRect, bool bErase);
 
     [DllImport("user32.dll")]
     public static extern IntPtr BeginPaint(IntPtr hWnd, out PAINTSTRUCT lpPaint);

@@ -110,7 +110,7 @@ internal sealed class ViewerWindow
             0,
             className,
             windowTitle,
-            NativeMethods.WS_OVERLAPPEDWINDOW,
+            NativeMethods.WS_OVERLAPPEDWINDOW | NativeMethods.WS_CLIPCHILDREN,
             NativeMethods.CW_USEDEFAULT,
             NativeMethods.CW_USEDEFAULT,
             1100,
@@ -310,7 +310,7 @@ internal sealed class ViewerWindow
         _searchMatchedLineCount = 0;
         _mainPane.SetStatus("Loading file...");
         _filteredPane?.SetStatus(string.Empty);
-        NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
+        InvalidateHost();
 
         if (!File.Exists(_path))
         {
@@ -408,7 +408,7 @@ internal sealed class ViewerWindow
     {
         RecalculateLayout();
         ApplyLayout();
-        NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
+        InvalidateHost();
     }
 
     private void OnCommand(IntPtr wParam, IntPtr lParam)
@@ -431,7 +431,7 @@ internal sealed class ViewerWindow
             _filteredPane?.SetStatus(string.Empty);
             RecalculateLayout();
             ApplyLayout();
-            NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
+            InvalidateHost();
             return;
         }
 
@@ -443,7 +443,7 @@ internal sealed class ViewerWindow
         _filteredPane?.SetStatus("Searching...");
         RecalculateLayout();
         ApplyLayout();
-        NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
+        InvalidateHost();
         NativeMethods.SetTimer(_hwnd, SearchDebounceTimerId, SearchDebounceMs, IntPtr.Zero);
     }
 
@@ -546,7 +546,7 @@ internal sealed class ViewerWindow
             _searchDisplayActive = false;
             result.Reader?.Dispose();
             _filteredPane.SetStatus("Search failed.");
-            NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
+            InvalidateHost();
             AppLog.Instance.Error("search.failed", "failed", new LogField("reason", result.Message ?? "unknown error"));
             return;
         }
@@ -574,7 +574,7 @@ internal sealed class ViewerWindow
             _searchProgressPercentage = 100d;
         }
 
-        NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
+        InvalidateSearchBar();
     }
 
     private void OnPaint()
@@ -724,7 +724,7 @@ internal sealed class ViewerWindow
         _searchDisplayActive = true;
         _searchProgressPercentage = 0d;
         _searchMatchedLineCount = 0;
-        NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, true);
+        InvalidateHost();
         NativeMethods.KillTimer(_hwnd, SearchDebounceTimerId);
         NativeMethods.SetTimer(_hwnd, SearchDebounceTimerId, SearchDebounceMs, IntPtr.Zero);
     }
@@ -798,6 +798,25 @@ internal sealed class ViewerWindow
         long matches = Math.Max(0, _searchMatchedLineCount);
         string label = matches == 1 ? "linha" : "linhas";
         return $"{Math.Round(_searchProgressPercentage):0}% • {matches} {label}";
+    }
+
+    private void InvalidateHost()
+    {
+        if (_hwnd != IntPtr.Zero)
+        {
+            NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
+        }
+    }
+
+    private void InvalidateSearchBar()
+    {
+        if (_hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        NativeMethods.RECT rect = IsZeroRect(_layout.SearchBarRect) ? _layout.ClientRect : _layout.SearchBarRect;
+        NativeMethods.InvalidateRect(_hwnd, ref rect, false);
     }
 
     private static string ReadWindowText(IntPtr hwnd)
