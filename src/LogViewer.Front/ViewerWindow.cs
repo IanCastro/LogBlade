@@ -18,6 +18,8 @@ internal sealed class SearchWorkerResult
 {
     public long RequestId { get; set; }
     public string Query { get; set; } = string.Empty;
+    public bool UseRegex { get; set; }
+    public bool IgnoreCase { get; set; }
     public bool Success { get; set; }
     public string? Message { get; set; }
     public IViewportReader? Reader { get; set; }
@@ -30,27 +32,34 @@ internal sealed class SearchWorkerResult
 
 internal sealed class ViewerWindow
 {
-    private const int SearchBarHeight = 32;
+    private const int SearchAreaHeight = 60;
+    private const int SearchInputRowHeight = 24;
+    private const int SearchProgressRowHeight = 24;
     private const int SearchResultsMinHeight = 160;
     private const int SearchResultsMaxHeight = 420;
     private const int SearchDebounceMs = 200;
     private const nuint SearchDebounceTimerId = 1;
     private const int SearchInnerPadding = 4;
-    private const int SearchProgressMinWidth = 180;
-    private const int SearchProgressMaxWidth = 280;
-    private const int SearchProgressGap = 8;
+    private const int SearchProgressGap = 4;
+    private const int SearchToggleGap = 8;
+    private const int RegexToggleWidth = 72;
+    private const int IgnoreCaseToggleWidth = 112;
 
     private readonly string _path;
     private readonly string _titleSuffix;
     private IntPtr _hwnd;
     private IntPtr _font;
     private IntPtr _searchEdit;
+    private IntPtr _regexCheckbox;
+    private IntPtr _ignoreCaseCheckbox;
     private GCHandle _selfHandle;
     private int _lineHeight = 16;
     private int _charWidth = 8;
     private bool _firstRenderLogged;
     private bool _closing;
     private string _searchQuery = string.Empty;
+    private bool _useRegex = true;
+    private bool _ignoreCase;
     private DetectedEncodingInfo? _detectedEncoding;
     private ViewportPaneWindow? _mainPane;
     private ViewportPaneWindow? _filteredPane;
@@ -61,15 +70,18 @@ internal sealed class ViewerWindow
     private bool _searchDisplayActive;
     private double _searchProgressPercentage;
     private long _searchMatchedLineCount;
+    private string _searchErrorText = string.Empty;
 
     private static readonly NativeMethods.WindowProc s_wndProc = WindowProc;
 
     private readonly record struct WindowLayout(
         NativeMethods.RECT ClientRect,
         NativeMethods.RECT ViewerRect,
-        NativeMethods.RECT SearchBarRect,
+        NativeMethods.RECT SearchAreaRect,
         NativeMethods.RECT SearchResultsRect,
         NativeMethods.RECT SearchEditRect,
+        NativeMethods.RECT SearchRegexToggleRect,
+        NativeMethods.RECT SearchIgnoreCaseToggleRect,
         NativeMethods.RECT SearchProgressRect);
 
     public ViewerWindow(string path)
@@ -293,6 +305,51 @@ internal sealed class ViewerWindow
         }
 
         NativeMethods.SendMessageW(_searchEdit, NativeMethods.WM_SETFONT, _font, new IntPtr(1));
+
+        _regexCheckbox = NativeMethods.CreateWindowExW(
+            0,
+            "BUTTON",
+            "Regex",
+            NativeMethods.WS_CHILD | NativeMethods.WS_VISIBLE | NativeMethods.WS_TABSTOP | NativeMethods.BS_AUTOCHECKBOX,
+            0,
+            0,
+            1,
+            1,
+            _hwnd,
+            IntPtr.Zero,
+            hInstance,
+            IntPtr.Zero);
+
+        if (_regexCheckbox == IntPtr.Zero)
+        {
+            throw new InvalidOperationException("CreateWindowExW failed for regex checkbox.");
+        }
+
+        _ignoreCaseCheckbox = NativeMethods.CreateWindowExW(
+            0,
+            "BUTTON",
+            "Ignore case",
+            NativeMethods.WS_CHILD | NativeMethods.WS_VISIBLE | NativeMethods.WS_TABSTOP | NativeMethods.BS_AUTOCHECKBOX,
+            0,
+            0,
+            1,
+            1,
+            _hwnd,
+            IntPtr.Zero,
+            hInstance,
+            IntPtr.Zero);
+
+        if (_ignoreCaseCheckbox == IntPtr.Zero)
+        {
+            throw new InvalidOperationException("CreateWindowExW failed for ignore-case checkbox.");
+        }
+
+        NativeMethods.SendMessageW(_regexCheckbox, NativeMethods.WM_SETFONT, _font, new IntPtr(1));
+        NativeMethods.SendMessageW(_ignoreCaseCheckbox, NativeMethods.WM_SETFONT, _font, new IntPtr(1));
+        NativeMethods.SendMessageW(_regexCheckbox, NativeMethods.BM_SETCHECK, new IntPtr(NativeMethods.BST_CHECKED), IntPtr.Zero);
+        NativeMethods.SendMessageW(_ignoreCaseCheckbox, NativeMethods.BM_SETCHECK, new IntPtr(NativeMethods.BST_UNCHECKED), IntPtr.Zero);
+        ReadSearchModeFromControls();
+
         RecalculateLayout();
         ApplyLayout();
     }
@@ -311,6 +368,7 @@ internal sealed class ViewerWindow
         _searchDisplayActive = false;
         _searchProgressPercentage = 0d;
         _searchMatchedLineCount = 0;
+        _searchErrorText = string.Empty;
         _mainPane.SetStatus("Loading file...");
         _filteredPane?.SetStatus(string.Empty);
         InvalidateHost();
@@ -416,12 +474,23 @@ internal sealed class ViewerWindow
 
     private void OnCommand(IntPtr wParam, IntPtr lParam)
     {
-        if (lParam != _searchEdit || NativeMethods.HighWord(wParam) != NativeMethods.EN_CHANGE)
+        int notification = NativeMethods.HighWord(wParam);
+        if (lParam == _searchEdit && notification == NativeMethods.EN_CHANGE)
         {
+            _searchQuery = ReadWindowText(_searchEdit);
+            RestartSearchAfterInputChange();
             return;
         }
 
-        _searchQuery = ReadWindowText(_searchEdit);
+        if ((lParam == _regexCheckbox || lParam == _ignoreCaseCheckbox) && notification == NativeMethods.BN_CLICKED)
+        {
+            ReadSearchModeFromControls();
+            RestartSearchAfterInputChange();
+        }
+    }
+
+    private void RestartSearchAfterInputChange()
+    {
         _latestSearchRequestId = ++_nextSearchRequestId;
         NativeMethods.KillTimer(_hwnd, SearchDebounceTimerId);
 
@@ -431,6 +500,7 @@ internal sealed class ViewerWindow
             _searchDisplayActive = false;
             _searchProgressPercentage = 0d;
             _searchMatchedLineCount = 0;
+            _searchErrorText = string.Empty;
             _filteredPane?.SetStatus(string.Empty);
             RecalculateLayout();
             ApplyLayout();
@@ -438,16 +508,53 @@ internal sealed class ViewerWindow
             return;
         }
 
+        SearchOptions options = new(_searchQuery, _useRegex, _ignoreCase);
+        if (!TryValidateSearchOptions(options))
+        {
+            return;
+        }
+
         _searchInProgress = true;
         _searchDisplayActive = true;
         _searchProgressPercentage = 0d;
         _searchMatchedLineCount = 0;
+        _searchErrorText = string.Empty;
         _filteredPane?.SetEmptyContentText("(no matches)");
         _filteredPane?.SetStatus("Searching...");
         RecalculateLayout();
         ApplyLayout();
         InvalidateHost();
         NativeMethods.SetTimer(_hwnd, SearchDebounceTimerId, SearchDebounceMs, IntPtr.Zero);
+    }
+
+    private bool TryValidateSearchOptions(SearchOptions options)
+    {
+        try
+        {
+            LogSearchBuilder.ValidateOptions(options);
+            return true;
+        }
+        catch (ArgumentException ex) when (options.UseRegex)
+        {
+            _searchInProgress = false;
+            _searchDisplayActive = true;
+            _searchErrorText = "Regex error";
+            _filteredPane?.SetStatus(string.Empty, disposeReader: false);
+            RecalculateLayout();
+            ApplyLayout();
+            InvalidateHost();
+            AppLog.Instance.Error(
+                "search.failed",
+                "failed",
+                new LogField("requestId", _latestSearchRequestId.ToString()),
+                new LogField("query", options.Query),
+                new LogField("queryLength", options.Query.Length.ToString()),
+                new LogField("useRegex", options.UseRegex.ToString()),
+                new LogField("ignoreCase", options.IgnoreCase.ToString()),
+                new LogField("durationMs", "0"),
+                new LogField("reason", ex.Message));
+            return false;
+        }
     }
 
     private void OnTimer(nuint timerId)
@@ -458,12 +565,12 @@ internal sealed class ViewerWindow
         }
 
         NativeMethods.KillTimer(_hwnd, SearchDebounceTimerId);
-        DispatchSearch(_latestSearchRequestId, _searchQuery);
+        DispatchSearch(_latestSearchRequestId, new SearchOptions(_searchQuery, _useRegex, _ignoreCase));
     }
 
-    private void DispatchSearch(long requestId, string query)
+    private void DispatchSearch(long requestId, SearchOptions options)
     {
-        if (_closing || string.IsNullOrEmpty(query) || _detectedEncoding is not DetectedEncodingInfo detected || _filteredPane is null)
+        if (_closing || string.IsNullOrEmpty(options.Query) || _detectedEncoding is not DetectedEncodingInfo detected || _filteredPane is null)
         {
             return;
         }
@@ -471,6 +578,7 @@ internal sealed class ViewerWindow
         int visibleLines = _filteredPane.VisibleLineCount;
         string workerPath = _path;
         IntPtr hwnd = _hwnd;
+        string query = options.Query;
         ThreadPool.QueueUserWorkItem(_ =>
         {
             Stopwatch workerStopwatch = Stopwatch.StartNew();
@@ -480,16 +588,20 @@ internal sealed class ViewerWindow
                 new LogField("requestId", requestId.ToString()),
                 new LogField("query", query),
                 new LogField("queryLength", query.Length.ToString()),
+                new LogField("useRegex", options.UseRegex.ToString()),
+                new LogField("ignoreCase", options.IgnoreCase.ToString()),
                 new LogField("visibleLines", visibleLines.ToString()));
 
             try
             {
-                LogSearchBuilder.BuildFilteredReaderIncremental(workerPath, detected.Encoding, detected.DataOffset, query, visibleLines, update =>
+                LogSearchBuilder.BuildFilteredReaderIncremental(workerPath, detected.Encoding, detected.DataOffset, options, visibleLines, update =>
                 {
                     PostSearchWorkerResult(new SearchWorkerResult
                     {
                         RequestId = requestId,
                         Query = query,
+                        UseRegex = options.UseRegex,
+                        IgnoreCase = options.IgnoreCase,
                         Success = true,
                         Reader = update.Reader,
                         PreloadedVisibleLines = visibleLines,
@@ -506,6 +618,8 @@ internal sealed class ViewerWindow
                 {
                     RequestId = requestId,
                     Query = query,
+                    UseRegex = options.UseRegex,
+                    IgnoreCase = options.IgnoreCase,
                     Success = false,
                     Message = ex.Message,
                     ProgressPercentage = _searchProgressPercentage,
@@ -558,6 +672,7 @@ internal sealed class ViewerWindow
         _searchMatchedLineCount = Math.Max(0, result.MatchedLineCount);
         _searchInProgress = !result.IsFinal;
         _searchDisplayActive = true;
+        _searchErrorText = string.Empty;
 
         if (_filteredPane is null)
         {
@@ -568,18 +683,19 @@ internal sealed class ViewerWindow
         if (!result.Success)
         {
             _searchInProgress = false;
-            _searchProgressPercentage = 0d;
-            _searchMatchedLineCount = 0;
-            _searchDisplayActive = false;
+            _searchDisplayActive = true;
+            _searchErrorText = result.UseRegex ? "Regex error" : "Search error";
             result.Reader?.Dispose();
-            _filteredPane.SetStatus("Search failed.");
-            InvalidateHost();
+            _filteredPane.SetStatus(string.Empty, disposeReader: false);
+            InvalidateSearchBar();
             AppLog.Instance.Error(
                 "search.failed",
                 "failed",
                 new LogField("requestId", result.RequestId.ToString()),
                 new LogField("query", result.Query),
                 new LogField("queryLength", result.Query.Length.ToString()),
+                new LogField("useRegex", result.UseRegex.ToString()),
+                new LogField("ignoreCase", result.IgnoreCase.ToString()),
                 new LogField("durationMs", result.ElapsedMilliseconds.ToString()),
                 new LogField("reason", result.Message ?? "unknown error"));
             return;
@@ -612,6 +728,8 @@ internal sealed class ViewerWindow
                 new LogField("requestId", result.RequestId.ToString()),
                 new LogField("query", result.Query),
                 new LogField("queryLength", result.Query.Length.ToString()),
+                new LogField("useRegex", result.UseRegex.ToString()),
+                new LogField("ignoreCase", result.IgnoreCase.ToString()),
                 new LogField("durationMs", result.ElapsedMilliseconds.ToString()),
                 new LogField("matchedLineCount", result.MatchedLineCount.ToString()),
                 new LogField("progressPercentage", Math.Round(_searchProgressPercentage).ToString()));
@@ -628,6 +746,8 @@ internal sealed class ViewerWindow
             new LogField("requestId", result.RequestId.ToString()),
             new LogField("query", result.Query),
             new LogField("queryLength", result.Query.Length.ToString()),
+            new LogField("useRegex", result.UseRegex.ToString()),
+            new LogField("ignoreCase", result.IgnoreCase.ToString()),
             new LogField("durationMs", result.ElapsedMilliseconds.ToString()),
             new LogField("matchedLineCount", result.MatchedLineCount.ToString()));
     }
@@ -695,12 +815,12 @@ internal sealed class ViewerWindow
         if (!string.IsNullOrEmpty(_searchQuery))
         {
             searchResultsHeight = Math.Clamp((int)Math.Round(clientHeight * 0.35d), SearchResultsMinHeight, SearchResultsMaxHeight);
-            searchResultsHeight = Math.Min(searchResultsHeight, Math.Max(0, clientHeight - SearchBarHeight));
+            searchResultsHeight = Math.Min(searchResultsHeight, Math.Max(0, clientHeight - SearchAreaHeight));
         }
 
-        int viewerBottom = Math.Max(clientRect.top, clientRect.bottom - SearchBarHeight - searchResultsHeight);
-        int searchBarTop = viewerBottom;
-        int searchBarBottom = Math.Min(clientRect.bottom, searchBarTop + SearchBarHeight);
+        int viewerBottom = Math.Max(clientRect.top, clientRect.bottom - SearchAreaHeight - searchResultsHeight);
+        int searchAreaTop = viewerBottom;
+        int searchAreaBottom = Math.Min(clientRect.bottom, searchAreaTop + SearchAreaHeight);
         NativeMethods.RECT viewerRect = new()
         {
             left = clientRect.left,
@@ -708,46 +828,68 @@ internal sealed class ViewerWindow
             right = clientRect.right,
             bottom = viewerBottom
         };
-        NativeMethods.RECT searchBarRect = new()
+        NativeMethods.RECT searchAreaRect = new()
         {
             left = clientRect.left,
-            top = searchBarTop,
+            top = searchAreaTop,
             right = clientRect.right,
-            bottom = searchBarBottom
+            bottom = searchAreaBottom
         };
         NativeMethods.RECT searchResultsRect = searchResultsHeight > 0
             ? new NativeMethods.RECT
             {
                 left = clientRect.left,
-                top = searchBarBottom,
+                top = searchAreaBottom,
                 right = clientRect.right,
                 bottom = clientRect.bottom
             }
             : CreateZeroRect();
 
-        NativeMethods.RECT searchBarInner = InsetRect(searchBarRect, SearchInnerPadding);
-        int progressWidth = Math.Clamp(clientWidth / 6, SearchProgressMinWidth, SearchProgressMaxWidth);
-        progressWidth = Math.Min(progressWidth, Math.Max(0, GetRectWidth(searchBarInner) - 80));
-        NativeMethods.RECT progressRect = progressWidth > 0
+        NativeMethods.RECT searchAreaInner = InsetRect(searchAreaRect, SearchInnerPadding);
+        int inputBottom = Math.Min(searchAreaInner.bottom, searchAreaInner.top + SearchInputRowHeight);
+        NativeMethods.RECT inputRowRect = new()
+        {
+            left = searchAreaInner.left,
+            top = searchAreaInner.top,
+            right = searchAreaInner.right,
+            bottom = inputBottom
+        };
+
+        NativeMethods.RECT ignoreCaseRect = new()
+        {
+            left = Math.Max(inputRowRect.left, inputRowRect.right - IgnoreCaseToggleWidth),
+            top = inputRowRect.top,
+            right = inputRowRect.right,
+            bottom = inputRowRect.bottom
+        };
+        int regexRight = Math.Max(inputRowRect.left, ignoreCaseRect.left - SearchToggleGap);
+        NativeMethods.RECT regexRect = new()
+        {
+            left = Math.Max(inputRowRect.left, regexRight - RegexToggleWidth),
+            top = inputRowRect.top,
+            right = regexRight,
+            bottom = inputRowRect.bottom
+        };
+        NativeMethods.RECT editRect = new()
+        {
+            left = inputRowRect.left,
+            top = inputRowRect.top,
+            right = Math.Max(inputRowRect.left, regexRect.left - SearchToggleGap),
+            bottom = inputRowRect.bottom
+        };
+
+        int progressTop = Math.Min(searchAreaInner.bottom, inputBottom + SearchProgressGap);
+        NativeMethods.RECT progressRect = progressTop < searchAreaInner.bottom
             ? new NativeMethods.RECT
             {
-                left = Math.Max(searchBarInner.left, searchBarInner.right - progressWidth),
-                top = searchBarInner.top,
-                right = searchBarInner.right,
-                bottom = searchBarInner.bottom
+                left = searchAreaInner.left,
+                top = progressTop,
+                right = searchAreaInner.right,
+                bottom = Math.Min(searchAreaInner.bottom, progressTop + SearchProgressRowHeight)
             }
             : CreateZeroRect();
-        NativeMethods.RECT editRect = progressWidth > 0
-            ? new NativeMethods.RECT
-            {
-                left = searchBarInner.left,
-                top = searchBarInner.top,
-                right = Math.Max(searchBarInner.left, progressRect.left - SearchProgressGap),
-                bottom = searchBarInner.bottom
-            }
-            : searchBarInner;
 
-        _layout = new WindowLayout(clientRect, viewerRect, searchBarRect, searchResultsRect, editRect, progressRect);
+        _layout = new WindowLayout(clientRect, viewerRect, searchAreaRect, searchResultsRect, editRect, regexRect, ignoreCaseRect, progressRect);
     }
 
     private void ApplyLayout()
@@ -762,7 +904,23 @@ internal sealed class ViewerWindow
             GetRectWidth(_layout.SearchEditRect),
             GetRectHeight(_layout.SearchEditRect),
             true);
+        NativeMethods.MoveWindow(
+            _regexCheckbox,
+            _layout.SearchRegexToggleRect.left,
+            _layout.SearchRegexToggleRect.top,
+            GetRectWidth(_layout.SearchRegexToggleRect),
+            GetRectHeight(_layout.SearchRegexToggleRect),
+            true);
+        NativeMethods.MoveWindow(
+            _ignoreCaseCheckbox,
+            _layout.SearchIgnoreCaseToggleRect.left,
+            _layout.SearchIgnoreCaseToggleRect.top,
+            GetRectWidth(_layout.SearchIgnoreCaseToggleRect),
+            GetRectHeight(_layout.SearchIgnoreCaseToggleRect),
+            true);
         NativeMethods.ShowWindow(_searchEdit, NativeMethods.SW_SHOW);
+        NativeMethods.ShowWindow(_regexCheckbox, NativeMethods.SW_SHOW);
+        NativeMethods.ShowWindow(_ignoreCaseCheckbox, NativeMethods.SW_SHOW);
     }
 
     private void ScheduleSearch()
@@ -772,16 +930,7 @@ internal sealed class ViewerWindow
             return;
         }
 
-        _filteredPane?.SetStatus("Searching...");
-        RecalculateLayout();
-        ApplyLayout();
-        _searchInProgress = true;
-        _searchDisplayActive = true;
-        _searchProgressPercentage = 0d;
-        _searchMatchedLineCount = 0;
-        InvalidateHost();
-        NativeMethods.KillTimer(_hwnd, SearchDebounceTimerId);
-        NativeMethods.SetTimer(_hwnd, SearchDebounceTimerId, SearchDebounceMs, IntPtr.Zero);
+        RestartSearchAfterInputChange();
     }
 
     private void DisposeResources()
@@ -795,6 +944,16 @@ internal sealed class ViewerWindow
             NativeMethods.DestroyWindow(_searchEdit);
         }
 
+        if (_regexCheckbox != IntPtr.Zero)
+        {
+            NativeMethods.DestroyWindow(_regexCheckbox);
+        }
+
+        if (_ignoreCaseCheckbox != IntPtr.Zero)
+        {
+            NativeMethods.DestroyWindow(_ignoreCaseCheckbox);
+        }
+
         if (_font != IntPtr.Zero && _font != NativeMethods.GetStockObject(NativeMethods.SYSTEM_FIXED_FONT))
         {
             NativeMethods.DeleteObject(_font);
@@ -806,12 +965,14 @@ internal sealed class ViewerWindow
         }
 
         _searchEdit = IntPtr.Zero;
+        _regexCheckbox = IntPtr.Zero;
+        _ignoreCaseCheckbox = IntPtr.Zero;
         _font = IntPtr.Zero;
     }
 
     private void PaintSearchProgress(IntPtr hdc)
     {
-        if (!_searchDisplayActive || IsZeroRect(_layout.SearchProgressRect))
+        if ((!_searchDisplayActive && string.IsNullOrEmpty(_searchErrorText)) || IsZeroRect(_layout.SearchProgressRect))
         {
             return;
         }
@@ -827,7 +988,7 @@ internal sealed class ViewerWindow
         NativeMethods.FillRect(hdc, ref fillRect, NativeMethods.GetSysColorBrush(NativeMethods.COLOR_WINDOW));
 
         int innerWidth = GetRectWidth(fillRect);
-        if (innerWidth > 0)
+        if (innerWidth > 0 && string.IsNullOrEmpty(_searchErrorText))
         {
             int filledWidth = (int)Math.Round(innerWidth * Math.Clamp(_searchProgressPercentage, 0d, 100d) / 100d);
             if (filledWidth > 0)
@@ -838,7 +999,7 @@ internal sealed class ViewerWindow
             }
         }
 
-        string progressText = FormatSearchProgressText();
+        string progressText = string.IsNullOrEmpty(_searchErrorText) ? FormatSearchProgressText() : _searchErrorText;
         NativeMethods.SetTextColor(hdc, NativeMethods.RGB(0, 0, 0));
         NativeMethods.DrawTextW(
             hdc,
@@ -852,7 +1013,7 @@ internal sealed class ViewerWindow
     {
         long matches = Math.Max(0, _searchMatchedLineCount);
         string label = matches == 1 ? "linha" : "linhas";
-        return $"{Math.Round(_searchProgressPercentage):0}% • {matches} {label}";
+        return $"{Math.Round(_searchProgressPercentage):0}% \u2022 {matches} {label}";
     }
 
     private void InvalidateHost()
@@ -870,8 +1031,24 @@ internal sealed class ViewerWindow
             return;
         }
 
-        NativeMethods.RECT rect = IsZeroRect(_layout.SearchBarRect) ? _layout.ClientRect : _layout.SearchBarRect;
+        NativeMethods.RECT rect = IsZeroRect(_layout.SearchAreaRect) ? _layout.ClientRect : _layout.SearchAreaRect;
         NativeMethods.InvalidateRect(_hwnd, ref rect, false);
+    }
+
+    private void ReadSearchModeFromControls()
+    {
+        _useRegex = IsButtonChecked(_regexCheckbox);
+        _ignoreCase = IsButtonChecked(_ignoreCaseCheckbox);
+    }
+
+    private static bool IsButtonChecked(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        return NativeMethods.SendMessageW(hwnd, NativeMethods.BM_GETCHECK, IntPtr.Zero, IntPtr.Zero).ToInt32() == NativeMethods.BST_CHECKED;
     }
 
     private static string ReadWindowText(IntPtr hwnd)

@@ -14,6 +14,7 @@ internal static class NativeMethods
     public const int WS_HSCROLL = 0x00100000;
     public const int WS_VSCROLL = 0x00200000;
     public const int ES_AUTOHSCROLL = 0x0080;
+    public const int BS_AUTOCHECKBOX = 0x00000003;
     public const int CW_USEDEFAULT = unchecked((int)0x80000000);
     public const int SW_HIDE = 0;
     public const int SW_SHOW = 5;
@@ -34,6 +35,8 @@ internal static class NativeMethods
     public const int WM_ERASEBKGND = 0x0014;
     public const int WM_NCCREATE = 0x0081;
     public const int WM_NCDESTROY = 0x0082;
+    public const int BM_GETCHECK = 0x00F0;
+    public const int BM_SETCHECK = 0x00F1;
     public const int WM_APP = 0x8000;
     public const int WM_APP_BEGIN_OPEN = WM_APP + 1;
     public const int WM_APP_OPEN_COMPLETE = WM_APP + 2;
@@ -82,6 +85,9 @@ internal static class NativeMethods
     public const int MB_OK = 0x00000000;
     public const int MB_ICONERROR = 0x00000010;
     public const int EN_CHANGE = 0x0300;
+    public const int BN_CLICKED = 0;
+    public const int BST_UNCHECKED = 0;
+    public const int BST_CHECKED = 1;
     public const int VK_UP = 0x26;
     public const int VK_DOWN = 0x28;
     public const int VK_PRIOR = 0x21;
