@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 
-public readonly record struct FilteredLineDescriptor(long StartOffset, long EndOffset, int VisualRowCount);
+public readonly record struct FilteredLineDescriptor(long StartOffset, long EndOffset, int VisualRowCount, string[]? CaptureGroups = null);
 
 internal readonly record struct RealLineData(long StartOffset, long EndOffset, string Text);
 

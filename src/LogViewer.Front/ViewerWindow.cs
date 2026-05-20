@@ -575,7 +575,7 @@ internal sealed class ViewerWindow
             return;
         }
 
-        int visibleLines = _filteredPane.VisibleLineCount;
+        int visibleLines = _filteredPane.VisibleDataLineCount;
         string workerPath = _path;
         IntPtr hwnd = _hwnd;
         string query = options.Query;
@@ -711,11 +711,11 @@ internal sealed class ViewerWindow
                     desiredTopRow = currentFilteredReader.TopRowOrdinal;
                 }
 
-                nextFilteredReader.ReadFromRowOrdinal(desiredTopRow, _filteredPane.VisibleLineCount);
+                nextFilteredReader.ReadFromRowOrdinal(desiredTopRow, _filteredPane.VisibleDataLineCount);
             }
 
             _filteredPane.SetEmptyContentText("(no matches)");
-            _filteredPane.SetReader(result.Reader, _filteredPane.VisibleLineCount);
+            _filteredPane.SetReader(result.Reader, _filteredPane.VisibleDataLineCount);
         }
 
         if (result.IsFinal)

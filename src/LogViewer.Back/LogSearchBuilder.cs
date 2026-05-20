@@ -34,12 +34,13 @@ public static class LogSearchBuilder
 
         foreach (RealLineData line in SearchRealLineScanner.Enumerate(fullPath, encoding, kind, dataOffset, fileSize))
         {
-            if (matcher.IsMatch(line.Text))
+            if (matcher.TryMatch(line.Text, out string[]? captureGroups))
             {
                 descriptors.Add(new FilteredLineDescriptor(
                     line.StartOffset,
                     line.EndOffset,
-                    FilteredLineUtilities.CountVisualRows(line.Text)));
+                    FilteredLineUtilities.CountVisualRows(line.Text),
+                    captureGroups));
             }
         }
 
@@ -66,12 +67,13 @@ public static class LogSearchBuilder
         foreach (RealLineData line in SearchRealLineScanner.Enumerate(fullPath, encoding, kind, dataOffset, fileSize))
         {
             scannedOffset = line.EndOffset;
-            if (matcher.IsMatch(line.Text))
+            if (matcher.TryMatch(line.Text, out string[]? captureGroups))
             {
                 descriptors.Add(new FilteredLineDescriptor(
                     line.StartOffset,
                     line.EndOffset,
-                    FilteredLineUtilities.CountVisualRows(line.Text)));
+                    FilteredLineUtilities.CountVisualRows(line.Text),
+                    captureGroups));
             }
 
             long now = Environment.TickCount64;
@@ -125,12 +127,14 @@ public static class LogSearchBuilder
         private readonly Regex? _regex;
         private readonly string _query;
         private readonly StringComparison _literalComparison;
+        private readonly int _captureGroupCount;
 
         private SearchMatcher(Regex regex)
         {
             _regex = regex;
             _query = string.Empty;
             _literalComparison = StringComparison.Ordinal;
+            _captureGroupCount = Math.Max(0, regex.GetGroupNumbers().Length - 1);
         }
 
         private SearchMatcher(string query, StringComparison literalComparison)
@@ -138,6 +142,7 @@ public static class LogSearchBuilder
             _regex = null;
             _query = query;
             _literalComparison = literalComparison;
+            _captureGroupCount = 0;
         }
 
         public static SearchMatcher Create(SearchOptions options)
@@ -153,11 +158,34 @@ public static class LogSearchBuilder
             return new SearchMatcher(options.Query, comparison);
         }
 
-        public bool IsMatch(string text)
+        public bool TryMatch(string text, out string[]? captureGroups)
         {
+            captureGroups = null;
             if (_regex is not null)
             {
-                return _regex.IsMatch(text);
+                Match match = _regex.Match(text);
+                if (!match.Success)
+                {
+                    return false;
+                }
+
+                if (_captureGroupCount > 0)
+                {
+                    captureGroups = new string[_captureGroupCount];
+                    int groupsToCopy = Math.Min(_captureGroupCount, match.Groups.Count - 1);
+                    for (int i = 0; i < groupsToCopy; i++)
+                    {
+                        Group group = match.Groups[i + 1];
+                        captureGroups[i] = group.Success ? group.Value : string.Empty;
+                    }
+
+                    for (int i = groupsToCopy; i < captureGroups.Length; i++)
+                    {
+                        captureGroups[i] = string.Empty;
+                    }
+                }
+
+                return true;
             }
 
             return text.IndexOf(_query, _literalComparison) >= 0;

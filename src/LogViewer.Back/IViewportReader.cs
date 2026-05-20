@@ -17,3 +17,9 @@ public interface IViewportReader : IDisposable
     IReadOnlyList<string> ReadFromPercentage(double percentage, int count);
     IViewportReader CloneForWorker();
 }
+
+public interface IColumnViewportReader : IViewportReader
+{
+    IReadOnlyList<string> ColumnHeaders { get; }
+    IReadOnlyList<IReadOnlyList<string>> CurrentCells { get; }
+}

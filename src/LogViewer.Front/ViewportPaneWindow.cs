@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 
 internal enum ViewportRequestKind
@@ -25,6 +27,7 @@ internal sealed class ViewportPaneWindow : IDisposable
     private const int WheelLinesPerNotch = 3;
     private const int ScrollRange = 1_000_000;
     private const int VerticalScrollVirtualRows = 4000;
+    private const int ColumnGapChars = 2;
     private const string WindowClassName = "LogViewerViewportPaneWindow";
 
     private static readonly object s_registrationSync = new();
@@ -61,6 +64,7 @@ internal sealed class ViewportPaneWindow : IDisposable
     public IntPtr Hwnd => _hwnd;
     public IViewportReader? Reader => _reader;
     public int VisibleLineCount => Math.Max(1, _visibleLineCount);
+    public int VisibleDataLineCount => Math.Max(1, _visibleLineCount - GetHeaderLineCount(_reader));
     public bool IsVisible => _isVisible;
 
     public void Create(IntPtr parentHwnd, IntPtr hInstance)
@@ -130,12 +134,12 @@ internal sealed class ViewportPaneWindow : IDisposable
         _statusText = string.Empty;
         ResetViewportAsyncState();
         UpdateScrollBar();
-        if (VisibleLineCount != Math.Max(1, preloadedVisibleLines))
+        if (VisibleDataLineCount != Math.Max(1, preloadedVisibleLines))
         {
             QueueViewportRequest(
                 ViewportRequestKind.LoadAtPercentage,
                 requestedPercentage: _reader.ScrollPercentage,
-                visibleLines: VisibleLineCount);
+                visibleLines: VisibleDataLineCount);
         }
 
         NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
@@ -200,7 +204,7 @@ internal sealed class ViewportPaneWindow : IDisposable
             return;
         }
 
-        int effectiveVisible = Math.Max(1, visibleLines ?? VisibleLineCount);
+        int effectiveVisible = Math.Max(1, visibleLines ?? VisibleDataLineCount);
         var request = new ViewportRequest(
             Id: ++_nextViewportRequestId,
             Kind: kind,
@@ -308,16 +312,16 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private void OnSize()
     {
-        int previousVisibleLineCount = _visibleLineCount;
+        int previousVisibleDataLineCount = VisibleDataLineCount;
         UpdateScrollBar();
         if (_reader is not null &&
             _reader.HasContent &&
-            _visibleLineCount != previousVisibleLineCount)
+            VisibleDataLineCount != previousVisibleDataLineCount)
         {
             QueueViewportRequest(
                 ViewportRequestKind.LoadAtPercentage,
                 requestedPercentage: _reader.ScrollPercentage,
-                visibleLines: VisibleLineCount);
+                visibleLines: VisibleDataLineCount);
         }
 
         NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
@@ -414,10 +418,10 @@ internal sealed class ViewportPaneWindow : IDisposable
                 ScrollByLines(1);
                 break;
             case NativeMethods.VK_PRIOR:
-                ScrollByLines(-VisibleLineCount);
+                ScrollByLines(-VisibleDataLineCount);
                 break;
             case NativeMethods.VK_NEXT:
-                ScrollByLines(VisibleLineCount);
+                ScrollByLines(VisibleDataLineCount);
                 break;
             case NativeMethods.VK_HOME:
                 SetHorizontalOffset(0);
@@ -480,6 +484,11 @@ internal sealed class ViewportPaneWindow : IDisposable
             return visibleNonEmptyLines;
         }
 
+        if (_reader is IColumnViewportReader columnReader && columnReader.ColumnHeaders.Count > 0)
+        {
+            return PaintColumnContent(hdc, columnReader);
+        }
+
         NativeMethods.GetClientRect(_hwnd, out NativeMethods.RECT clientRect);
         foreach (string row in _reader.CurrentRows)
         {
@@ -500,6 +509,97 @@ internal sealed class ViewportPaneWindow : IDisposable
         return visibleNonEmptyLines;
     }
 
+    private int PaintColumnContent(IntPtr hdc, IColumnViewportReader reader)
+    {
+        NativeMethods.GetClientRect(_hwnd, out NativeMethods.RECT clientRect);
+        int[] widths = CalculateColumnWidths(reader);
+        int y = 0;
+
+        string headerLine = BuildColumnLine(reader.ColumnHeaders, widths);
+        string visibleHeader = SliceVisibleText(headerLine);
+        if (visibleHeader.Length > 0)
+        {
+            NativeMethods.TextOutW(hdc, 0, y, visibleHeader, visibleHeader.Length);
+        }
+
+        y += _lineHeight;
+        int visibleNonEmptyLines = 0;
+        foreach (IReadOnlyList<string> row in reader.CurrentCells)
+        {
+            string line = BuildColumnLine(row, widths);
+            string visibleText = SliceVisibleText(line);
+            if (visibleText.Length > 0)
+            {
+                NativeMethods.TextOutW(hdc, 0, y, visibleText, visibleText.Length);
+                visibleNonEmptyLines++;
+            }
+
+            y += _lineHeight;
+            if (y >= clientRect.bottom)
+            {
+                break;
+            }
+        }
+
+        return visibleNonEmptyLines;
+    }
+
+    private static int[] CalculateColumnWidths(IColumnViewportReader reader)
+    {
+        int columnCount = reader.ColumnHeaders.Count;
+        int[] widths = new int[columnCount];
+        for (int i = 0; i < columnCount; i++)
+        {
+            widths[i] = reader.ColumnHeaders[i].Length;
+        }
+
+        foreach (IReadOnlyList<string> row in reader.CurrentCells)
+        {
+            int count = Math.Min(columnCount, row.Count);
+            for (int i = 0; i < count; i++)
+            {
+                widths[i] = Math.Max(widths[i], row[i].Length);
+            }
+        }
+
+        for (int i = 0; i < widths.Length - 1; i++)
+        {
+            widths[i] += ColumnGapChars;
+        }
+
+        return widths;
+    }
+
+    private static string BuildColumnLine(IReadOnlyList<string> cells, IReadOnlyList<int> widths)
+    {
+        if (widths.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        int capacity = 0;
+        for (int i = 0; i < widths.Count; i++)
+        {
+            capacity += Math.Max(0, widths[i]);
+        }
+
+        var builder = new StringBuilder(capacity);
+        for (int i = 0; i < widths.Count; i++)
+        {
+            string value = i < cells.Count ? cells[i] : string.Empty;
+            if (i < widths.Count - 1)
+            {
+                builder.Append(value.PadRight(Math.Max(value.Length, widths[i])));
+            }
+            else
+            {
+                builder.Append(value);
+            }
+        }
+
+        return builder.ToString();
+    }
+
     private void ScrollByLines(int deltaLines)
     {
         if (_reader is null)
@@ -507,7 +607,7 @@ internal sealed class ViewportPaneWindow : IDisposable
             return;
         }
 
-        QueueViewportRequest(ViewportRequestKind.ScrollByLines, deltaLines, visibleLines: VisibleLineCount);
+        QueueViewportRequest(ViewportRequestKind.ScrollByLines, deltaLines, visibleLines: VisibleDataLineCount);
     }
 
     private void Scroll(int command, int trackPos)
@@ -517,7 +617,7 @@ internal sealed class ViewportPaneWindow : IDisposable
             return;
         }
 
-        int visible = VisibleLineCount;
+        int visible = VisibleDataLineCount;
         switch (command)
         {
             case NativeMethods.SB_LINEUP:
@@ -548,7 +648,7 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private void SetHorizontalOffset(int requestedOffset)
     {
-        int maxOffset = Math.Max(0, VisualRowReader.VisibleSegmentChars - _visibleColumnCount);
+        int maxOffset = Math.Max(0, GetContentWidthChars() - _visibleColumnCount);
         int nextOffset = Math.Clamp(requestedOffset, 0, maxOffset);
         if (nextOffset == _xOffsetChars)
         {
@@ -589,15 +689,16 @@ internal sealed class ViewportPaneWindow : IDisposable
         _visibleLineCount = Math.Max(1, GetRectHeight(clientRect) / _lineHeight);
         _visibleColumnCount = Math.Max(1, GetRectWidth(clientRect) / _charWidth);
 
-        int horizontalMax = Math.Max(0, VisualRowReader.VisibleSegmentChars - _visibleColumnCount);
+        int contentWidthChars = GetContentWidthChars();
+        int horizontalMax = Math.Max(0, contentWidthChars - _visibleColumnCount);
         _xOffsetChars = Math.Clamp(_xOffsetChars, 0, horizontalMax);
         NativeMethods.SCROLLINFO horizontal = new()
         {
             cbSize = (uint)Marshal.SizeOf<NativeMethods.SCROLLINFO>(),
             fMask = NativeMethods.SIF_RANGE | NativeMethods.SIF_PAGE | NativeMethods.SIF_POS,
             nMin = 0,
-            nMax = VisualRowReader.VisibleSegmentChars,
-            nPage = (uint)Math.Max(1, Math.Min(VisualRowReader.VisibleSegmentChars, _visibleColumnCount)),
+            nMax = contentWidthChars,
+            nPage = (uint)Math.Max(1, Math.Min(contentWidthChars, _visibleColumnCount)),
             nPos = _xOffsetChars
         };
         NativeMethods.SetScrollInfo(_hwnd, NativeMethods.SB_HORZ, ref horizontal, true);
@@ -617,7 +718,8 @@ internal sealed class ViewportPaneWindow : IDisposable
             return;
         }
 
-        long verticalPage = Math.Max(1, Math.Min(ScrollRange, ((long)_visibleLineCount * ScrollRange) / VerticalScrollVirtualRows));
+        int visibleDataLines = VisibleDataLineCount;
+        long verticalPage = Math.Max(1, Math.Min(ScrollRange, ((long)visibleDataLines * ScrollRange) / VerticalScrollVirtualRows));
         NativeMethods.SCROLLINFO vertical = new()
         {
             cbSize = (uint)Marshal.SizeOf<NativeMethods.SCROLLINFO>(),
@@ -628,6 +730,28 @@ internal sealed class ViewportPaneWindow : IDisposable
             nPos = (int)Math.Min(ScrollRange, (_reader.ScrollPercentage / 100d) * ScrollRange)
         };
         NativeMethods.SetScrollInfo(_hwnd, NativeMethods.SB_VERT, ref vertical, true);
+    }
+
+    private int GetContentWidthChars()
+    {
+        if (_reader is IColumnViewportReader columnReader && columnReader.ColumnHeaders.Count > 0)
+        {
+            int[] widths = CalculateColumnWidths(columnReader);
+            int total = 0;
+            for (int i = 0; i < widths.Length; i++)
+            {
+                total += Math.Max(0, widths[i]);
+            }
+
+            return Math.Max(1, total);
+        }
+
+        return VisualRowReader.VisibleSegmentChars;
+    }
+
+    private static int GetHeaderLineCount(IViewportReader? reader)
+    {
+        return reader is IColumnViewportReader columnReader && columnReader.ColumnHeaders.Count > 0 ? 1 : 0;
     }
 
     private static ViewportPaneWindow? FromHandle(IntPtr hwnd)

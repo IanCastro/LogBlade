@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 
-public sealed class FilteredVisualRowReader : IViewportReader
+public sealed class FilteredVisualRowReader : IColumnViewportReader
 {
     private string _filePath;
     private LogEncodingKind _kind;
@@ -12,7 +12,10 @@ public sealed class FilteredVisualRowReader : IViewportReader
     private long _fileSize;
     private FilteredLineDescriptor[] _descriptors;
     private long[] _descriptorRowStarts;
+    private string[] _columnHeaders = Array.Empty<string>();
     private readonly List<string> _currentRows = new();
+    private readonly List<IReadOnlyList<string>> _currentCells = new();
+    private int _captureGroupCount;
     private long _totalVisualRows;
     private long _topRowOrdinal;
     private long _viewportBytes;
@@ -37,6 +40,17 @@ public sealed class FilteredVisualRowReader : IViewportReader
             _descriptors[i] = descriptors[i];
             _descriptorRowStarts[i] = runningRows;
             runningRows += Math.Max(1, descriptors[i].VisualRowCount);
+            _captureGroupCount = Math.Max(_captureGroupCount, descriptors[i].CaptureGroups?.Length ?? 0);
+        }
+
+        if (_captureGroupCount > 0)
+        {
+            _columnHeaders = new string[_captureGroupCount + 1];
+            _columnHeaders[0] = "Text";
+            for (int i = 0; i < _captureGroupCount; i++)
+            {
+                _columnHeaders[i + 1] = i.ToString();
+            }
         }
 
         _totalVisualRows = runningRows;
@@ -75,6 +89,37 @@ public sealed class FilteredVisualRowReader : IViewportReader
         }
     }
     public bool HasContent => _descriptors.Length > 0;
+    public IReadOnlyList<string> ColumnHeaders
+    {
+        get
+        {
+            string[] headers = new string[_columnHeaders.Length];
+            Array.Copy(_columnHeaders, headers, _columnHeaders.Length);
+            return headers;
+        }
+    }
+
+    public IReadOnlyList<IReadOnlyList<string>> CurrentCells
+    {
+        get
+        {
+            IReadOnlyList<string>[] cells = new IReadOnlyList<string>[_currentCells.Count];
+            for (int i = 0; i < _currentCells.Count; i++)
+            {
+                IReadOnlyList<string> source = _currentCells[i];
+                string[] row = new string[source.Count];
+                for (int j = 0; j < source.Count; j++)
+                {
+                    row[j] = source[j];
+                }
+
+                cells[i] = row;
+            }
+
+            return cells;
+        }
+    }
+
     public IReadOnlyList<string> CurrentRows
     {
         get
@@ -144,6 +189,7 @@ public sealed class FilteredVisualRowReader : IViewportReader
             _topRowOrdinal = 0;
             _viewportBytes = 0;
             _currentRows.Clear();
+            _currentCells.Clear();
             _viewportLoaded = true;
             return Array.Empty<string>();
         }
@@ -171,6 +217,7 @@ public sealed class FilteredVisualRowReader : IViewportReader
             _topRowOrdinal = 0;
             _viewportBytes = 0;
             _currentRows.Clear();
+            _currentCells.Clear();
             _viewportLoaded = true;
             return Array.Empty<string>();
         }
@@ -191,6 +238,17 @@ public sealed class FilteredVisualRowReader : IViewportReader
             _viewportLoaded = _viewportLoaded
         };
         clone._currentRows.AddRange(_currentRows);
+        foreach (IReadOnlyList<string> row in _currentCells)
+        {
+            string[] copy = new string[row.Count];
+            for (int i = 0; i < row.Count; i++)
+            {
+                copy[i] = row[i];
+            }
+
+            clone._currentCells.Add(copy);
+        }
+
         return clone;
     }
 
@@ -202,8 +260,11 @@ public sealed class FilteredVisualRowReader : IViewportReader
         }
 
         _currentRows.Clear();
+        _currentCells.Clear();
         _descriptors = Array.Empty<FilteredLineDescriptor>();
         _descriptorRowStarts = Array.Empty<long>();
+        _columnHeaders = Array.Empty<string>();
+        _captureGroupCount = 0;
         _totalVisualRows = 0;
         _topRowOrdinal = 0;
         _viewportBytes = 0;
@@ -223,6 +284,7 @@ public sealed class FilteredVisualRowReader : IViewportReader
         visibleLines = Math.Max(1, visibleLines);
         _viewportVisibleLines = visibleLines;
         _currentRows.Clear();
+        _currentCells.Clear();
         _viewportBytes = 0;
         _viewportLoaded = true;
 
@@ -251,7 +313,13 @@ public sealed class FilteredVisualRowReader : IViewportReader
             string text = FilteredLineUtilities.ReadLineText(fs, _encoding, descriptor.StartOffset, descriptor.EndOffset);
             for (int i = currentSegmentIndex; i < descriptor.VisualRowCount && _currentRows.Count < visibleLines; i++)
             {
-                _currentRows.Add(FilteredLineUtilities.GetVisualRowText(text, i));
+                string rowText = FilteredLineUtilities.GetVisualRowText(text, i);
+                _currentRows.Add(rowText);
+                if (_captureGroupCount > 0)
+                {
+                    _currentCells.Add(CreateCells(rowText, descriptor, includeCaptureGroups: i == 0));
+                }
+
                 lastEnd = descriptor.EndOffset;
             }
 
@@ -260,6 +328,27 @@ public sealed class FilteredVisualRowReader : IViewportReader
         }
 
         _viewportBytes = _currentRows.Count == 0 ? 0 : Math.Max(0, lastEnd - firstStart);
+    }
+
+    private string[] CreateCells(string rowText, FilteredLineDescriptor descriptor, bool includeCaptureGroups)
+    {
+        string[] cells = new string[_captureGroupCount + 1];
+        Array.Fill(cells, string.Empty);
+        cells[0] = rowText;
+
+        if (!includeCaptureGroups)
+        {
+            return cells;
+        }
+
+        string[]? captureGroups = descriptor.CaptureGroups;
+        int groupsToCopy = Math.Min(_captureGroupCount, captureGroups?.Length ?? 0);
+        for (int i = 0; i < groupsToCopy; i++)
+        {
+            cells[i + 1] = captureGroups![i];
+        }
+
+        return cells;
     }
 
     private (int DescriptorIndex, int SegmentIndex) MapTopRow(long rowOrdinal)
