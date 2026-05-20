@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -16,12 +17,14 @@ internal sealed class OpenWorkerResult
 internal sealed class SearchWorkerResult
 {
     public long RequestId { get; set; }
+    public string Query { get; set; } = string.Empty;
     public bool Success { get; set; }
     public string? Message { get; set; }
     public IViewportReader? Reader { get; set; }
     public int PreloadedVisibleLines { get; set; }
     public double ProgressPercentage { get; set; }
     public long MatchedLineCount { get; set; }
+    public long ElapsedMilliseconds { get; set; }
     public bool IsFinal { get; set; }
 }
 
@@ -470,6 +473,15 @@ internal sealed class ViewerWindow
         IntPtr hwnd = _hwnd;
         ThreadPool.QueueUserWorkItem(_ =>
         {
+            Stopwatch workerStopwatch = Stopwatch.StartNew();
+            AppLog.Instance.Info(
+                "search.begin",
+                "begin",
+                new LogField("requestId", requestId.ToString()),
+                new LogField("query", query),
+                new LogField("queryLength", query.Length.ToString()),
+                new LogField("visibleLines", visibleLines.ToString()));
+
             try
             {
                 LogSearchBuilder.BuildFilteredReaderIncremental(workerPath, detected.Encoding, detected.DataOffset, query, visibleLines, update =>
@@ -477,11 +489,13 @@ internal sealed class ViewerWindow
                     PostSearchWorkerResult(new SearchWorkerResult
                     {
                         RequestId = requestId,
+                        Query = query,
                         Success = true,
                         Reader = update.Reader,
                         PreloadedVisibleLines = visibleLines,
                         ProgressPercentage = update.ProgressPercentage,
                         MatchedLineCount = update.MatchedLineCount,
+                        ElapsedMilliseconds = update.ElapsedMilliseconds,
                         IsFinal = update.IsFinal
                     });
                 });
@@ -491,10 +505,12 @@ internal sealed class ViewerWindow
                 PostSearchWorkerResult(new SearchWorkerResult
                 {
                     RequestId = requestId,
+                    Query = query,
                     Success = false,
                     Message = ex.Message,
                     ProgressPercentage = _searchProgressPercentage,
                     MatchedLineCount = _searchMatchedLineCount,
+                    ElapsedMilliseconds = workerStopwatch.ElapsedMilliseconds,
                     IsFinal = true
                 });
             }
@@ -521,8 +537,19 @@ internal sealed class ViewerWindow
             return;
         }
 
-        if (_closing || result.RequestId != _latestSearchRequestId || string.IsNullOrEmpty(_searchQuery))
+        if (_closing)
         {
+            result.Reader?.Dispose();
+            return;
+        }
+
+        if (result.RequestId != _latestSearchRequestId || string.IsNullOrEmpty(_searchQuery))
+        {
+            if (result.IsFinal)
+            {
+                LogSearchDiscarded(result);
+            }
+
             result.Reader?.Dispose();
             return;
         }
@@ -547,7 +574,14 @@ internal sealed class ViewerWindow
             result.Reader?.Dispose();
             _filteredPane.SetStatus("Search failed.");
             InvalidateHost();
-            AppLog.Instance.Error("search.failed", "failed", new LogField("reason", result.Message ?? "unknown error"));
+            AppLog.Instance.Error(
+                "search.failed",
+                "failed",
+                new LogField("requestId", result.RequestId.ToString()),
+                new LogField("query", result.Query),
+                new LogField("queryLength", result.Query.Length.ToString()),
+                new LogField("durationMs", result.ElapsedMilliseconds.ToString()),
+                new LogField("reason", result.Message ?? "unknown error"));
             return;
         }
 
@@ -572,9 +606,30 @@ internal sealed class ViewerWindow
         {
             _searchInProgress = false;
             _searchProgressPercentage = 100d;
+            AppLog.Instance.Info(
+                "search.complete",
+                "complete",
+                new LogField("requestId", result.RequestId.ToString()),
+                new LogField("query", result.Query),
+                new LogField("queryLength", result.Query.Length.ToString()),
+                new LogField("durationMs", result.ElapsedMilliseconds.ToString()),
+                new LogField("matchedLineCount", result.MatchedLineCount.ToString()),
+                new LogField("progressPercentage", Math.Round(_searchProgressPercentage).ToString()));
         }
 
         InvalidateSearchBar();
+    }
+
+    private static void LogSearchDiscarded(SearchWorkerResult result)
+    {
+        AppLog.Instance.Info(
+            "search.discarded",
+            "discarded",
+            new LogField("requestId", result.RequestId.ToString()),
+            new LogField("query", result.Query),
+            new LogField("queryLength", result.Query.Length.ToString()),
+            new LogField("durationMs", result.ElapsedMilliseconds.ToString()),
+            new LogField("matchedLineCount", result.MatchedLineCount.ToString()));
     }
 
     private void OnPaint()

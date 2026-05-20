@@ -1,9 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Text;
 
-public readonly record struct SearchProgressUpdate(double ProgressPercentage, long MatchedLineCount, FilteredVisualRowReader? Reader, bool IsFinal);
+public readonly record struct SearchProgressUpdate(double ProgressPercentage, long MatchedLineCount, long ElapsedMilliseconds, FilteredVisualRowReader? Reader, bool IsFinal);
 
 public static class LogSearchBuilder
 {
@@ -16,9 +17,7 @@ public static class LogSearchBuilder
         LogEncodingKind kind = VisualRowReader.InferKind(encoding, dataOffset);
         List<FilteredLineDescriptor> descriptors = new();
 
-        using FileStream fs = VisualRowReader.OpenSourceStream(fullPath);
-        fs.Position = dataOffset;
-        while (FilteredLineUtilities.TryReadNextRealLine(fs, kind, encoding, fileSize, out RealLineData line))
+        foreach (RealLineData line in SearchRealLineScanner.Enumerate(fullPath, encoding, kind, dataOffset, fileSize))
         {
             if (line.Text.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0)
             {
@@ -42,12 +41,12 @@ public static class LogSearchBuilder
         long lastPublishedTick = Environment.TickCount64;
         int lastPublishedDescriptorCount = -1;
         bool partialPublished = false;
+        Stopwatch stopwatch = Stopwatch.StartNew();
 
-        using FileStream fs = VisualRowReader.OpenSourceStream(fullPath);
-        fs.Position = dataOffset;
-
-        while (FilteredLineUtilities.TryReadNextRealLine(fs, kind, encoding, fileSize, out RealLineData line))
+        long scannedOffset = dataOffset;
+        foreach (RealLineData line in SearchRealLineScanner.Enumerate(fullPath, encoding, kind, dataOffset, fileSize))
         {
+            scannedOffset = line.EndOffset;
             if (line.Text.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0)
             {
                 descriptors.Add(new FilteredLineDescriptor(
@@ -70,7 +69,7 @@ public static class LogSearchBuilder
 
         void PublishSnapshot(bool isFinal)
         {
-            double progress = Math.Clamp(((fs.Position - dataOffset) * 100d) / searchableBytes, 0d, 100d);
+            double progress = Math.Clamp(((scannedOffset - dataOffset) * 100d) / searchableBytes, 0d, 100d);
             if (isFinal)
             {
                 progress = 100d;
@@ -85,7 +84,7 @@ public static class LogSearchBuilder
                 lastPublishedDescriptorCount = descriptors.Count;
             }
 
-            onProgress(new SearchProgressUpdate(progress, descriptors.Count, reader, isFinal));
+            onProgress(new SearchProgressUpdate(progress, descriptors.Count, stopwatch.ElapsedMilliseconds, reader, isFinal));
             lastPublishedTick = Environment.TickCount64;
             partialPublished = partialPublished || reader is not null;
         }
