@@ -73,6 +73,7 @@ internal static class NativeMethods
     public const int COLOR_HIGHLIGHT = 13;
     public const int COLOR_3DFACE = 15;
     public const int COLOR_BTNSHADOW = 16;
+    public const int COLOR_3DLIGHT = 22;
     public const int DEFAULT_CHARSET = 1;
     public const int OUT_DEFAULT_PRECIS = 0;
     public const int OUT_OUTLINE_PRECIS = 8;
@@ -84,6 +85,7 @@ internal static class NativeMethods
     public const int DT_LEFT = 0x0000;
     public const int DT_VCENTER = 0x0004;
     public const int DT_SINGLELINE = 0x0020;
+    public const int DT_NOCLIP = 0x0100;
     public const int DT_END_ELLIPSIS = 0x8000;
     public const int DT_NOPREFIX = 0x0800;
     public const int WHEEL_DELTA = 120;

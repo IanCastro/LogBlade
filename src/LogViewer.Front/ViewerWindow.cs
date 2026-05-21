@@ -520,7 +520,7 @@ internal sealed class ViewerWindow
         _searchMatchedLineCount = 0;
         _searchErrorText = string.Empty;
         _filteredPane?.SetEmptyContentText("(no matches)");
-        _filteredPane?.SetStatus("Searching...");
+        _filteredPane?.SetStatus("Searching...", preserveColumnWidths: true);
         RecalculateLayout();
         ApplyLayout();
         InvalidateHost();
@@ -539,7 +539,7 @@ internal sealed class ViewerWindow
             _searchInProgress = false;
             _searchDisplayActive = true;
             _searchErrorText = "Regex error";
-            _filteredPane?.SetStatus(string.Empty, disposeReader: false);
+            _filteredPane?.SetStatus(string.Empty, disposeReader: false, preserveColumnWidths: true);
             RecalculateLayout();
             ApplyLayout();
             InvalidateHost();
@@ -686,7 +686,7 @@ internal sealed class ViewerWindow
             _searchDisplayActive = true;
             _searchErrorText = result.UseRegex ? "Regex error" : "Search error";
             result.Reader?.Dispose();
-            _filteredPane.SetStatus(string.Empty, disposeReader: false);
+            _filteredPane.SetStatus(string.Empty, disposeReader: false, preserveColumnWidths: true);
             InvalidateSearchBar();
             AppLog.Instance.Error(
                 "search.failed",
@@ -715,7 +715,7 @@ internal sealed class ViewerWindow
             }
 
             _filteredPane.SetEmptyContentText("(no matches)");
-            _filteredPane.SetReader(result.Reader, _filteredPane.VisibleDataLineCount);
+            _filteredPane.SetReader(result.Reader, _filteredPane.VisibleDataLineCount, preserveColumnWidths: true);
         }
 
         if (result.IsFinal)
