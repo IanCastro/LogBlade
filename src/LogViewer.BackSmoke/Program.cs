@@ -98,11 +98,10 @@ internal static class Program
         IColumnViewportReader columns = reader;
 
         AssertSequence("wrapped headers", columns.ColumnHeaders, "Text", "0", "1");
-        AssertEqual("wrapped row count", columns.CurrentCells.Count, 2);
+        AssertEqual("wrapped row count", columns.CurrentCells.Count, 1);
+        AssertEqual("wrapped text", columns.CurrentCells[0][0], longText);
         AssertEqual("wrapped first group 0", columns.CurrentCells[0][1], "aaa");
         AssertEqual("wrapped first group 1", columns.CurrentCells[0][2], "ccc");
-        AssertEqual("wrapped continuation group 0", columns.CurrentCells[1][1], string.Empty);
-        AssertEqual("wrapped continuation group 1", columns.CurrentCells[1][2], string.Empty);
     }
 
     private static void RunInvalidRegexValidation()

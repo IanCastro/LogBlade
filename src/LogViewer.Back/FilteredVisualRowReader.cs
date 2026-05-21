@@ -39,7 +39,7 @@ public sealed class FilteredVisualRowReader : IColumnViewportReader
         {
             _descriptors[i] = descriptors[i];
             _descriptorRowStarts[i] = runningRows;
-            runningRows += Math.Max(1, descriptors[i].VisualRowCount);
+            runningRows++;
             _captureGroupCount = Math.Max(_captureGroupCount, descriptors[i].CaptureGroups?.Length ?? 0);
         }
 
@@ -298,12 +298,11 @@ public sealed class FilteredVisualRowReader : IColumnViewportReader
         long maxTopRow = Math.Max(0, _totalVisualRows - visibleLines);
         _topRowOrdinal = Math.Clamp(topRowOrdinal, 0, maxTopRow);
 
-        (int descriptorIndex, int segmentIndex) = MapTopRow(_topRowOrdinal);
+        (int descriptorIndex, _) = MapTopRow(_topRowOrdinal);
         _topDescriptorIndex = descriptorIndex;
 
         using FileStream fs = VisualRowReader.OpenSourceStream(_filePath);
         int currentDescriptorIndex = descriptorIndex;
-        int currentSegmentIndex = segmentIndex;
         long firstStart = _descriptors[descriptorIndex].StartOffset;
         long lastEnd = firstStart;
 
@@ -311,20 +310,14 @@ public sealed class FilteredVisualRowReader : IColumnViewportReader
         {
             FilteredLineDescriptor descriptor = _descriptors[currentDescriptorIndex];
             string text = FilteredLineUtilities.ReadLineText(fs, _encoding, descriptor.StartOffset, descriptor.EndOffset);
-            for (int i = currentSegmentIndex; i < descriptor.VisualRowCount && _currentRows.Count < visibleLines; i++)
+            _currentRows.Add(text);
+            if (_captureGroupCount > 0)
             {
-                string rowText = FilteredLineUtilities.GetVisualRowText(text, i);
-                _currentRows.Add(rowText);
-                if (_captureGroupCount > 0)
-                {
-                    _currentCells.Add(CreateCells(rowText, descriptor, includeCaptureGroups: i == 0));
-                }
-
-                lastEnd = descriptor.EndOffset;
+                _currentCells.Add(CreateCells(text, descriptor, includeCaptureGroups: true));
             }
 
+            lastEnd = descriptor.EndOffset;
             currentDescriptorIndex++;
-            currentSegmentIndex = 0;
         }
 
         _viewportBytes = _currentRows.Count == 0 ? 0 : Math.Max(0, lastEnd - firstStart);
