@@ -5,6 +5,7 @@ internal static class NativeMethods
 {
     public const int CS_HREDRAW = 0x0002;
     public const int CS_VREDRAW = 0x0001;
+    public const int CS_DBLCLKS = 0x0008;
     public const int WS_CHILD = 0x40000000;
     public const int WS_VISIBLE = 0x10000000;
     public const int WS_TABSTOP = 0x00010000;
@@ -30,7 +31,11 @@ internal static class NativeMethods
     public const int WM_TIMER = 0x0113;
     public const int WM_HSCROLL = 0x0114;
     public const int WM_VSCROLL = 0x0115;
+    public const int WM_SETCURSOR = 0x0020;
+    public const int WM_MOUSEMOVE = 0x0200;
     public const int WM_LBUTTONDOWN = 0x0201;
+    public const int WM_LBUTTONUP = 0x0202;
+    public const int WM_LBUTTONDBLCLK = 0x0203;
     public const int WM_MOUSEWHEEL = 0x020A;
     public const int WM_ERASEBKGND = 0x0014;
     public const int WM_NCCREATE = 0x0081;
@@ -95,6 +100,7 @@ internal static class NativeMethods
     public const int VK_HOME = 0x24;
     public const int VK_END = 0x23;
     public static readonly IntPtr IDC_ARROW = new(32512);
+    public static readonly IntPtr IDC_SIZEWE = new(32644);
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     public struct WNDCLASSEXW
@@ -292,6 +298,9 @@ internal static class NativeMethods
     public static extern IntPtr LoadCursorW(IntPtr hInstance, IntPtr lpCursorName);
 
     [DllImport("user32.dll")]
+    public static extern IntPtr SetCursor(IntPtr hCursor);
+
+    [DllImport("user32.dll")]
     public static extern IntPtr GetSysColorBrush(int nIndex);
 
     [DllImport("user32.dll")]
@@ -373,6 +382,13 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     public static extern IntPtr SetFocus(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr SetCapture(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool ReleaseCapture();
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern IntPtr SendMessageW(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);

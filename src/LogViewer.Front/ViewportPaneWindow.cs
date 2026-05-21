@@ -28,6 +28,7 @@ internal sealed class ViewportPaneWindow : IDisposable
     private const int ScrollRange = 1_000_000;
     private const int VerticalScrollVirtualRows = 4000;
     private const int ColumnGapChars = 2;
+    private const int ColumnResizeHitSlopPx = 4;
     private const string WindowClassName = "LogViewerViewportPaneWindow";
 
     private static readonly object s_registrationSync = new();
@@ -52,6 +53,12 @@ internal sealed class ViewportPaneWindow : IDisposable
     private long _latestViewportRequestId;
     private bool _viewportWorkerRunning;
     private ViewportRequest? _pendingViewportRequest;
+    private int[]? _manualColumnWidths;
+    private int _hoverResizeColumnIndex = -1;
+    private int _resizingColumnIndex = -1;
+    private int _resizeStartX;
+    private int _resizeStartWidth;
+    private bool _isColumnResizing;
 
     public ViewportPaneWindow(IntPtr font, int lineHeight, int charWidth, Action<ViewportPaneWindow>? onUsefulPaint = null)
     {
@@ -115,6 +122,7 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     public void SetStatus(string statusText, bool disposeReader = true)
     {
+        ResetColumnResizeState(clearManualWidths: true);
         if (disposeReader)
         {
             _reader?.Dispose();
@@ -129,6 +137,7 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     public void SetReader(IViewportReader reader, int preloadedVisibleLines)
     {
+        ResetColumnResizeState(clearManualWidths: true);
         _reader?.Dispose();
         _reader = reader;
         _statusText = string.Empty;
@@ -155,6 +164,7 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     public void Dispose()
     {
+        ResetColumnResizeState(clearManualWidths: true);
         _reader?.Dispose();
         _reader = null;
     }
@@ -171,7 +181,7 @@ internal sealed class ViewportPaneWindow : IDisposable
             NativeMethods.WNDCLASSEXW wc = new()
             {
                 cbSize = (uint)Marshal.SizeOf<NativeMethods.WNDCLASSEXW>(),
-                style = NativeMethods.CS_HREDRAW | NativeMethods.CS_VREDRAW,
+                style = NativeMethods.CS_HREDRAW | NativeMethods.CS_VREDRAW | NativeMethods.CS_DBLCLKS,
                 lpfnWndProc = s_wndProc,
                 hInstance = hInstance,
                 hCursor = NativeMethods.LoadCursorW(IntPtr.Zero, NativeMethods.IDC_ARROW),
@@ -344,7 +354,7 @@ internal sealed class ViewportPaneWindow : IDisposable
             }
         }
 
-        int maxOffset = Math.Max(0, VisualRowReader.VisibleSegmentChars - _visibleColumnCount);
+        int maxOffset = Math.Max(0, GetContentWidthChars() - _visibleColumnCount);
         int nextOffset = _xOffsetChars;
         switch (command)
         {
@@ -405,6 +415,72 @@ internal sealed class ViewportPaneWindow : IDisposable
         {
             ScrollByLines(-steps);
         }
+    }
+
+    private void OnMouseMove(IntPtr lParam)
+    {
+        int x = NativeMethods.LowWord(lParam);
+        int y = NativeMethods.HighWord(lParam);
+        if (_isColumnResizing)
+        {
+            UpdateColumnResize(x);
+            SetResizeCursor();
+            return;
+        }
+
+        int nextHover = HitTestColumnResize(x, y);
+        if (_hoverResizeColumnIndex != nextHover)
+        {
+            _hoverResizeColumnIndex = nextHover;
+        }
+
+        if (_hoverResizeColumnIndex >= 0)
+        {
+            SetResizeCursor();
+        }
+    }
+
+    private void OnLButtonDown(IntPtr lParam)
+    {
+        Focus();
+        int x = NativeMethods.LowWord(lParam);
+        int y = NativeMethods.HighWord(lParam);
+        int resizeColumn = HitTestColumnResize(x, y);
+        if (resizeColumn >= 0)
+        {
+            BeginColumnResize(resizeColumn, x);
+        }
+    }
+
+    private void OnLButtonUp()
+    {
+        if (_isColumnResizing)
+        {
+            EndColumnResize();
+        }
+    }
+
+    private void OnLButtonDoubleClick(IntPtr lParam)
+    {
+        Focus();
+        int x = NativeMethods.LowWord(lParam);
+        int y = NativeMethods.HighWord(lParam);
+        int resizeColumn = HitTestColumnResize(x, y);
+        if (resizeColumn >= 0)
+        {
+            AutoFitColumn(resizeColumn);
+        }
+    }
+
+    private bool OnSetCursor()
+    {
+        if (_isColumnResizing || _hoverResizeColumnIndex >= 0)
+        {
+            SetResizeCursor();
+            return true;
+        }
+
+        return false;
     }
 
     private void OnKeyDown(int key)
@@ -544,7 +620,26 @@ internal sealed class ViewportPaneWindow : IDisposable
         return visibleNonEmptyLines;
     }
 
-    private static int[] CalculateColumnWidths(IColumnViewportReader reader)
+    private int[] CalculateColumnWidths(IColumnViewportReader reader)
+    {
+        int[] widths = CalculateAutoColumnWidths(reader);
+        if (_manualColumnWidths is null || _manualColumnWidths.Length != widths.Length)
+        {
+            return widths;
+        }
+
+        for (int i = 0; i < widths.Length; i++)
+        {
+            if (_manualColumnWidths[i] > 0)
+            {
+                widths[i] = Math.Max(GetMinimumColumnWidth(reader, i), _manualColumnWidths[i]);
+            }
+        }
+
+        return widths;
+    }
+
+    private static int[] CalculateAutoColumnWidths(IColumnViewportReader reader)
     {
         int columnCount = reader.ColumnHeaders.Count;
         int[] widths = new int[columnCount];
@@ -570,6 +665,17 @@ internal sealed class ViewportPaneWindow : IDisposable
         return widths;
     }
 
+    private static int GetMinimumColumnWidth(IColumnViewportReader reader, int columnIndex)
+    {
+        int contentMin = columnIndex == 0 ? reader.ColumnHeaders[columnIndex].Length : 1;
+        if (columnIndex < reader.ColumnHeaders.Count - 1)
+        {
+            contentMin += ColumnGapChars;
+        }
+
+        return Math.Max(1, contentMin);
+    }
+
     private static string BuildColumnLine(IReadOnlyList<string> cells, IReadOnlyList<int> widths)
     {
         if (widths.Count == 0)
@@ -587,17 +693,26 @@ internal sealed class ViewportPaneWindow : IDisposable
         for (int i = 0; i < widths.Count; i++)
         {
             string value = i < cells.Count ? cells[i] : string.Empty;
-            if (i < widths.Count - 1)
-            {
-                builder.Append(value.PadRight(Math.Max(value.Length, widths[i])));
-            }
-            else
-            {
-                builder.Append(value);
-            }
+            builder.Append(FitCell(value, widths[i]));
         }
 
         return builder.ToString();
+    }
+
+    private static string FitCell(string value, int width)
+    {
+        width = Math.Max(0, width);
+        if (width == 0)
+        {
+            return string.Empty;
+        }
+
+        if (value.Length >= width)
+        {
+            return value.Substring(0, width);
+        }
+
+        return value.PadRight(width);
     }
 
     private void ScrollByLines(int deltaLines)
@@ -658,6 +773,137 @@ internal sealed class ViewportPaneWindow : IDisposable
         _xOffsetChars = nextOffset;
         UpdateScrollBar();
         NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
+    }
+
+    private int HitTestColumnResize(int x, int y)
+    {
+        if (y < 0 || y >= _lineHeight || _reader is not IColumnViewportReader columnReader || columnReader.ColumnHeaders.Count <= 1)
+        {
+            return -1;
+        }
+
+        int[] widths = CalculateColumnWidths(columnReader);
+        int boundaryChars = 0;
+        for (int i = 0; i < widths.Length - 1; i++)
+        {
+            boundaryChars += widths[i];
+            int boundaryX = (boundaryChars - _xOffsetChars) * _charWidth;
+            if (Math.Abs(x - boundaryX) <= ColumnResizeHitSlopPx)
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    private void BeginColumnResize(int columnIndex, int x)
+    {
+        if (_reader is not IColumnViewportReader columnReader)
+        {
+            return;
+        }
+
+        int[] widths = CalculateColumnWidths(columnReader);
+        if (columnIndex < 0 || columnIndex >= widths.Length - 1)
+        {
+            return;
+        }
+
+        _isColumnResizing = true;
+        _resizingColumnIndex = columnIndex;
+        _hoverResizeColumnIndex = columnIndex;
+        _resizeStartX = x;
+        _resizeStartWidth = widths[columnIndex];
+        NativeMethods.SetCapture(_hwnd);
+        SetResizeCursor();
+    }
+
+    private void UpdateColumnResize(int x)
+    {
+        if (!_isColumnResizing || _reader is not IColumnViewportReader columnReader)
+        {
+            return;
+        }
+
+        int columnCount = columnReader.ColumnHeaders.Count;
+        if (_resizingColumnIndex < 0 || _resizingColumnIndex >= columnCount - 1)
+        {
+            return;
+        }
+
+        int deltaChars = (int)Math.Round((x - _resizeStartX) / (double)_charWidth);
+        int nextWidth = Math.Max(GetMinimumColumnWidth(columnReader, _resizingColumnIndex), _resizeStartWidth + deltaChars);
+        int[] manualWidths = EnsureManualColumnWidths(columnCount);
+        if (manualWidths[_resizingColumnIndex] == nextWidth)
+        {
+            return;
+        }
+
+        manualWidths[_resizingColumnIndex] = nextWidth;
+        UpdateScrollBar();
+        NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
+    }
+
+    private void EndColumnResize()
+    {
+        _isColumnResizing = false;
+        _resizingColumnIndex = -1;
+        _resizeStartX = 0;
+        _resizeStartWidth = 0;
+        NativeMethods.ReleaseCapture();
+    }
+
+    private void AutoFitColumn(int columnIndex)
+    {
+        if (_reader is not IColumnViewportReader columnReader)
+        {
+            return;
+        }
+
+        int[] autoWidths = CalculateAutoColumnWidths(columnReader);
+        if (columnIndex < 0 || columnIndex >= autoWidths.Length - 1)
+        {
+            return;
+        }
+
+        int[] manualWidths = EnsureManualColumnWidths(autoWidths.Length);
+        manualWidths[columnIndex] = Math.Max(GetMinimumColumnWidth(columnReader, columnIndex), autoWidths[columnIndex]);
+        UpdateScrollBar();
+        NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
+    }
+
+    private int[] EnsureManualColumnWidths(int columnCount)
+    {
+        if (_manualColumnWidths is null || _manualColumnWidths.Length != columnCount)
+        {
+            _manualColumnWidths = new int[columnCount];
+        }
+
+        return _manualColumnWidths;
+    }
+
+    private void ResetColumnResizeState(bool clearManualWidths)
+    {
+        if (_isColumnResizing)
+        {
+            NativeMethods.ReleaseCapture();
+        }
+
+        _isColumnResizing = false;
+        _hoverResizeColumnIndex = -1;
+        _resizingColumnIndex = -1;
+        _resizeStartX = 0;
+        _resizeStartWidth = 0;
+        if (clearManualWidths)
+        {
+            _manualColumnWidths = null;
+        }
+    }
+
+    private void SetResizeCursor()
+    {
+        NativeMethods.SetCursor(NativeMethods.LoadCursorW(IntPtr.Zero, NativeMethods.IDC_SIZEWE));
     }
 
     private string SliceVisibleText(string text)
@@ -778,6 +1024,7 @@ internal sealed class ViewportPaneWindow : IDisposable
 
         if (msg == NativeMethods.WM_NCDESTROY)
         {
+            self.ResetColumnResizeState(clearManualWidths: true);
             NativeMethods.SetWindowLongPtrW(hwnd, NativeMethods.GWLP_USERDATA, IntPtr.Zero);
             if (self._selfHandle.IsAllocated)
             {
@@ -802,12 +1049,28 @@ internal sealed class ViewportPaneWindow : IDisposable
             case NativeMethods.WM_MOUSEWHEEL:
                 self.OnMouseWheel(wParam);
                 return IntPtr.Zero;
+            case NativeMethods.WM_MOUSEMOVE:
+                self.OnMouseMove(lParam);
+                return IntPtr.Zero;
             case NativeMethods.WM_KEYDOWN:
                 self.OnKeyDown((int)wParam);
                 return IntPtr.Zero;
             case NativeMethods.WM_LBUTTONDOWN:
-                self.Focus();
+                self.OnLButtonDown(lParam);
                 return IntPtr.Zero;
+            case NativeMethods.WM_LBUTTONUP:
+                self.OnLButtonUp();
+                return IntPtr.Zero;
+            case NativeMethods.WM_LBUTTONDBLCLK:
+                self.OnLButtonDoubleClick(lParam);
+                return IntPtr.Zero;
+            case NativeMethods.WM_SETCURSOR:
+                if (self.OnSetCursor())
+                {
+                    return new IntPtr(1);
+                }
+
+                return NativeMethods.DefWindowProcW(hwnd, msg, wParam, lParam);
             case NativeMethods.WM_ERASEBKGND:
                 return new IntPtr(1);
             case NativeMethods.WM_PAINT:
