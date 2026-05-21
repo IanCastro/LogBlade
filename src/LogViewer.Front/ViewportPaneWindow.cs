@@ -29,6 +29,8 @@ internal sealed class ViewportPaneWindow : IDisposable
     private const int VerticalScrollVirtualRows = 4000;
     private const int ColumnGapChars = 2;
     private const int ColumnResizeHitSlopPx = 4;
+    private const int DefaultTextColumnWidthPx = 900;
+    private const int DefaultGroupColumnWidthPx = 200;
     private const string WindowClassName = "LogViewerViewportPaneWindow";
 
     private static readonly object s_registrationSync = new();
@@ -622,7 +624,7 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private int[] CalculateColumnWidths(IColumnViewportReader reader)
     {
-        int[] widths = CalculateAutoColumnWidths(reader);
+        int[] widths = CalculateDefaultColumnWidths(reader);
         if (_manualColumnWidths is null || _manualColumnWidths.Length != widths.Length)
         {
             return widths;
@@ -634,6 +636,19 @@ internal sealed class ViewportPaneWindow : IDisposable
             {
                 widths[i] = Math.Max(GetMinimumColumnWidth(reader, i), _manualColumnWidths[i]);
             }
+        }
+
+        return widths;
+    }
+
+    private int[] CalculateDefaultColumnWidths(IColumnViewportReader reader)
+    {
+        int columnCount = reader.ColumnHeaders.Count;
+        int[] widths = new int[columnCount];
+        for (int i = 0; i < columnCount; i++)
+        {
+            int defaultWidthPx = i == 0 ? DefaultTextColumnWidthPx : DefaultGroupColumnWidthPx;
+            widths[i] = Math.Max(GetMinimumColumnWidth(reader, i), PixelsToColumnWidthChars(defaultWidthPx));
         }
 
         return widths;
@@ -674,6 +689,11 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         return Math.Max(1, contentMin);
+    }
+
+    private int PixelsToColumnWidthChars(int pixels)
+    {
+        return Math.Max(1, (int)Math.Ceiling(pixels / (double)_charWidth));
     }
 
     private static string BuildColumnLine(IReadOnlyList<string> cells, IReadOnlyList<int> widths)
@@ -777,14 +797,14 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private int HitTestColumnResize(int x, int y)
     {
-        if (y < 0 || y >= _lineHeight || _reader is not IColumnViewportReader columnReader || columnReader.ColumnHeaders.Count <= 1)
+        if (y < 0 || y >= _lineHeight || _reader is not IColumnViewportReader columnReader || columnReader.ColumnHeaders.Count == 0)
         {
             return -1;
         }
 
         int[] widths = CalculateColumnWidths(columnReader);
         int boundaryChars = 0;
-        for (int i = 0; i < widths.Length - 1; i++)
+        for (int i = 0; i < widths.Length; i++)
         {
             boundaryChars += widths[i];
             int boundaryX = (boundaryChars - _xOffsetChars) * _charWidth;
@@ -805,7 +825,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         int[] widths = CalculateColumnWidths(columnReader);
-        if (columnIndex < 0 || columnIndex >= widths.Length - 1)
+        if (columnIndex < 0 || columnIndex >= widths.Length)
         {
             return;
         }
@@ -827,7 +847,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         int columnCount = columnReader.ColumnHeaders.Count;
-        if (_resizingColumnIndex < 0 || _resizingColumnIndex >= columnCount - 1)
+        if (_resizingColumnIndex < 0 || _resizingColumnIndex >= columnCount)
         {
             return;
         }
@@ -862,7 +882,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         int[] autoWidths = CalculateAutoColumnWidths(columnReader);
-        if (columnIndex < 0 || columnIndex >= autoWidths.Length - 1)
+        if (columnIndex < 0 || columnIndex >= autoWidths.Length)
         {
             return;
         }
