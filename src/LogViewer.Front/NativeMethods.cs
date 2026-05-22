@@ -85,7 +85,6 @@ internal static class NativeMethods
     public const int DT_LEFT = 0x0000;
     public const int DT_VCENTER = 0x0004;
     public const int DT_SINGLELINE = 0x0020;
-    public const int DT_NOCLIP = 0x0100;
     public const int DT_END_ELLIPSIS = 0x8000;
     public const int DT_NOPREFIX = 0x0800;
     public const int WHEEL_DELTA = 120;
