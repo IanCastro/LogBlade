@@ -64,8 +64,10 @@ internal sealed class ViewerWindow
     private ViewportPaneWindow? _mainPane;
     private ViewportPaneWindow? _filteredPane;
     private WindowLayout _layout;
+    private readonly object _searchCancellationSync = new();
     private long _nextSearchRequestId;
     private long _latestSearchRequestId;
+    private CancellationTokenSource? _activeSearchCancellation;
     private bool _searchInProgress;
     private bool _searchDisplayActive;
     private double _searchProgressPercentage;
@@ -362,6 +364,8 @@ internal sealed class ViewerWindow
         }
 
         NativeMethods.KillTimer(_hwnd, SearchDebounceTimerId);
+        _latestSearchRequestId = ++_nextSearchRequestId;
+        CancelActiveSearch();
         _detectedEncoding = null;
         _firstRenderLogged = false;
         _searchInProgress = false;
@@ -493,6 +497,7 @@ internal sealed class ViewerWindow
     {
         _latestSearchRequestId = ++_nextSearchRequestId;
         NativeMethods.KillTimer(_hwnd, SearchDebounceTimerId);
+        CancelActiveSearch();
 
         if (string.IsNullOrEmpty(_searchQuery))
         {
@@ -579,9 +584,13 @@ internal sealed class ViewerWindow
         string workerPath = _path;
         IntPtr hwnd = _hwnd;
         string query = options.Query;
+        CancellationTokenSource searchCancellation = BeginSearchCancellation();
+        CancellationToken cancellationToken = searchCancellation.Token;
         ThreadPool.QueueUserWorkItem(_ =>
         {
             Stopwatch workerStopwatch = Stopwatch.StartNew();
+            long lastMatchedLineCount = 0;
+            double lastProgressPercentage = 0d;
             AppLog.Instance.Info(
                 "search.begin",
                 "begin",
@@ -594,8 +603,12 @@ internal sealed class ViewerWindow
 
             try
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 LogSearchBuilder.BuildFilteredReaderIncremental(workerPath, detected.Encoding, detected.DataOffset, options, visibleLines, update =>
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    lastMatchedLineCount = update.MatchedLineCount;
+                    lastProgressPercentage = update.ProgressPercentage;
                     PostSearchWorkerResult(new SearchWorkerResult
                     {
                         RequestId = requestId,
@@ -610,7 +623,21 @@ internal sealed class ViewerWindow
                         ElapsedMilliseconds = update.ElapsedMilliseconds,
                         IsFinal = update.IsFinal
                     });
-                });
+                }, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                AppLog.Instance.Info(
+                    "search.cancelled",
+                    "cancelled",
+                    new LogField("requestId", requestId.ToString()),
+                    new LogField("query", query),
+                    new LogField("queryLength", query.Length.ToString()),
+                    new LogField("useRegex", options.UseRegex.ToString()),
+                    new LogField("ignoreCase", options.IgnoreCase.ToString()),
+                    new LogField("durationMs", workerStopwatch.ElapsedMilliseconds.ToString()),
+                    new LogField("matchedLineCount", lastMatchedLineCount.ToString()),
+                    new LogField("progressPercentage", Math.Round(Math.Clamp(lastProgressPercentage, 0d, 100d)).ToString()));
             }
             catch (Exception ex)
             {
@@ -628,6 +655,10 @@ internal sealed class ViewerWindow
                     IsFinal = true
                 });
             }
+            finally
+            {
+                DisposeSearchCancellation(searchCancellation);
+            }
 
             void PostSearchWorkerResult(SearchWorkerResult result)
             {
@@ -639,6 +670,58 @@ internal sealed class ViewerWindow
                 }
             }
         });
+    }
+
+    private CancellationTokenSource BeginSearchCancellation()
+    {
+        var nextCancellation = new CancellationTokenSource();
+        CancellationTokenSource? previousCancellation;
+        lock (_searchCancellationSync)
+        {
+            previousCancellation = _activeSearchCancellation;
+            _activeSearchCancellation = nextCancellation;
+        }
+
+        try
+        {
+            previousCancellation?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+
+        return nextCancellation;
+    }
+
+    private void CancelActiveSearch()
+    {
+        CancellationTokenSource? cancellation;
+        lock (_searchCancellationSync)
+        {
+            cancellation = _activeSearchCancellation;
+            _activeSearchCancellation = null;
+        }
+
+        try
+        {
+            cancellation?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
+
+    private void DisposeSearchCancellation(CancellationTokenSource cancellation)
+    {
+        lock (_searchCancellationSync)
+        {
+            if (ReferenceEquals(_activeSearchCancellation, cancellation))
+            {
+                _activeSearchCancellation = null;
+            }
+        }
+
+        cancellation.Dispose();
     }
 
     private void OnSearchUpdate(IntPtr lParam)
@@ -936,6 +1019,7 @@ internal sealed class ViewerWindow
     private void DisposeResources()
     {
         NativeMethods.KillTimer(_hwnd, SearchDebounceTimerId);
+        CancelActiveSearch();
         _mainPane?.Dispose();
         _filteredPane?.Dispose();
 

@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 
 public readonly record struct SearchProgressUpdate(double ProgressPercentage, long MatchedLineCount, long ElapsedMilliseconds, FilteredVisualRowReader? Reader, bool IsFinal);
 
@@ -50,8 +51,15 @@ public static class LogSearchBuilder
     public static void BuildFilteredReaderIncremental(string filePath, Encoding encoding, long dataOffset, string query, int preloadedVisibleLines, Action<SearchProgressUpdate> onProgress)
         => BuildFilteredReaderIncremental(filePath, encoding, dataOffset, new SearchOptions(query, UseRegex: false, IgnoreCase: true), preloadedVisibleLines, onProgress);
 
+    public static void BuildFilteredReaderIncremental(string filePath, Encoding encoding, long dataOffset, string query, int preloadedVisibleLines, Action<SearchProgressUpdate> onProgress, CancellationToken cancellationToken)
+        => BuildFilteredReaderIncremental(filePath, encoding, dataOffset, new SearchOptions(query, UseRegex: false, IgnoreCase: true), preloadedVisibleLines, onProgress, cancellationToken);
+
     public static void BuildFilteredReaderIncremental(string filePath, Encoding encoding, long dataOffset, SearchOptions options, int preloadedVisibleLines, Action<SearchProgressUpdate> onProgress)
+        => BuildFilteredReaderIncremental(filePath, encoding, dataOffset, options, preloadedVisibleLines, onProgress, CancellationToken.None);
+
+    public static void BuildFilteredReaderIncremental(string filePath, Encoding encoding, long dataOffset, SearchOptions options, int preloadedVisibleLines, Action<SearchProgressUpdate> onProgress, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         string fullPath = Path.GetFullPath(filePath);
         long fileSize = new FileInfo(fullPath).Length;
         LogEncodingKind kind = VisualRowReader.InferKind(encoding, dataOffset);
@@ -64,8 +72,9 @@ public static class LogSearchBuilder
         SearchMatcher matcher = SearchMatcher.Create(options);
 
         long scannedOffset = dataOffset;
-        foreach (RealLineData line in SearchRealLineScanner.Enumerate(fullPath, encoding, kind, dataOffset, fileSize))
+        foreach (RealLineData line in SearchRealLineScanner.Enumerate(fullPath, encoding, kind, dataOffset, fileSize, cancellationToken))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             scannedOffset = line.EndOffset;
             if (matcher.TryMatch(line.Text, out string[]? captureGroups))
             {
@@ -85,11 +94,13 @@ public static class LogSearchBuilder
             }
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         PublishSnapshot(isFinal: true);
         return;
 
         void PublishSnapshot(bool isFinal)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             double progress = Math.Clamp(((scannedOffset - dataOffset) * 100d) / searchableBytes, 0d, 100d);
             if (isFinal)
             {
@@ -106,6 +117,7 @@ public static class LogSearchBuilder
             }
 
             onProgress(new SearchProgressUpdate(progress, descriptors.Count, stopwatch.ElapsedMilliseconds, reader, isFinal));
+            cancellationToken.ThrowIfCancellationRequested();
             lastPublishedTick = Environment.TickCount64;
             partialPublished = partialPublished || reader is not null;
         }
