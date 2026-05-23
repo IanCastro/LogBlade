@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Threading;
 
 internal enum ViewportRequestKind
@@ -31,11 +30,14 @@ internal sealed class ViewportPaneWindow : IDisposable
     private const int ColumnResizeHitSlopPx = 4;
     private const int DefaultTextColumnWidthPx = 900;
     private const int DefaultGroupColumnWidthPx = 200;
+    private const int GridCellPaddingPx = 4;
+    private const int GridDividerThicknessPx = 1;
     private const string WindowClassName = "LogViewerViewportPaneWindow";
 
     private static readonly object s_registrationSync = new();
     private static bool s_registered;
     private static readonly NativeMethods.WindowProc s_wndProc = WindowProc;
+    private static readonly string[] s_textOnlyGridHeaders = ["Text"];
 
     private readonly IntPtr _font;
     private readonly int _lineHeight;
@@ -562,7 +564,7 @@ internal sealed class ViewportPaneWindow : IDisposable
             return visibleNonEmptyLines;
         }
 
-        if (_reader is IColumnViewportReader columnReader && columnReader.ColumnHeaders.Count > 0)
+        if (_reader is IColumnViewportReader columnReader)
         {
             return PaintColumnContent(hdc, columnReader);
         }
@@ -590,36 +592,159 @@ internal sealed class ViewportPaneWindow : IDisposable
     private int PaintColumnContent(IntPtr hdc, IColumnViewportReader reader)
     {
         NativeMethods.GetClientRect(_hwnd, out NativeMethods.RECT clientRect);
+        IReadOnlyList<string> headers = GetGridHeaders(reader);
         int[] widths = CalculateColumnWidths(reader);
-        int y = 0;
 
-        string headerLine = BuildColumnLine(reader.ColumnHeaders, widths);
-        string visibleHeader = SliceVisibleText(headerLine);
-        if (visibleHeader.Length > 0)
-        {
-            NativeMethods.TextOutW(hdc, 0, y, visibleHeader, visibleHeader.Length);
-        }
+        PaintGridRow(hdc, clientRect, headers, widths, y: 0, isHeader: true);
 
-        y += _lineHeight;
+        int y = _lineHeight;
         int visibleNonEmptyLines = 0;
-        foreach (IReadOnlyList<string> row in reader.CurrentCells)
+        if (reader.ColumnHeaders.Count > 0)
         {
-            string line = BuildColumnLine(row, widths);
-            string visibleText = SliceVisibleText(line);
-            if (visibleText.Length > 0)
+            foreach (IReadOnlyList<string> row in reader.CurrentCells)
             {
-                NativeMethods.TextOutW(hdc, 0, y, visibleText, visibleText.Length);
+                PaintGridRow(hdc, clientRect, row, widths, y, isHeader: false);
                 visibleNonEmptyLines++;
-            }
 
-            y += _lineHeight;
-            if (y >= clientRect.bottom)
+                y += _lineHeight;
+                if (y >= clientRect.bottom)
+                {
+                    break;
+                }
+            }
+        }
+        else
+        {
+            foreach (string row in reader.CurrentRows)
             {
-                break;
+                PaintGridRow(hdc, clientRect, new[] { row }, widths, y, isHeader: false);
+                visibleNonEmptyLines++;
+
+                y += _lineHeight;
+                if (y >= clientRect.bottom)
+                {
+                    break;
+                }
             }
         }
 
         return visibleNonEmptyLines;
+    }
+
+    private void PaintGridRow(IntPtr hdc, NativeMethods.RECT clientRect, IReadOnlyList<string> cells, IReadOnlyList<int> widths, int y, bool isHeader)
+    {
+        int startChars = 0;
+        for (int i = 0; i < widths.Count; i++)
+        {
+            int widthChars = Math.Max(1, widths[i]);
+            NativeMethods.RECT cellRect = new()
+            {
+                left = (startChars - _xOffsetChars) * _charWidth,
+                top = y,
+                right = (startChars + widthChars - _xOffsetChars) * _charWidth,
+                bottom = y + _lineHeight
+            };
+
+            if (Intersects(cellRect, clientRect))
+            {
+                string value = i < cells.Count ? cells[i] : string.Empty;
+                PaintGridCell(hdc, cellRect, Intersect(cellRect, clientRect), value, widthChars, isHeader);
+            }
+
+            startChars += widthChars;
+        }
+    }
+
+    private void PaintGridCell(IntPtr hdc, NativeMethods.RECT cellRect, NativeMethods.RECT visibleRect, string text, int widthChars, bool isHeader)
+    {
+        if (visibleRect.right <= visibleRect.left || visibleRect.bottom <= visibleRect.top)
+        {
+            return;
+        }
+
+        IntPtr backgroundBrush = NativeMethods.GetSysColorBrush(isHeader ? NativeMethods.COLOR_3DFACE : NativeMethods.COLOR_WINDOW);
+        NativeMethods.FillRect(hdc, ref visibleRect, backgroundBrush);
+
+        NativeMethods.RECT textRect = cellRect;
+        textRect.left += GridCellPaddingPx;
+        textRect.right -= GridCellPaddingPx;
+        if (textRect.right > textRect.left)
+        {
+            int textCapacityChars = GetGridTextCapacityChars(widthChars);
+            string visibleText = FitGridCellText(text, textCapacityChars);
+            if (visibleText.Length > 0)
+            {
+                NativeMethods.DrawTextW(
+                    hdc,
+                    visibleText,
+                    visibleText.Length,
+                    ref textRect,
+                    NativeMethods.DT_LEFT | NativeMethods.DT_VCENTER | NativeMethods.DT_SINGLELINE | NativeMethods.DT_NOPREFIX);
+            }
+        }
+
+        NativeMethods.FrameRect(hdc, ref visibleRect, NativeMethods.GetSysColorBrush(NativeMethods.COLOR_3DLIGHT));
+        PaintGridDividers(hdc, visibleRect);
+    }
+
+    private void PaintGridDividers(IntPtr hdc, NativeMethods.RECT visibleRect)
+    {
+        if (visibleRect.right - visibleRect.left > GridDividerThicknessPx)
+        {
+            NativeMethods.RECT rightDivider = visibleRect;
+            rightDivider.left = Math.Max(rightDivider.left, rightDivider.right - GridDividerThicknessPx);
+            NativeMethods.FillRect(hdc, ref rightDivider, NativeMethods.GetSysColorBrush(NativeMethods.COLOR_3DLIGHT));
+        }
+
+        if (visibleRect.bottom - visibleRect.top > 1)
+        {
+            NativeMethods.RECT bottomDivider = visibleRect;
+            bottomDivider.top = Math.Max(bottomDivider.top, bottomDivider.bottom - 1);
+            NativeMethods.FillRect(hdc, ref bottomDivider, NativeMethods.GetSysColorBrush(NativeMethods.COLOR_3DLIGHT));
+        }
+    }
+
+    private int GetGridTextCapacityChars(int widthChars)
+    {
+        int availableWidthPx = (Math.Max(1, widthChars) * _charWidth) - (GridCellPaddingPx * 2);
+        return Math.Max(0, availableWidthPx / _charWidth);
+    }
+
+    private static string FitGridCellText(string value, int widthChars)
+    {
+        widthChars = Math.Max(0, widthChars);
+        if (widthChars == 0 || value.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        if (value.Length <= widthChars)
+        {
+            return value;
+        }
+
+        if (widthChars == 1)
+        {
+            return ">";
+        }
+
+        return value.Substring(0, widthChars - 1) + ">";
+    }
+
+    private static bool Intersects(NativeMethods.RECT a, NativeMethods.RECT b)
+    {
+        return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+    }
+
+    private static NativeMethods.RECT Intersect(NativeMethods.RECT a, NativeMethods.RECT b)
+    {
+        return new NativeMethods.RECT
+        {
+            left = Math.Max(a.left, b.left),
+            top = Math.Max(a.top, b.top),
+            right = Math.Min(a.right, b.right),
+            bottom = Math.Min(a.bottom, b.bottom)
+        };
     }
 
     private int[] CalculateColumnWidths(IColumnViewportReader reader)
@@ -643,7 +768,7 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private int[] CalculateDefaultColumnWidths(IColumnViewportReader reader)
     {
-        int columnCount = reader.ColumnHeaders.Count;
+        int columnCount = GetGridColumnCount(reader);
         int[] widths = new int[columnCount];
         for (int i = 0; i < columnCount; i++)
         {
@@ -656,19 +781,30 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private static int[] CalculateAutoColumnWidths(IColumnViewportReader reader)
     {
-        int columnCount = reader.ColumnHeaders.Count;
+        IReadOnlyList<string> headers = GetGridHeaders(reader);
+        int columnCount = headers.Count;
         int[] widths = new int[columnCount];
         for (int i = 0; i < columnCount; i++)
         {
-            widths[i] = reader.ColumnHeaders[i].Length;
+            widths[i] = headers[i].Length;
         }
 
-        foreach (IReadOnlyList<string> row in reader.CurrentCells)
+        if (reader.ColumnHeaders.Count > 0)
         {
-            int count = Math.Min(columnCount, row.Count);
-            for (int i = 0; i < count; i++)
+            foreach (IReadOnlyList<string> row in reader.CurrentCells)
             {
-                widths[i] = Math.Max(widths[i], row[i].Length);
+                int count = Math.Min(columnCount, row.Count);
+                for (int i = 0; i < count; i++)
+                {
+                    widths[i] = Math.Max(widths[i], row[i].Length);
+                }
+            }
+        }
+        else
+        {
+            foreach (string row in reader.CurrentRows)
+            {
+                widths[0] = Math.Max(widths[0], row.Length);
             }
         }
 
@@ -682,8 +818,9 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private static int GetMinimumColumnWidth(IColumnViewportReader reader, int columnIndex)
     {
-        int contentMin = columnIndex == 0 ? reader.ColumnHeaders[columnIndex].Length : 1;
-        if (columnIndex < reader.ColumnHeaders.Count - 1)
+        IReadOnlyList<string> headers = GetGridHeaders(reader);
+        int contentMin = columnIndex == 0 ? headers[columnIndex].Length : 1;
+        if (columnIndex < headers.Count - 1)
         {
             contentMin += ColumnGapChars;
         }
@@ -696,43 +833,14 @@ internal sealed class ViewportPaneWindow : IDisposable
         return Math.Max(1, (int)Math.Ceiling(pixels / (double)_charWidth));
     }
 
-    private static string BuildColumnLine(IReadOnlyList<string> cells, IReadOnlyList<int> widths)
+    private static IReadOnlyList<string> GetGridHeaders(IColumnViewportReader reader)
     {
-        if (widths.Count == 0)
-        {
-            return string.Empty;
-        }
-
-        int capacity = 0;
-        for (int i = 0; i < widths.Count; i++)
-        {
-            capacity += Math.Max(0, widths[i]);
-        }
-
-        var builder = new StringBuilder(capacity);
-        for (int i = 0; i < widths.Count; i++)
-        {
-            string value = i < cells.Count ? cells[i] : string.Empty;
-            builder.Append(FitCell(value, widths[i]));
-        }
-
-        return builder.ToString();
+        return reader.ColumnHeaders.Count > 0 ? reader.ColumnHeaders : s_textOnlyGridHeaders;
     }
 
-    private static string FitCell(string value, int width)
+    private static int GetGridColumnCount(IColumnViewportReader reader)
     {
-        width = Math.Max(0, width);
-        if (width == 0)
-        {
-            return string.Empty;
-        }
-
-        if (value.Length >= width)
-        {
-            return value.Substring(0, width);
-        }
-
-        return value.PadRight(width);
+        return Math.Max(1, reader.ColumnHeaders.Count);
     }
 
     private void ScrollByLines(int deltaLines)
@@ -797,7 +905,7 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private int HitTestColumnResize(int x, int y)
     {
-        if (y < 0 || y >= _lineHeight || _reader is not IColumnViewportReader columnReader || columnReader.ColumnHeaders.Count == 0)
+        if (y < 0 || y >= _lineHeight || _reader is not IColumnViewportReader columnReader)
         {
             return -1;
         }
@@ -846,7 +954,7 @@ internal sealed class ViewportPaneWindow : IDisposable
             return;
         }
 
-        int columnCount = columnReader.ColumnHeaders.Count;
+        int columnCount = GetGridColumnCount(columnReader);
         if (_resizingColumnIndex < 0 || _resizingColumnIndex >= columnCount)
         {
             return;
@@ -929,8 +1037,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         return reader is IColumnViewportReader columnReader &&
-            columnReader.ColumnHeaders.Count > 0 &&
-            _manualColumnWidths.Length == columnReader.ColumnHeaders.Count;
+            _manualColumnWidths.Length == GetGridColumnCount(columnReader);
     }
 
     private void SetResizeCursor()
@@ -1013,7 +1120,7 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private int GetContentWidthChars()
     {
-        if (_reader is IColumnViewportReader columnReader && columnReader.ColumnHeaders.Count > 0)
+        if (_reader is IColumnViewportReader columnReader)
         {
             int[] widths = CalculateColumnWidths(columnReader);
             int total = 0;
@@ -1030,7 +1137,7 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private static int GetHeaderLineCount(IViewportReader? reader)
     {
-        return reader is IColumnViewportReader columnReader && columnReader.ColumnHeaders.Count > 0 ? 1 : 0;
+        return reader is IColumnViewportReader ? 1 : 0;
     }
 
     private static ViewportPaneWindow? FromHandle(IntPtr hwnd)
