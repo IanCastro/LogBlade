@@ -399,20 +399,22 @@ internal sealed class ViewportPaneWindow : IDisposable
     {
         int command = NativeMethods.LowWord(wParam);
         int trackPos = NativeMethods.HighWord(wParam);
+        double trackPercentage = (Math.Clamp(trackPos, 0, ScrollRange) * 100d) / ScrollRange;
         if (command is NativeMethods.SB_THUMBPOSITION or NativeMethods.SB_THUMBTRACK)
         {
             NativeMethods.SCROLLINFO si = new()
             {
                 cbSize = (uint)Marshal.SizeOf<NativeMethods.SCROLLINFO>(),
-                fMask = NativeMethods.SIF_TRACKPOS
+                fMask = NativeMethods.SIF_TRACKPOS | NativeMethods.SIF_RANGE | NativeMethods.SIF_PAGE
             };
             if (NativeMethods.GetScrollInfo(_hwnd, NativeMethods.SB_VERT, ref si))
             {
                 trackPos = si.nTrackPos;
+                trackPercentage = ScrollTrackPositionToPercentage(trackPos, si);
             }
         }
 
-        Scroll(command, trackPos);
+        Scroll(command, trackPercentage);
     }
 
     private void OnMouseWheel(IntPtr wParam)
@@ -859,7 +861,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         QueueViewportRequest(ViewportRequestKind.ScrollByLines, deltaLines, visibleLines: VisibleDataLineCount);
     }
 
-    private void Scroll(int command, int trackPos)
+    private void Scroll(int command, double trackPercentage)
     {
         if (_reader is null)
         {
@@ -889,8 +891,7 @@ internal sealed class ViewportPaneWindow : IDisposable
                 break;
             case NativeMethods.SB_THUMBPOSITION:
             case NativeMethods.SB_THUMBTRACK:
-                double percentage = (Math.Clamp(trackPos, 0, ScrollRange) * 100d) / ScrollRange;
-                QueueViewportRequest(ViewportRequestKind.LoadAtPercentage, requestedPercentage: percentage, visibleLines: visible);
+                QueueViewportRequest(ViewportRequestKind.LoadAtPercentage, requestedPercentage: trackPercentage, visibleLines: visible);
                 break;
         }
     }
@@ -1128,6 +1129,7 @@ internal sealed class ViewportPaneWindow : IDisposable
 
         int visibleDataLines = VisibleDataLineCount;
         long verticalPage = Math.Max(1, Math.Min(ScrollRange, ((long)visibleDataLines * ScrollRange) / VerticalScrollVirtualRows));
+        int verticalTrackMax = GetScrollTrackMax(0, ScrollRange, (uint)verticalPage);
         NativeMethods.SCROLLINFO vertical = new()
         {
             cbSize = (uint)Marshal.SizeOf<NativeMethods.SCROLLINFO>(),
@@ -1135,9 +1137,49 @@ internal sealed class ViewportPaneWindow : IDisposable
             nMin = 0,
             nMax = ScrollRange,
             nPage = (uint)verticalPage,
-            nPos = (int)Math.Min(ScrollRange, (_reader.ScrollPercentage / 100d) * ScrollRange)
+            nPos = ScrollPercentageToTrackPosition(_reader.ScrollPercentage, 0, verticalTrackMax)
         };
         NativeMethods.SetScrollInfo(_hwnd, NativeMethods.SB_VERT, ref vertical, true);
+    }
+
+    private static int GetScrollTrackMax(int minimum, int maximum, uint page)
+    {
+        long pageAdjustment = Math.Max(0L, (long)page - 1L);
+        long trackMax = (long)maximum - pageAdjustment;
+        return (int)Math.Max(minimum, Math.Min(maximum, trackMax));
+    }
+
+    private static double ScrollTrackPositionToPercentage(int trackPos, NativeMethods.SCROLLINFO scrollInfo)
+    {
+        int trackMax = GetScrollTrackMax(scrollInfo.nMin, scrollInfo.nMax, scrollInfo.nPage);
+        int clamped = Math.Clamp(trackPos, scrollInfo.nMin, trackMax);
+        if (trackMax <= scrollInfo.nMin)
+        {
+            return 0d;
+        }
+
+        if (clamped >= trackMax)
+        {
+            return 100d;
+        }
+
+        return ((clamped - scrollInfo.nMin) * 100d) / (trackMax - scrollInfo.nMin);
+    }
+
+    private static int ScrollPercentageToTrackPosition(double percentage, int minimum, int trackMax)
+    {
+        double clamped = Math.Clamp(percentage, 0d, 100d);
+        if (trackMax <= minimum)
+        {
+            return minimum;
+        }
+
+        if (clamped >= 100d)
+        {
+            return trackMax;
+        }
+
+        return minimum + (int)Math.Round((clamped / 100d) * (trackMax - minimum));
     }
 
     private int GetContentWidthChars()
