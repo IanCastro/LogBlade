@@ -17,6 +17,8 @@ internal static class Program
             RunLiteralSearchUsesPlainRows(tempRoot);
             RunWrappedLineCaptureGroups(tempRoot);
             RunInvalidRegexValidation();
+            RunPageUpNearStartClampsToTop(tempRoot);
+            RunPageUpInsideWrappedFirstLineClampsToTop(tempRoot);
 
             Console.WriteLine("Back smoke tests passed.");
             return 0;
@@ -116,6 +118,37 @@ internal static class Program
         }
 
         throw new InvalidOperationException("Invalid regex did not fail validation.");
+    }
+
+    private static void RunPageUpNearStartClampsToTop(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "page-up-near-start.log", "line-0\r\nline-1\r\nline-2\r\nline-3\r\nline-4\r\n");
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        reader.ReadNext(3);
+        reader.ReadNext(1);
+        reader.ReadPrevious(3);
+
+        AssertSequence("page up near start", reader.CurrentRows, "line-0", "line-1", "line-2");
+        AssertEqual("page up near start offset", reader.TopOffset, 0L);
+    }
+
+    private static void RunPageUpInsideWrappedFirstLineClampsToTop(string tempRoot)
+    {
+        string firstSegment = new('a', VisualRowReader.VisibleSegmentChars);
+        string secondSegmentPrefix = "second-segment";
+        string firstLine = firstSegment + secondSegmentPrefix;
+        string path = WriteLog(tempRoot, "page-up-wrapped-first-line.log", firstLine + "\r\nline-1\r\n");
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        reader.ReadNext(2);
+        reader.ReadNext(1);
+        reader.ReadPrevious(3);
+
+        AssertEqual("page up wrapped first row count", reader.CurrentRows.Count, 2);
+        AssertEqual("page up wrapped first segment", reader.CurrentRows[0], firstSegment);
+        AssertEqual("page up wrapped second segment", reader.CurrentRows[1], secondSegmentPrefix);
+        AssertEqual("page up wrapped first offset", reader.TopOffset, 0L);
     }
 
     private static string WriteLog(string tempRoot, string name, string content)

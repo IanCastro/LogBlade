@@ -294,10 +294,15 @@ public sealed class VisualRowReader : IViewportReader
             }
         }
 
+        if (current.RealLineStartOffset <= _dataOffset)
+        {
+            return LoadViewportAt(DefaultTopPosition(), visibleLines);
+        }
+
         List<RealLineStartInfo> previousLines = CollectPreviousRealLineStarts(fs, current.RealLineStartOffset, remainingRows);
         if (previousLines.Count == 0)
         {
-            return false;
+            return LoadViewportAt(DefaultTopPosition(), visibleLines);
         }
 
         foreach (RealLineStartInfo realLineStart in previousLines)
@@ -755,6 +760,11 @@ public sealed class VisualRowReader : IViewportReader
 
     private RealLineStartInfo FindPreviousSingleByteRealLineStart(FileStream fs, long currentRealLineStart)
     {
+        if (currentRealLineStart <= _dataOffset)
+        {
+            return new(_dataOffset, RealLineStartKind.TrueBreak);
+        }
+
         long cursor;
         fs.Position = currentRealLineStart - 1;
         int value = fs.ReadByte();
@@ -930,6 +940,11 @@ public sealed class VisualRowReader : IViewportReader
             }
 
             starts.Add(previous);
+            if (previous.StartOffset <= _dataOffset)
+            {
+                break;
+            }
+
             scanFrom = previous.StartOffset;
         }
 
