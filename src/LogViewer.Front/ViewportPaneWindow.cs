@@ -141,7 +141,12 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     public void SetReader(IViewportReader reader, int preloadedVisibleLines, bool preserveColumnWidths = false)
     {
-        ResetColumnResizeState(clearManualWidths: !CanPreserveColumnWidths(reader, preserveColumnWidths));
+        bool canPreserveColumnState = CanPreserveColumnState(reader, preserveColumnWidths);
+        if (!_isColumnResizing || !canPreserveColumnState)
+        {
+            ResetColumnResizeState(clearManualWidths: !canPreserveColumnState);
+        }
+
         _reader?.Dispose();
         _reader = reader;
         _statusText = string.Empty;
@@ -1029,15 +1034,31 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
     }
 
-    private bool CanPreserveColumnWidths(IViewportReader reader, bool preserveColumnWidths)
+    private bool CanPreserveColumnState(IViewportReader reader, bool preserveColumnWidths)
     {
-        if (!preserveColumnWidths || _manualColumnWidths is null)
+        if (!preserveColumnWidths || reader is not IColumnViewportReader nextColumnReader)
         {
             return false;
         }
 
-        return reader is IColumnViewportReader columnReader &&
-            _manualColumnWidths.Length == GetGridColumnCount(columnReader);
+        int nextColumnCount = GetGridColumnCount(nextColumnReader);
+        if (_reader is IColumnViewportReader currentColumnReader &&
+            GetGridColumnCount(currentColumnReader) != nextColumnCount)
+        {
+            return false;
+        }
+
+        if (_manualColumnWidths is not null && _manualColumnWidths.Length != nextColumnCount)
+        {
+            return false;
+        }
+
+        if (_manualColumnWidths is null && _reader is not IColumnViewportReader)
+        {
+            return false;
+        }
+
+        return !_isColumnResizing || (_resizingColumnIndex >= 0 && _resizingColumnIndex < nextColumnCount);
     }
 
     private void SetResizeCursor()
