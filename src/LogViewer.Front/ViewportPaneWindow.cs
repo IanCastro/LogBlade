@@ -26,7 +26,6 @@ internal sealed class ViewportPaneWindow : IDisposable
     private const int WheelLinesPerNotch = 3;
     private const int ScrollRange = 1_000_000;
     private const int VerticalScrollVirtualRows = 4000;
-    private const int ColumnGapChars = 2;
     private const int ColumnResizeHitSlopPx = 4;
     private const int DefaultTextColumnWidthPx = 900;
     private const int DefaultGroupColumnWidthPx = 200;
@@ -784,7 +783,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         return widths;
     }
 
-    private static int[] CalculateAutoColumnWidths(IColumnViewportReader reader)
+    private int[] CalculateAutoColumnWidths(IColumnViewportReader reader)
     {
         IReadOnlyList<string> headers = GetGridHeaders(reader);
         int columnCount = headers.Count;
@@ -813,9 +812,9 @@ internal sealed class ViewportPaneWindow : IDisposable
             }
         }
 
-        for (int i = 0; i < widths.Length - 1; i++)
+        for (int i = 0; i < widths.Length; i++)
         {
-            widths[i] += ColumnGapChars;
+            widths[i] = GetGridColumnWidthCharsForTextLength(widths[i]);
         }
 
         return widths;
@@ -825,12 +824,14 @@ internal sealed class ViewportPaneWindow : IDisposable
     {
         IReadOnlyList<string> headers = GetGridHeaders(reader);
         int contentMin = columnIndex == 0 ? headers[columnIndex].Length : 1;
-        if (columnIndex < headers.Count - 1)
-        {
-            contentMin += ColumnGapChars;
-        }
 
         return Math.Max(1, contentMin);
+    }
+
+    private int GetGridColumnWidthCharsForTextLength(int textLength)
+    {
+        int requiredWidthPx = (Math.Max(0, textLength) * _charWidth) + (GridCellPaddingPx * 2);
+        return PixelsToColumnWidthChars(requiredWidthPx);
     }
 
     private int PixelsToColumnWidthChars(int pixels)
