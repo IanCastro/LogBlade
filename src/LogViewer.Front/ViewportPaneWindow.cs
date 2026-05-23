@@ -1094,8 +1094,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         NativeMethods.GetClientRect(_hwnd, out NativeMethods.RECT clientRect);
-        int visibleLineCount = Math.Max(1, GetRectHeight(clientRect) / _lineHeight);
-        _visibleLineCount = visibleLineCount + GetHeaderLineCount(_reader);
+        _visibleLineCount = Math.Max(1, GetRectHeight(clientRect) / _lineHeight);
         _visibleColumnCount = Math.Max(1, GetRectWidth(clientRect) / _charWidth);
 
         int contentWidthChars = GetContentWidthChars();
