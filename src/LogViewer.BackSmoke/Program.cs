@@ -20,6 +20,7 @@ internal static class Program
             RunPageUpNearStartClampsToTop(tempRoot);
             RunPageUpInsideWrappedFirstLineClampsToTop(tempRoot);
             RunRefreshTailAtEndShowsAppendedRows(tempRoot);
+            RunRefreshTailSmallInitialFileShowsAppendedRows(tempRoot);
             RunRefreshTailAwayFromEndDoesNotMove(tempRoot);
             RunRefreshTailAfterTruncateReloadsFromStart(tempRoot);
 
@@ -164,6 +165,20 @@ internal static class Program
         reader.RefreshTail(2);
 
         AssertSequence("tail at end rows", reader.CurrentRows, "line-1", "line-2");
+    }
+
+    private static void RunRefreshTailSmallInitialFileShowsAppendedRows(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "tail-small-initial.log", "line-0\r\nline-1\r\n");
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        reader.ReadFromPercentage(0d, 20);
+        AssertEqual("tail small initial starts at end", reader.IsAtKnownEnd, true);
+        File.AppendAllText(path, "line-2\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        reader.RefreshTail(20);
+
+        AssertSequence("tail small initial rows", reader.CurrentRows, "line-0", "line-1", "line-2");
+        AssertEqual("tail small initial at end", reader.IsAtKnownEnd, true);
     }
 
     private static void RunRefreshTailAwayFromEndDoesNotMove(string tempRoot)

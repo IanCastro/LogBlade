@@ -114,7 +114,7 @@ public sealed class VisualRowReader : IViewportReader
     public long TopOffset => _topOffset;
     public long ViewportEndOffset => _viewportEndOffset;
     public long ViewportBytes => _viewportEndOffset >= _topOffset ? _viewportEndOffset - _topOffset : 0;
-    public bool IsAtKnownEnd => _viewportLoaded && _viewportEndOffset >= _fileSize;
+    public bool IsAtKnownEnd => _viewportLoaded && IsOffsetAtKnownEnd(_viewportEndOffset);
     public double ScrollPercentage
     {
         get
@@ -215,7 +215,7 @@ public sealed class VisualRowReader : IViewportReader
         long contentBytes = Math.Max(1, _fileSize - _dataOffset);
         long requestedOffset = _dataOffset + (long)((clamped / 100d) * contentBytes);
         ScrollToApproximateOffset(requestedOffset, count);
-        if (_viewportRows.Count < count && _viewportEndOffset >= _fileSize)
+        if (_viewportRows.Count < count && IsOffsetAtKnownEnd(_viewportEndOffset))
         {
             ScrollEnd(count);
         }
@@ -264,12 +264,14 @@ public sealed class VisualRowReader : IViewportReader
 
         if (_fileSize < previousSize)
         {
+            _viewportLoaded = false;
             ReadFromPercentage(0d, visibleLines);
             return CurrentRows;
         }
 
         if (wasAtEnd)
         {
+            _viewportLoaded = false;
             ReadFromPercentage(100d, visibleLines);
         }
 
@@ -298,7 +300,7 @@ public sealed class VisualRowReader : IViewportReader
             return LoadViewportAt(ToVisualPosition(_viewportRows[1]), visibleLines);
         }
 
-        if (_viewportEndOffset >= _fileSize)
+        if (IsOffsetAtKnownEnd(_viewportEndOffset))
         {
             return false;
         }
@@ -389,7 +391,7 @@ public sealed class VisualRowReader : IViewportReader
             return false;
         }
 
-        if (_viewportEndOffset >= _fileSize)
+        if (IsOffsetAtKnownEnd(_viewportEndOffset))
         {
             return false;
         }
@@ -688,6 +690,11 @@ public sealed class VisualRowReader : IViewportReader
         }
 
         return cursor;
+    }
+
+    private bool IsOffsetAtKnownEnd(long offset)
+    {
+        return offset >= _fileSize || (HasContent && offset >= TrimTrailingBreaks());
     }
 
     private RealLineStartInfo FindRealLineStartContaining(long offset)

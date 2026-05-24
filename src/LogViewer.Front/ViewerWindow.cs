@@ -590,7 +590,6 @@ internal sealed class ViewerWindow
     {
         _latestSearchRequestId = ++_nextSearchRequestId;
         NativeMethods.KillTimer(_hwnd, SearchDebounceTimerId);
-        StopFileWatcher();
         CancelActiveSearch();
 
         if (string.IsNullOrEmpty(_searchQuery))
@@ -1113,6 +1112,7 @@ internal sealed class ViewerWindow
     private void DisposeResources()
     {
         NativeMethods.KillTimer(_hwnd, SearchDebounceTimerId);
+        StopFileWatcher();
         CancelActiveSearch();
         _mainPane?.Dispose();
         _filteredPane?.Dispose();

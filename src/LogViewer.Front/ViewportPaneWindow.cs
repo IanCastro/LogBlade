@@ -56,6 +56,7 @@ internal sealed class ViewportPaneWindow : IDisposable
     private long _nextViewportRequestId;
     private long _latestViewportRequestId;
     private bool _viewportWorkerRunning;
+    private bool _tailRefreshPending;
     private ViewportRequest? _pendingViewportRequest;
     private int[]? _manualColumnWidths;
     private int _hoverResizeColumnIndex = -1;
@@ -175,15 +176,23 @@ internal sealed class ViewportPaneWindow : IDisposable
     {
         if (_reader is not VisualRowReader { IsAtKnownEnd: true } || _hwnd == IntPtr.Zero)
         {
+            _tailRefreshPending = false;
             return;
         }
 
-        if (_pendingViewportRequest is ViewportRequest pending &&
-            pending.Kind != ViewportRequestKind.RefreshTailIfAtEnd)
+        if (_pendingViewportRequest is ViewportRequest { Kind: ViewportRequestKind.RefreshTailIfAtEnd })
         {
             return;
         }
 
+        if (_viewportWorkerRunning ||
+            _pendingViewportRequest is ViewportRequest { Kind: not ViewportRequestKind.RefreshTailIfAtEnd })
+        {
+            _tailRefreshPending = true;
+            return;
+        }
+
+        _tailRefreshPending = false;
         QueueViewportRequest(ViewportRequestKind.RefreshTailIfAtEnd, visibleLines: VisibleDataLineCount);
     }
 
@@ -229,7 +238,30 @@ internal sealed class ViewportPaneWindow : IDisposable
         _nextViewportRequestId = 0;
         _latestViewportRequestId = 0;
         _viewportWorkerRunning = false;
+        _tailRefreshPending = false;
         _pendingViewportRequest = null;
+    }
+
+    private void QueuePendingTailRefreshIfReady()
+    {
+        if (!_tailRefreshPending || _viewportWorkerRunning || _pendingViewportRequest is not null)
+        {
+            return;
+        }
+
+        if (_reader is not VisualRowReader { IsAtKnownEnd: true })
+        {
+            _tailRefreshPending = false;
+            return;
+        }
+
+        _tailRefreshPending = false;
+        QueueViewportRequest(ViewportRequestKind.RefreshTailIfAtEnd, visibleLines: VisibleDataLineCount);
+    }
+
+    private void ClearTailRefreshPending()
+    {
+        _tailRefreshPending = false;
     }
 
     private void QueueViewportRequest(ViewportRequestKind kind, int deltaLines = 0, double requestedPercentage = 0d, int? visibleLines = null)
@@ -349,7 +381,10 @@ internal sealed class ViewportPaneWindow : IDisposable
         if (_pendingViewportRequest is not null)
         {
             DispatchViewportRequest();
+            return;
         }
+
+        QueuePendingTailRefreshIfReady();
     }
 
     private void OnSize()
@@ -882,6 +917,11 @@ internal sealed class ViewportPaneWindow : IDisposable
             return;
         }
 
+        if (deltaLines < 0)
+        {
+            ClearTailRefreshPending();
+        }
+
         QueueViewportRequest(ViewportRequestKind.ScrollByLines, deltaLines, visibleLines: VisibleDataLineCount);
     }
 
@@ -896,18 +936,21 @@ internal sealed class ViewportPaneWindow : IDisposable
         switch (command)
         {
             case NativeMethods.SB_LINEUP:
+                ClearTailRefreshPending();
                 QueueViewportRequest(ViewportRequestKind.ScrollByLines, -1, visibleLines: visible);
                 break;
             case NativeMethods.SB_LINEDOWN:
                 QueueViewportRequest(ViewportRequestKind.ScrollByLines, 1, visibleLines: visible);
                 break;
             case NativeMethods.SB_PAGEUP:
+                ClearTailRefreshPending();
                 QueueViewportRequest(ViewportRequestKind.ScrollByLines, -visible, visibleLines: visible);
                 break;
             case NativeMethods.SB_PAGEDOWN:
                 QueueViewportRequest(ViewportRequestKind.ScrollByLines, visible, visibleLines: visible);
                 break;
             case NativeMethods.SB_TOP:
+                ClearTailRefreshPending();
                 QueueViewportRequest(ViewportRequestKind.JumpHome, visibleLines: visible);
                 break;
             case NativeMethods.SB_BOTTOM:
@@ -915,6 +958,11 @@ internal sealed class ViewportPaneWindow : IDisposable
                 break;
             case NativeMethods.SB_THUMBPOSITION:
             case NativeMethods.SB_THUMBTRACK:
+                if (trackPercentage < 100d)
+                {
+                    ClearTailRefreshPending();
+                }
+
                 QueueViewportRequest(ViewportRequestKind.LoadAtPercentage, requestedPercentage: trackPercentage, visibleLines: visible);
                 break;
         }
