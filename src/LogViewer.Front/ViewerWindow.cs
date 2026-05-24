@@ -29,6 +29,7 @@ internal sealed class SearchWorkerResult
     public long ElapsedMilliseconds { get; set; }
     public bool IsFinal { get; set; }
     public bool IsAppendUpdate { get; set; }
+    public bool IsStale { get; set; }
 }
 
 internal sealed class ViewerWindow
@@ -744,6 +745,24 @@ internal sealed class ViewerWindow
                     new LogField("matchedLineCount", lastMatchedLineCount.ToString()),
                     new LogField("progressPercentage", Math.Round(Math.Clamp(lastProgressPercentage, 0d, 100d)).ToString()));
             }
+            catch (FilteredLineStaleException ex)
+            {
+                PostSearchWorkerResult(new SearchWorkerResult
+                {
+                    RequestId = requestId,
+                    Query = query,
+                    UseRegex = options.UseRegex,
+                    IgnoreCase = options.IgnoreCase,
+                    Success = false,
+                    IsStale = true,
+                    Message = ex.Message,
+                    ProgressPercentage = _searchProgressPercentage,
+                    MatchedLineCount = _searchMatchedLineCount,
+                    ElapsedMilliseconds = workerStopwatch.ElapsedMilliseconds,
+                    IsFinal = true,
+                    IsAppendUpdate = false
+                });
+            }
             catch (Exception ex)
             {
                 PostSearchWorkerResult(new SearchWorkerResult
@@ -941,6 +960,24 @@ internal sealed class ViewerWindow
                     new LogField("matchedLineCount", lastMatchedLineCount.ToString()),
                     new LogField("progressPercentage", Math.Round(Math.Clamp(lastProgressPercentage, 0d, 100d)).ToString()));
             }
+            catch (FilteredLineStaleException ex)
+            {
+                PostSearchWorkerResult(new SearchWorkerResult
+                {
+                    RequestId = requestId,
+                    Query = query,
+                    UseRegex = options.UseRegex,
+                    IgnoreCase = options.IgnoreCase,
+                    Success = false,
+                    IsStale = true,
+                    Message = ex.Message,
+                    ProgressPercentage = _searchProgressPercentage,
+                    MatchedLineCount = _searchMatchedLineCount,
+                    ElapsedMilliseconds = workerStopwatch.ElapsedMilliseconds,
+                    IsFinal = true,
+                    IsAppendUpdate = true
+                });
+            }
             catch (Exception ex)
             {
                 PostSearchWorkerResult(new SearchWorkerResult
@@ -993,6 +1030,12 @@ internal sealed class ViewerWindow
         RecalculateLayout();
         ApplyLayout();
         InvalidateSearchBar();
+    }
+
+    private static bool IsFilteredLineStaleMessage(string? message)
+    {
+        return message is not null &&
+            message.StartsWith("Filtered line ", StringComparison.Ordinal);
     }
 
     private void OnFilteredPaneStale(ViewportPaneWindow pane)
@@ -1111,6 +1154,13 @@ internal sealed class ViewerWindow
             if (result.IsAppendUpdate)
             {
                 _appendSearchInProgress = false;
+            }
+
+            if (result.IsStale || IsFilteredLineStaleMessage(result.Message))
+            {
+                result.Reader?.Dispose();
+                MarkSearchStale();
+                return;
             }
 
             _searchInProgress = false;

@@ -29,6 +29,7 @@ internal static class Program
             RunAppendSearchWithoutMatchKeepsCount(tempRoot);
             RunAppendSearchRescansPartialLastLine(tempRoot);
             RunAppendSearchPreservesRegexCaptureGroups(tempRoot);
+            RunAppendSearchStalesWhenEarlierLineGrows(tempRoot);
             RunPageUpNearStartClampsToTop(tempRoot);
             RunPageUpInsideWrappedFirstLineClampsToTop(tempRoot);
             RunRefreshTailAtEndShowsAppendedRows(tempRoot);
@@ -314,6 +315,25 @@ internal static class Program
         AssertEqual("append capture text", columns.CurrentCells[1][0], "aaabccc");
         AssertEqual("append capture group 0", columns.CurrentCells[1][1], "aaa");
         AssertEqual("append capture group 1", columns.CurrentCells[1][2], "ccc");
+    }
+
+    private static void RunAppendSearchStalesWhenEarlierLineGrows(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "append-search-stale-earlier.log", "one\r\ntwo alpha\r\n");
+
+        using FilteredVisualRowReader initial = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
+
+        File.WriteAllText(path, "one extended\r\ntwo alpha\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        AssertThrows<FilteredLineStaleException>(
+            "append search stale earlier line grows",
+            () =>
+            {
+                using FilteredVisualRowReader appended = BuildAppendedReader(initial, new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
+            });
     }
 
     private static FilteredVisualRowReader BuildAppendedReader(FilteredVisualRowReader initial, SearchOptions options)
