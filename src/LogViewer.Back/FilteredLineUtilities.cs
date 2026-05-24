@@ -5,6 +5,14 @@ using System.Text;
 
 public readonly record struct FilteredLineDescriptor(long StartOffset, long EndOffset, int VisualRowCount, string[]? CaptureGroups = null);
 
+public sealed class FilteredLineStaleException : IOException
+{
+    public FilteredLineStaleException(string message)
+        : base(message)
+    {
+    }
+}
+
 internal readonly record struct RealLineData(long StartOffset, long EndOffset, string Text);
 
 internal static class FilteredLineUtilities
@@ -40,12 +48,18 @@ internal static class FilteredLineUtilities
 
     public static string ReadLineText(FileStream fs, Encoding encoding, long startOffset, long endOffset)
     {
-        if (endOffset <= startOffset)
+        if (endOffset < startOffset)
         {
-            return string.Empty;
+            throw new FilteredLineStaleException("Filtered line range is invalid.");
         }
 
+        ValidateLineRange(fs, encoding, startOffset, endOffset);
         byte[] buffer = ReadRange(fs, startOffset, endOffset);
+        if (buffer.Length != endOffset - startOffset)
+        {
+            throw new FilteredLineStaleException("Filtered line range is no longer readable.");
+        }
+
         return encoding.GetString(buffer, 0, buffer.Length);
     }
 
@@ -96,6 +110,144 @@ internal static class FilteredLineUtilities
 
         Array.Resize(ref buffer, total);
         return buffer;
+    }
+
+    private static void ValidateLineRange(FileStream fs, Encoding encoding, long startOffset, long endOffset)
+    {
+        long fileSize = fs.Length;
+        if (startOffset < 0 || endOffset < startOffset || endOffset > fileSize)
+        {
+            throw new FilteredLineStaleException("Filtered line range is outside the current file.");
+        }
+
+        bool utf16 = IsUtf16Encoding(encoding);
+        int unitSize = utf16 ? 2 : 1;
+        if (utf16 && ((startOffset | endOffset) & 1) != 0)
+        {
+            throw new FilteredLineStaleException("Filtered UTF-16 line range is not code-unit aligned.");
+        }
+
+        if (!IsLineStart(fs, encoding, startOffset, unitSize))
+        {
+            throw new FilteredLineStaleException("Filtered line start is no longer at a line boundary.");
+        }
+
+        if (!IsLineEnd(fs, encoding, endOffset, fileSize, unitSize))
+        {
+            throw new FilteredLineStaleException("Filtered line end is no longer at a line boundary.");
+        }
+    }
+
+    private static bool IsLineStart(FileStream fs, Encoding encoding, long startOffset, int unitSize)
+    {
+        if (startOffset == 0 || IsEncodingDataOffset(fs, encoding, startOffset))
+        {
+            return true;
+        }
+
+        if (startOffset < unitSize)
+        {
+            return false;
+        }
+
+        return IsLineBreakAt(fs, encoding, startOffset - unitSize);
+    }
+
+    private static bool IsLineEnd(FileStream fs, Encoding encoding, long endOffset, long fileSize, int unitSize)
+    {
+        if (endOffset == fileSize)
+        {
+            return true;
+        }
+
+        if (endOffset > fileSize - unitSize)
+        {
+            return false;
+        }
+
+        return IsLineBreakAt(fs, encoding, endOffset);
+    }
+
+    private static bool IsLineBreakAt(FileStream fs, Encoding encoding, long offset)
+    {
+        if (IsUtf16Encoding(encoding))
+        {
+            if (offset < 0 || offset > fs.Length - 2)
+            {
+                return false;
+            }
+
+            fs.Position = offset;
+            Span<byte> bytes = stackalloc byte[2];
+            int read = fs.Read(bytes);
+            if (read != 2)
+            {
+                throw new FilteredLineStaleException("Filtered line boundary is no longer readable.");
+            }
+
+            ushort unit = IsUtf16LittleEndian(encoding)
+                ? (ushort)(bytes[0] | (bytes[1] << 8))
+                : (ushort)((bytes[0] << 8) | bytes[1]);
+            return unit is 0x000D or 0x000A;
+        }
+
+        if (offset < 0 || offset >= fs.Length)
+        {
+            return false;
+        }
+
+        fs.Position = offset;
+        int value = fs.ReadByte();
+        if (value < 0)
+        {
+            throw new FilteredLineStaleException("Filtered line boundary is no longer readable.");
+        }
+
+        return value is 0x0D or 0x0A;
+    }
+
+    private static bool IsEncodingDataOffset(FileStream fs, Encoding encoding, long startOffset)
+    {
+        if (startOffset == 3 && string.Equals(encoding.WebName, Encoding.UTF8.WebName, StringComparison.OrdinalIgnoreCase))
+        {
+            return HasBom(fs, [0xEF, 0xBB, 0xBF]);
+        }
+
+        if (startOffset == 2 && string.Equals(encoding.WebName, Encoding.Unicode.WebName, StringComparison.OrdinalIgnoreCase))
+        {
+            return HasBom(fs, [0xFF, 0xFE]);
+        }
+
+        if (startOffset == 2 && string.Equals(encoding.WebName, Encoding.BigEndianUnicode.WebName, StringComparison.OrdinalIgnoreCase))
+        {
+            return HasBom(fs, [0xFE, 0xFF]);
+        }
+
+        return false;
+    }
+
+    private static bool HasBom(FileStream fs, ReadOnlySpan<byte> bom)
+    {
+        if (fs.Length < bom.Length)
+        {
+            return false;
+        }
+
+        fs.Position = 0;
+        Span<byte> bytes = stackalloc byte[3];
+        int read = fs.Read(bytes[..bom.Length]);
+        return read == bom.Length && bytes[..bom.Length].SequenceEqual(bom);
+    }
+
+    private static bool IsUtf16Encoding(Encoding encoding)
+    {
+        return string.Equals(encoding.WebName, Encoding.Unicode.WebName, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(encoding.WebName, Encoding.BigEndianUnicode.WebName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsUtf16LittleEndian(Encoding encoding)
+    {
+        return !string.Equals(encoding.WebName, Encoding.BigEndianUnicode.WebName, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool TryReadSingleByteRealLine(FileStream fs, Encoding encoding, long fileSize, long startOffset, out RealLineData line)

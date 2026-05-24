@@ -18,6 +18,7 @@ internal sealed class ViewportWorkerResult
 {
     public long RequestId { get; set; }
     public bool Success { get; set; }
+    public bool IsStale { get; set; }
     public string? Message { get; set; }
     public IViewportReader? Reader { get; set; }
 }
@@ -43,6 +44,7 @@ internal sealed class ViewportPaneWindow : IDisposable
     private readonly int _lineHeight;
     private readonly int _charWidth;
     private readonly Action<ViewportPaneWindow>? _onUsefulPaint;
+    private readonly Action<ViewportPaneWindow>? _onStale;
 
     private IntPtr _hwnd;
     private GCHandle _selfHandle;
@@ -67,12 +69,13 @@ internal sealed class ViewportPaneWindow : IDisposable
     private int _resizeStartWidth;
     private bool _isColumnResizing;
 
-    public ViewportPaneWindow(IntPtr font, int lineHeight, int charWidth, Action<ViewportPaneWindow>? onUsefulPaint = null)
+    public ViewportPaneWindow(IntPtr font, int lineHeight, int charWidth, Action<ViewportPaneWindow>? onUsefulPaint = null, Action<ViewportPaneWindow>? onStale = null)
     {
         _font = font;
         _lineHeight = Math.Max(1, lineHeight);
         _charWidth = Math.Max(1, charWidth);
         _onUsefulPaint = onUsefulPaint;
+        _onStale = onStale;
     }
 
     public IntPtr Hwnd => _hwnd;
@@ -409,6 +412,13 @@ internal sealed class ViewportPaneWindow : IDisposable
                 result.Success = true;
                 result.Reader = workerReader;
             }
+            catch (FilteredLineStaleException ex)
+            {
+                result.Success = false;
+                result.IsStale = true;
+                result.Message = ex.Message;
+                workerReader.Dispose();
+            }
             catch (Exception ex)
             {
                 result.Success = false;
@@ -447,6 +457,11 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
         else
         {
+            if (result.IsStale)
+            {
+                _onStale?.Invoke(this);
+            }
+
             result.Reader?.Dispose();
         }
 

@@ -17,6 +17,13 @@ internal static class Program
             RunRegexWithoutGroupsUsesPlainRows(tempRoot);
             RunLiteralSearchUsesPlainRows(tempRoot);
             RunWrappedLineCaptureGroups(tempRoot);
+            RunFilteredLineStaleWhenStartMoves(tempRoot);
+            RunFilteredLineStaleWhenEndMoves(tempRoot);
+            RunFilteredLineValidationAcceptsLf(tempRoot);
+            RunFilteredLineValidationAcceptsUtf16Le(tempRoot);
+            RunFilteredLineValidationAcceptsUtf16Be(tempRoot);
+            RunFilteredLineValidationAcceptsFinalLineWithoutBreak(tempRoot);
+            RunFilteredLineValidationAcceptsEmptyLine(tempRoot);
             RunInvalidRegexValidation();
             RunAppendSearchAddsMatches(tempRoot);
             RunAppendSearchWithoutMatchKeepsCount(tempRoot);
@@ -116,6 +123,106 @@ internal static class Program
         AssertEqual("wrapped text", columns.CurrentCells[0][0], longText);
         AssertEqual("wrapped first group 0", columns.CurrentCells[0][1], "aaa");
         AssertEqual("wrapped first group 1", columns.CurrentCells[0][2], "ccc");
+    }
+
+    private static void RunFilteredLineStaleWhenStartMoves(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "filtered-stale-start.log", "one\r\ntwo alpha\r\n");
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
+
+        File.WriteAllText(path, "one extended\r\ntwo alpha\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        AssertThrows<FilteredLineStaleException>("filtered stale start", () => reader.ReadFromPercentage(0d, 10));
+    }
+
+    private static void RunFilteredLineStaleWhenEndMoves(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "filtered-stale-end.log", "alpha\r\n");
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
+
+        File.WriteAllText(path, "alphaz\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        AssertThrows<FilteredLineStaleException>("filtered stale end", () => reader.ReadFromPercentage(0d, 10));
+    }
+
+    private static void RunFilteredLineValidationAcceptsLf(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "filtered-lf.log", "alpha\nbeta\n");
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("beta", UseRegex: false, IgnoreCase: false));
+
+        reader.ReadFromPercentage(0d, 10);
+        AssertSequence("filtered lf rows", reader.CurrentRows, "beta");
+    }
+
+    private static void RunFilteredLineValidationAcceptsUtf16Le(string tempRoot)
+    {
+        string path = Path.Combine(tempRoot, "filtered-utf16-le.log");
+        File.WriteAllText(path, "alpha\r\nbeta\r\n", Encoding.Unicode);
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.Unicode,
+            dataOffset: 2,
+            new SearchOptions("beta", UseRegex: false, IgnoreCase: false));
+
+        reader.ReadFromPercentage(0d, 10);
+        AssertSequence("filtered utf16 le rows", reader.CurrentRows, "beta");
+    }
+
+    private static void RunFilteredLineValidationAcceptsUtf16Be(string tempRoot)
+    {
+        string path = Path.Combine(tempRoot, "filtered-utf16-be.log");
+        File.WriteAllText(path, "alpha\r\nbeta\r\n", Encoding.BigEndianUnicode);
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.BigEndianUnicode,
+            dataOffset: 2,
+            new SearchOptions("beta", UseRegex: false, IgnoreCase: false));
+
+        reader.ReadFromPercentage(0d, 10);
+        AssertSequence("filtered utf16 be rows", reader.CurrentRows, "beta");
+    }
+
+    private static void RunFilteredLineValidationAcceptsFinalLineWithoutBreak(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "filtered-no-final-break.log", "plain\r\nalpha");
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
+
+        reader.ReadFromPercentage(0d, 10);
+        AssertSequence("filtered no final break rows", reader.CurrentRows, "alpha");
+    }
+
+    private static void RunFilteredLineValidationAcceptsEmptyLine(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "filtered-empty-line.log", "alpha\r\n\r\nbeta\r\n");
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("^$", UseRegex: true, IgnoreCase: false));
+
+        reader.ReadFromPercentage(0d, 10);
+        AssertSequence("filtered empty line rows", reader.CurrentRows, string.Empty);
     }
 
     private static void RunInvalidRegexValidation()
@@ -376,6 +483,21 @@ internal static class Program
         {
             throw new InvalidOperationException($"{name}: expected '{expected}', got '{actual}'.");
         }
+    }
+
+    private static void AssertThrows<TException>(string name, Action action)
+        where TException : Exception
+    {
+        try
+        {
+            action();
+        }
+        catch (TException)
+        {
+            return;
+        }
+
+        throw new InvalidOperationException($"{name}: expected exception {typeof(TException).Name}.");
     }
 
     private static void TryDeleteDirectory(string path)

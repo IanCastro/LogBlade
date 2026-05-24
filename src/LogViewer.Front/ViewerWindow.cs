@@ -291,7 +291,7 @@ internal sealed class ViewerWindow
         _mainPane.Create(_hwnd, hInstance);
         _mainPane.SetStatus("Loading file...");
 
-        _filteredPane = new ViewportPaneWindow(_font, _lineHeight, _charWidth);
+        _filteredPane = new ViewportPaneWindow(_font, _lineHeight, _charWidth, onStale: OnFilteredPaneStale);
         _filteredPane.Create(_hwnd, hInstance);
         _filteredPane.SetEmptyContentText("(no matches)");
         _filteredPane.SetStatus(string.Empty);
@@ -985,8 +985,24 @@ internal sealed class ViewerWindow
         _searchInProgress = false;
         _searchStale = true;
         _searchDisplayActive = true;
+        _searchProgressPercentage = 0d;
+        _searchMatchedLineCount = 0;
         _searchErrorText = "Search stale";
+        _filteredPane?.SetEmptyContentText(string.Empty);
+        _filteredPane?.SetStatus(string.Empty);
+        RecalculateLayout();
+        ApplyLayout();
         InvalidateSearchBar();
+    }
+
+    private void OnFilteredPaneStale(ViewportPaneWindow pane)
+    {
+        if (!ReferenceEquals(pane, _filteredPane) || _closing)
+        {
+            return;
+        }
+
+        MarkSearchStale();
     }
 
     private CancellationTokenSource BeginSearchCancellation()
@@ -1118,28 +1134,37 @@ internal sealed class ViewerWindow
 
         if (result.Reader is not null)
         {
-            if (result.Reader is FilteredVisualRowReader nextFilteredReader)
+            try
             {
-                long desiredTopRow = 0;
-                bool shouldKeepAtEnd = false;
-                if (_filteredPane.Reader is FilteredVisualRowReader currentFilteredReader)
+                if (result.Reader is FilteredVisualRowReader nextFilteredReader)
                 {
-                    desiredTopRow = currentFilteredReader.TopRowOrdinal;
-                    shouldKeepAtEnd = result.IsAppendUpdate && currentFilteredReader.IsAtEnd;
+                    long desiredTopRow = 0;
+                    bool shouldKeepAtEnd = false;
+                    if (_filteredPane.Reader is FilteredVisualRowReader currentFilteredReader)
+                    {
+                        desiredTopRow = currentFilteredReader.TopRowOrdinal;
+                        shouldKeepAtEnd = result.IsAppendUpdate && currentFilteredReader.IsAtEnd;
+                    }
+
+                    if (shouldKeepAtEnd)
+                    {
+                        nextFilteredReader.ReadFromPercentage(100d, _filteredPane.VisibleDataLineCount);
+                    }
+                    else
+                    {
+                        nextFilteredReader.ReadFromRowOrdinal(desiredTopRow, _filteredPane.VisibleDataLineCount);
+                    }
                 }
 
-                if (shouldKeepAtEnd)
-                {
-                    nextFilteredReader.ReadFromPercentage(100d, _filteredPane.VisibleDataLineCount);
-                }
-                else
-                {
-                    nextFilteredReader.ReadFromRowOrdinal(desiredTopRow, _filteredPane.VisibleDataLineCount);
-                }
+                _filteredPane.SetEmptyContentText("(no matches)");
+                _filteredPane.SetReader(result.Reader, _filteredPane.VisibleDataLineCount, preserveColumnWidths: true);
             }
-
-            _filteredPane.SetEmptyContentText("(no matches)");
-            _filteredPane.SetReader(result.Reader, _filteredPane.VisibleDataLineCount, preserveColumnWidths: true);
+            catch (FilteredLineStaleException)
+            {
+                result.Reader.Dispose();
+                MarkSearchStale();
+                return;
+            }
         }
 
         if (result.IsFinal)
