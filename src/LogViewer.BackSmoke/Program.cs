@@ -21,6 +21,7 @@ internal static class Program
             RunPageUpInsideWrappedFirstLineClampsToTop(tempRoot);
             RunRefreshTailAtEndShowsAppendedRows(tempRoot);
             RunRefreshTailSmallInitialFileShowsAppendedRows(tempRoot);
+            RunRefreshFileSizeAwayFromEndLetsJumpEndSeeAppendedRows(tempRoot);
             RunRefreshTailAwayFromEndDoesNotMove(tempRoot);
             RunRefreshTailAfterTruncateReloadsFromStart(tempRoot);
 
@@ -179,6 +180,20 @@ internal static class Program
 
         AssertSequence("tail small initial rows", reader.CurrentRows, "line-0", "line-1", "line-2");
         AssertEqual("tail small initial at end", reader.IsAtKnownEnd, true);
+    }
+
+    private static void RunRefreshFileSizeAwayFromEndLetsJumpEndSeeAppendedRows(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "tail-away-then-end.log", "line-0\r\nline-1\r\nline-2\r\nline-3\r\n");
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        reader.ReadFromPercentage(0d, 2);
+        File.AppendAllText(path, "line-4\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        AssertEqual("tail away file size changed", reader.RefreshFileSize(), true);
+        reader.ReadFromPercentage(100d, 2);
+
+        AssertSequence("tail away then end rows", reader.CurrentRows, "line-3", "line-4");
+        AssertEqual("tail away then end at end", reader.IsAtKnownEnd, true);
     }
 
     private static void RunRefreshTailAwayFromEndDoesNotMove(string tempRoot)

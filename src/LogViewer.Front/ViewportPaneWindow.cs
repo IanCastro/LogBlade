@@ -57,6 +57,8 @@ internal sealed class ViewportPaneWindow : IDisposable
     private long _latestViewportRequestId;
     private bool _viewportWorkerRunning;
     private bool _tailRefreshPending;
+    private bool _fileSizeRefreshPending;
+    private bool _tailFollowSuspended;
     private ViewportRequest? _pendingViewportRequest;
     private int[]? _manualColumnWidths;
     private int _hoverResizeColumnIndex = -1;
@@ -174,9 +176,23 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     public void QueueTailRefreshIfAtEnd()
     {
-        if (_reader is not VisualRowReader { IsAtKnownEnd: true } || _hwnd == IntPtr.Zero)
+        if (_reader is not VisualRowReader visualReader || _hwnd == IntPtr.Zero)
         {
             _tailRefreshPending = false;
+            _fileSizeRefreshPending = false;
+            return;
+        }
+
+        if (!visualReader.IsAtKnownEnd || _tailFollowSuspended)
+        {
+            _tailRefreshPending = false;
+            if (_viewportWorkerRunning || _pendingViewportRequest is not null)
+            {
+                _fileSizeRefreshPending = true;
+                return;
+            }
+
+            RefreshKnownFileSize();
             return;
         }
 
@@ -239,6 +255,8 @@ internal sealed class ViewportPaneWindow : IDisposable
         _latestViewportRequestId = 0;
         _viewportWorkerRunning = false;
         _tailRefreshPending = false;
+        _fileSizeRefreshPending = false;
+        _tailFollowSuspended = false;
         _pendingViewportRequest = null;
     }
 
@@ -249,7 +267,7 @@ internal sealed class ViewportPaneWindow : IDisposable
             return;
         }
 
-        if (_reader is not VisualRowReader { IsAtKnownEnd: true })
+        if (_reader is not VisualRowReader)
         {
             _tailRefreshPending = false;
             return;
@@ -259,9 +277,51 @@ internal sealed class ViewportPaneWindow : IDisposable
         QueueViewportRequest(ViewportRequestKind.RefreshTailIfAtEnd, visibleLines: VisibleDataLineCount);
     }
 
-    private void ClearTailRefreshPending()
+    private void RefreshPendingFileSizeIfReady()
+    {
+        if (!_fileSizeRefreshPending || _viewportWorkerRunning || _pendingViewportRequest is not null)
+        {
+            return;
+        }
+
+        _fileSizeRefreshPending = false;
+        RefreshKnownFileSize();
+    }
+
+    private void RefreshKnownFileSize()
+    {
+        if (_reader is not VisualRowReader visualReader)
+        {
+            _fileSizeRefreshPending = false;
+            return;
+        }
+
+        bool wasAtEnd = visualReader.IsAtKnownEnd;
+        if (!visualReader.RefreshFileSize())
+        {
+            return;
+        }
+
+        UpdateScrollBar();
+        NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
+        if (wasAtEnd && !_tailFollowSuspended)
+        {
+            _tailRefreshPending = true;
+        }
+    }
+
+    private void SuspendTailFollow()
     {
         _tailRefreshPending = false;
+        _tailFollowSuspended = true;
+    }
+
+    private void ResumeTailFollowIfAtEnd()
+    {
+        if (_reader is VisualRowReader { IsAtKnownEnd: true })
+        {
+            _tailFollowSuspended = false;
+        }
     }
 
     private void QueueViewportRequest(ViewportRequestKind kind, int deltaLines = 0, double requestedPercentage = 0d, int? visibleLines = null)
@@ -370,6 +430,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         {
             _reader?.Dispose();
             _reader = result.Reader;
+            ResumeTailFollowIfAtEnd();
             UpdateScrollBar();
             NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
         }
@@ -384,6 +445,7 @@ internal sealed class ViewportPaneWindow : IDisposable
             return;
         }
 
+        RefreshPendingFileSizeIfReady();
         QueuePendingTailRefreshIfReady();
     }
 
@@ -919,7 +981,7 @@ internal sealed class ViewportPaneWindow : IDisposable
 
         if (deltaLines < 0)
         {
-            ClearTailRefreshPending();
+            SuspendTailFollow();
         }
 
         QueueViewportRequest(ViewportRequestKind.ScrollByLines, deltaLines, visibleLines: VisibleDataLineCount);
@@ -936,31 +998,36 @@ internal sealed class ViewportPaneWindow : IDisposable
         switch (command)
         {
             case NativeMethods.SB_LINEUP:
-                ClearTailRefreshPending();
+                SuspendTailFollow();
                 QueueViewportRequest(ViewportRequestKind.ScrollByLines, -1, visibleLines: visible);
                 break;
             case NativeMethods.SB_LINEDOWN:
                 QueueViewportRequest(ViewportRequestKind.ScrollByLines, 1, visibleLines: visible);
                 break;
             case NativeMethods.SB_PAGEUP:
-                ClearTailRefreshPending();
+                SuspendTailFollow();
                 QueueViewportRequest(ViewportRequestKind.ScrollByLines, -visible, visibleLines: visible);
                 break;
             case NativeMethods.SB_PAGEDOWN:
                 QueueViewportRequest(ViewportRequestKind.ScrollByLines, visible, visibleLines: visible);
                 break;
             case NativeMethods.SB_TOP:
-                ClearTailRefreshPending();
+                SuspendTailFollow();
                 QueueViewportRequest(ViewportRequestKind.JumpHome, visibleLines: visible);
                 break;
             case NativeMethods.SB_BOTTOM:
+                _tailFollowSuspended = false;
                 QueueViewportRequest(ViewportRequestKind.JumpEnd, visibleLines: visible);
                 break;
             case NativeMethods.SB_THUMBPOSITION:
             case NativeMethods.SB_THUMBTRACK:
                 if (trackPercentage < 100d)
                 {
-                    ClearTailRefreshPending();
+                    SuspendTailFollow();
+                }
+                else
+                {
+                    _tailFollowSuspended = false;
                 }
 
                 QueueViewportRequest(ViewportRequestKind.LoadAtPercentage, requestedPercentage: trackPercentage, visibleLines: visible);
