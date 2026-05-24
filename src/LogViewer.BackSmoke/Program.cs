@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Threading;
 
 internal static class Program
 {
@@ -17,6 +18,10 @@ internal static class Program
             RunLiteralSearchUsesPlainRows(tempRoot);
             RunWrappedLineCaptureGroups(tempRoot);
             RunInvalidRegexValidation();
+            RunAppendSearchAddsMatches(tempRoot);
+            RunAppendSearchWithoutMatchKeepsCount(tempRoot);
+            RunAppendSearchRescansPartialLastLine(tempRoot);
+            RunAppendSearchPreservesRegexCaptureGroups(tempRoot);
             RunPageUpNearStartClampsToTop(tempRoot);
             RunPageUpInsideWrappedFirstLineClampsToTop(tempRoot);
             RunRefreshTailAtEndShowsAppendedRows(tempRoot);
@@ -123,6 +128,104 @@ internal static class Program
         }
 
         throw new InvalidOperationException("Invalid regex did not fail validation.");
+    }
+
+    private static void RunAppendSearchAddsMatches(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "append-search-match.log", "alpha\r\nplain\r\n");
+
+        using FilteredVisualRowReader initial = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
+
+        File.AppendAllText(path, "new alpha\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        using FilteredVisualRowReader appended = BuildAppendedReader(initial, new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
+        appended.ReadFromPercentage(0d, 10);
+
+        AssertEqual("append match count", appended.MatchedLineCount, 2L);
+        AssertSequence("append match rows", appended.CurrentRows, "alpha", "new alpha");
+    }
+
+    private static void RunAppendSearchWithoutMatchKeepsCount(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "append-search-no-match.log", "alpha\r\nplain\r\n");
+
+        using FilteredVisualRowReader initial = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
+
+        File.AppendAllText(path, "new plain\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        using FilteredVisualRowReader appended = BuildAppendedReader(initial, new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
+        appended.ReadFromPercentage(0d, 10);
+
+        AssertEqual("append no-match count", appended.MatchedLineCount, 1L);
+        AssertSequence("append no-match rows", appended.CurrentRows, "alpha");
+    }
+
+    private static void RunAppendSearchRescansPartialLastLine(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "append-search-partial.log", "prefix alp");
+
+        using FilteredVisualRowReader initial = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
+
+        File.AppendAllText(path, "ha\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        using FilteredVisualRowReader appended = BuildAppendedReader(initial, new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
+        appended.ReadFromPercentage(0d, 10);
+
+        AssertEqual("append partial count", appended.MatchedLineCount, 1L);
+        AssertSequence("append partial rows", appended.CurrentRows, "prefix alpha");
+    }
+
+    private static void RunAppendSearchPreservesRegexCaptureGroups(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "append-search-captures.log", "aabcc\r\nplain\r\n");
+        SearchOptions options = new("(a+)b(c+)", UseRegex: true, IgnoreCase: false);
+
+        using FilteredVisualRowReader initial = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            options);
+
+        File.AppendAllText(path, "aaabccc\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        using FilteredVisualRowReader appended = BuildAppendedReader(initial, options);
+        appended.ReadFromPercentage(0d, 10);
+        IColumnViewportReader columns = appended;
+
+        AssertSequence("append capture headers", columns.ColumnHeaders, "Text", "0", "1");
+        AssertEqual("append capture row count", columns.CurrentCells.Count, 2);
+        AssertEqual("append capture text", columns.CurrentCells[1][0], "aaabccc");
+        AssertEqual("append capture group 0", columns.CurrentCells[1][1], "aaa");
+        AssertEqual("append capture group 1", columns.CurrentCells[1][2], "ccc");
+    }
+
+    private static FilteredVisualRowReader BuildAppendedReader(FilteredVisualRowReader initial, SearchOptions options)
+    {
+        FilteredVisualRowReader? latest = null;
+        LogSearchBuilder.BuildAppendedFilteredReaderIncremental(
+            initial,
+            options,
+            new FileInfo(initial.FilePath).Length,
+            preloadedVisibleLines: 10,
+            update =>
+            {
+                if (update.Reader is not null)
+                {
+                    latest?.Dispose();
+                    latest = update.Reader;
+                }
+            },
+            CancellationToken.None);
+
+        return latest ?? throw new InvalidOperationException("Append search did not publish a reader.");
     }
 
     private static void RunPageUpNearStartClampsToTop(string tempRoot)

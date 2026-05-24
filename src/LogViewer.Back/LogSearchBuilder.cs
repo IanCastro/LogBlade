@@ -13,6 +13,7 @@ public readonly record struct SearchOptions(string Query, bool UseRegex, bool Ig
 public static class LogSearchBuilder
 {
     private const int ProgressPublishIntervalMs = 150;
+    private const int BackwardScanBlockBytes = 64 * 1024;
 
     public static FilteredVisualRowReader BuildFilteredReader(string filePath, Encoding encoding, long dataOffset, string query)
         => BuildFilteredReader(filePath, encoding, dataOffset, new SearchOptions(query, UseRegex: false, IgnoreCase: true));
@@ -121,6 +122,198 @@ public static class LogSearchBuilder
             lastPublishedTick = Environment.TickCount64;
             partialPublished = partialPublished || reader is not null;
         }
+    }
+
+    public static void BuildAppendedFilteredReaderIncremental(
+        FilteredVisualRowReader previousReader,
+        SearchOptions options,
+        long newFileSize,
+        int preloadedVisibleLines,
+        Action<SearchProgressUpdate> onProgress,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        string fullPath = previousReader.FilePath;
+        long oldFileSize = previousReader.FileSize;
+        if (newFileSize <= oldFileSize)
+        {
+            FilteredVisualRowReader unchanged = new(
+                fullPath,
+                previousReader.Kind,
+                previousReader.SourceEncoding,
+                previousReader.DataOffset,
+                oldFileSize,
+                previousReader.CopyDescriptorsBefore(long.MaxValue));
+            unchanged.ReadFromPercentage(0d, Math.Max(1, preloadedVisibleLines));
+            onProgress(new SearchProgressUpdate(100d, unchanged.MatchedLineCount, 0, unchanged, IsFinal: true));
+            return;
+        }
+
+        LogEncodingKind kind = previousReader.Kind;
+        Encoding encoding = previousReader.SourceEncoding;
+        long dataOffset = previousReader.DataOffset;
+        long rescanStartOffset = GetAppendRescanStart(fullPath, kind, dataOffset, oldFileSize);
+        List<FilteredLineDescriptor> descriptors = new(previousReader.CopyDescriptorsBefore(rescanStartOffset));
+        long searchableBytes = Math.Max(1, newFileSize - rescanStartOffset);
+        long scannedOffset = rescanStartOffset;
+        long lastPublishedTick = Environment.TickCount64;
+        int lastPublishedDescriptorCount = descriptors.Count;
+        Stopwatch stopwatch = Stopwatch.StartNew();
+        SearchMatcher matcher = SearchMatcher.Create(options);
+
+        foreach (RealLineData line in SearchRealLineScanner.Enumerate(fullPath, encoding, kind, rescanStartOffset, newFileSize, cancellationToken))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            scannedOffset = line.EndOffset;
+            if (matcher.TryMatch(line.Text, out string[]? captureGroups))
+            {
+                descriptors.Add(new FilteredLineDescriptor(
+                    line.StartOffset,
+                    line.EndOffset,
+                    FilteredLineUtilities.CountVisualRows(line.Text),
+                    captureGroups));
+            }
+
+            long now = Environment.TickCount64;
+            if (now - lastPublishedTick >= ProgressPublishIntervalMs)
+            {
+                PublishSnapshot(isFinal: false);
+            }
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        PublishSnapshot(isFinal: true);
+        return;
+
+        void PublishSnapshot(bool isFinal)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            double progress = Math.Clamp(((scannedOffset - rescanStartOffset) * 100d) / searchableBytes, 0d, 100d);
+            if (isFinal)
+            {
+                progress = 100d;
+            }
+
+            FilteredVisualRowReader? reader = null;
+            bool shouldBuildReader = isFinal || descriptors.Count != lastPublishedDescriptorCount;
+            if (shouldBuildReader)
+            {
+                reader = new FilteredVisualRowReader(fullPath, kind, encoding, dataOffset, newFileSize, descriptors);
+                reader.ReadFromPercentage(0d, Math.Max(1, preloadedVisibleLines));
+                lastPublishedDescriptorCount = descriptors.Count;
+            }
+
+            onProgress(new SearchProgressUpdate(progress, descriptors.Count, stopwatch.ElapsedMilliseconds, reader, isFinal));
+            cancellationToken.ThrowIfCancellationRequested();
+            lastPublishedTick = Environment.TickCount64;
+        }
+    }
+
+    private static long GetAppendRescanStart(string filePath, LogEncodingKind kind, long dataOffset, long oldFileSize)
+    {
+        if (oldFileSize <= dataOffset)
+        {
+            return dataOffset;
+        }
+
+        using FileStream fs = VisualRowReader.OpenSourceStream(filePath);
+        if (EndsWithLineBreak(fs, kind, dataOffset, oldFileSize))
+        {
+            return oldFileSize;
+        }
+
+        return kind switch
+        {
+            LogEncodingKind.Utf16Le => FindPreviousUtf16LineStart(fs, dataOffset, oldFileSize, littleEndian: true),
+            LogEncodingKind.Utf16Be => FindPreviousUtf16LineStart(fs, dataOffset, oldFileSize, littleEndian: false),
+            _ => FindPreviousSingleByteLineStart(fs, dataOffset, oldFileSize)
+        };
+    }
+
+    private static bool EndsWithLineBreak(FileStream fs, LogEncodingKind kind, long dataOffset, long oldFileSize)
+    {
+        if (oldFileSize <= dataOffset)
+        {
+            return false;
+        }
+
+        if (kind is LogEncodingKind.Utf16Le or LogEncodingKind.Utf16Be)
+        {
+            if (oldFileSize - dataOffset < 2)
+            {
+                return false;
+            }
+
+            long offset = oldFileSize - 2;
+            Span<byte> bytes = stackalloc byte[2];
+            fs.Position = offset;
+            fs.ReadExactly(bytes);
+            ushort unit = kind == LogEncodingKind.Utf16Le
+                ? (ushort)(bytes[0] | (bytes[1] << 8))
+                : (ushort)((bytes[0] << 8) | bytes[1]);
+            return unit is 0x000D or 0x000A;
+        }
+
+        fs.Position = oldFileSize - 1;
+        int value = fs.ReadByte();
+        return value is 0x0D or 0x0A;
+    }
+
+    private static long FindPreviousSingleByteLineStart(FileStream fs, long dataOffset, long oldFileSize)
+    {
+        byte[] buffer = new byte[BackwardScanBlockBytes];
+        long cursor = oldFileSize;
+        while (cursor > dataOffset)
+        {
+            int bytesToRead = (int)Math.Min(buffer.Length, cursor - dataOffset);
+            long blockStart = cursor - bytesToRead;
+            fs.Position = blockStart;
+            fs.ReadExactly(buffer.AsSpan(0, bytesToRead));
+            for (int i = bytesToRead - 1; i >= 0; i--)
+            {
+                if (buffer[i] is 0x0D or 0x0A)
+                {
+                    return blockStart + i + 1;
+                }
+            }
+
+            cursor = blockStart;
+        }
+
+        return dataOffset;
+    }
+
+    private static long FindPreviousUtf16LineStart(FileStream fs, long dataOffset, long oldFileSize, bool littleEndian)
+    {
+        byte[] buffer = new byte[BackwardScanBlockBytes];
+        long cursor = oldFileSize - ((oldFileSize - dataOffset) % 2);
+        while (cursor > dataOffset)
+        {
+            int bytesToRead = (int)Math.Min(buffer.Length, cursor - dataOffset);
+            bytesToRead &= ~1;
+            if (bytesToRead <= 0)
+            {
+                break;
+            }
+
+            long blockStart = cursor - bytesToRead;
+            fs.Position = blockStart;
+            fs.ReadExactly(buffer.AsSpan(0, bytesToRead));
+            for (int i = bytesToRead - 2; i >= 0; i -= 2)
+            {
+                ushort unit = littleEndian
+                    ? (ushort)(buffer[i] | (buffer[i + 1] << 8))
+                    : (ushort)((buffer[i] << 8) | buffer[i + 1]);
+                if (unit is 0x000D or 0x000A)
+                {
+                    return blockStart + i + 2;
+                }
+            }
+
+            cursor = blockStart;
+        }
+
+        return dataOffset;
     }
 
     private static Regex CreateRegex(SearchOptions options)

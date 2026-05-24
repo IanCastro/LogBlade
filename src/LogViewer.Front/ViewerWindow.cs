@@ -28,6 +28,7 @@ internal sealed class SearchWorkerResult
     public long MatchedLineCount { get; set; }
     public long ElapsedMilliseconds { get; set; }
     public bool IsFinal { get; set; }
+    public bool IsAppendUpdate { get; set; }
 }
 
 internal sealed class ViewerWindow
@@ -75,6 +76,8 @@ internal sealed class ViewerWindow
     private double _searchProgressPercentage;
     private long _searchMatchedLineCount;
     private string _searchErrorText = string.Empty;
+    private bool _appendSearchPending;
+    private bool _appendSearchInProgress;
 
     private static readonly NativeMethods.WindowProc s_wndProc = WindowProc;
 
@@ -379,6 +382,8 @@ internal sealed class ViewerWindow
         _searchProgressPercentage = 0d;
         _searchMatchedLineCount = 0;
         _searchErrorText = string.Empty;
+        _appendSearchPending = false;
+        _appendSearchInProgress = false;
         _mainPane.SetStatus("Loading file...");
         _filteredPane?.SetStatus(string.Empty);
         InvalidateHost();
@@ -560,6 +565,7 @@ internal sealed class ViewerWindow
         }
 
         _mainPane?.QueueTailRefreshIfAtEnd();
+        QueueAppendSearchIfNeeded();
     }
 
     private void OnSize()
@@ -591,6 +597,8 @@ internal sealed class ViewerWindow
         _latestSearchRequestId = ++_nextSearchRequestId;
         NativeMethods.KillTimer(_hwnd, SearchDebounceTimerId);
         CancelActiveSearch();
+        _appendSearchPending = false;
+        _appendSearchInProgress = false;
 
         if (string.IsNullOrEmpty(_searchQuery))
         {
@@ -714,7 +722,8 @@ internal sealed class ViewerWindow
                         ProgressPercentage = update.ProgressPercentage,
                         MatchedLineCount = update.MatchedLineCount,
                         ElapsedMilliseconds = update.ElapsedMilliseconds,
-                        IsFinal = update.IsFinal
+                        IsFinal = update.IsFinal,
+                        IsAppendUpdate = false
                     });
                 }, cancellationToken);
             }
@@ -745,7 +754,8 @@ internal sealed class ViewerWindow
                     ProgressPercentage = _searchProgressPercentage,
                     MatchedLineCount = _searchMatchedLineCount,
                     ElapsedMilliseconds = workerStopwatch.ElapsedMilliseconds,
-                    IsFinal = true
+                    IsFinal = true,
+                    IsAppendUpdate = false
                 });
             }
             finally
@@ -763,6 +773,195 @@ internal sealed class ViewerWindow
                 }
             }
         });
+    }
+
+    private void QueueAppendSearchIfNeeded()
+    {
+        if (_closing || string.IsNullOrEmpty(_searchQuery) || _filteredPane is null)
+        {
+            _appendSearchPending = false;
+            return;
+        }
+
+        if (_searchInProgress || _appendSearchInProgress)
+        {
+            _appendSearchPending = true;
+            return;
+        }
+
+        if (_filteredPane.Reader is not FilteredVisualRowReader currentReader)
+        {
+            return;
+        }
+
+        SearchOptions options = new(_searchQuery, _useRegex, _ignoreCase);
+        if (!AreSearchOptionsValid(options))
+        {
+            return;
+        }
+
+        long currentFileSize;
+        try
+        {
+            currentFileSize = new FileInfo(_path).Length;
+        }
+        catch (IOException)
+        {
+            return;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return;
+        }
+
+        if (currentFileSize < currentReader.FileSize)
+        {
+            MarkSearchStale();
+            return;
+        }
+
+        if (currentFileSize <= currentReader.FileSize)
+        {
+            return;
+        }
+
+        DispatchAppendSearch(currentReader, currentFileSize, options);
+    }
+
+    private static bool AreSearchOptionsValid(SearchOptions options)
+    {
+        try
+        {
+            LogSearchBuilder.ValidateOptions(options);
+            return true;
+        }
+        catch (ArgumentException) when (options.UseRegex)
+        {
+            return false;
+        }
+    }
+
+    private void DispatchAppendSearch(FilteredVisualRowReader currentReader, long newFileSize, SearchOptions options)
+    {
+        if (_filteredPane is null)
+        {
+            return;
+        }
+
+        long requestId = _latestSearchRequestId;
+        int visibleLines = _filteredPane.VisibleDataLineCount;
+        var readerSnapshot = (FilteredVisualRowReader)currentReader.CloneForWorker();
+        long initialMatchedLineCount = readerSnapshot.MatchedLineCount;
+        IntPtr hwnd = _hwnd;
+        string query = options.Query;
+        CancellationTokenSource searchCancellation = BeginSearchCancellation();
+        CancellationToken cancellationToken = searchCancellation.Token;
+        _appendSearchPending = false;
+        _appendSearchInProgress = true;
+        _searchInProgress = true;
+        _searchDisplayActive = true;
+        _searchProgressPercentage = 0d;
+        _searchErrorText = string.Empty;
+        InvalidateSearchBar();
+
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            Stopwatch workerStopwatch = Stopwatch.StartNew();
+            long lastMatchedLineCount = initialMatchedLineCount;
+            double lastProgressPercentage = 0d;
+            AppLog.Instance.Info(
+                "search.append.begin",
+                "begin",
+                new LogField("requestId", requestId.ToString()),
+                new LogField("query", query),
+                new LogField("queryLength", query.Length.ToString()),
+                new LogField("useRegex", options.UseRegex.ToString()),
+                new LogField("ignoreCase", options.IgnoreCase.ToString()),
+                new LogField("oldFileSize", readerSnapshot.FileSize.ToString()),
+                new LogField("newFileSize", newFileSize.ToString()));
+
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                LogSearchBuilder.BuildAppendedFilteredReaderIncremental(readerSnapshot, options, newFileSize, visibleLines, update =>
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    lastMatchedLineCount = update.MatchedLineCount;
+                    lastProgressPercentage = update.ProgressPercentage;
+                    PostSearchWorkerResult(new SearchWorkerResult
+                    {
+                        RequestId = requestId,
+                        Query = query,
+                        UseRegex = options.UseRegex,
+                        IgnoreCase = options.IgnoreCase,
+                        Success = true,
+                        Reader = update.Reader,
+                        PreloadedVisibleLines = visibleLines,
+                        ProgressPercentage = update.ProgressPercentage,
+                        MatchedLineCount = update.MatchedLineCount,
+                        ElapsedMilliseconds = update.ElapsedMilliseconds,
+                        IsFinal = update.IsFinal,
+                        IsAppendUpdate = true
+                    });
+                }, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                AppLog.Instance.Info(
+                    "search.append.cancelled",
+                    "cancelled",
+                    new LogField("requestId", requestId.ToString()),
+                    new LogField("query", query),
+                    new LogField("queryLength", query.Length.ToString()),
+                    new LogField("useRegex", options.UseRegex.ToString()),
+                    new LogField("ignoreCase", options.IgnoreCase.ToString()),
+                    new LogField("durationMs", workerStopwatch.ElapsedMilliseconds.ToString()),
+                    new LogField("matchedLineCount", lastMatchedLineCount.ToString()),
+                    new LogField("progressPercentage", Math.Round(Math.Clamp(lastProgressPercentage, 0d, 100d)).ToString()));
+            }
+            catch (Exception ex)
+            {
+                PostSearchWorkerResult(new SearchWorkerResult
+                {
+                    RequestId = requestId,
+                    Query = query,
+                    UseRegex = options.UseRegex,
+                    IgnoreCase = options.IgnoreCase,
+                    Success = false,
+                    Message = ex.Message,
+                    ProgressPercentage = _searchProgressPercentage,
+                    MatchedLineCount = _searchMatchedLineCount,
+                    ElapsedMilliseconds = workerStopwatch.ElapsedMilliseconds,
+                    IsFinal = true,
+                    IsAppendUpdate = true
+                });
+            }
+            finally
+            {
+                readerSnapshot.Dispose();
+                DisposeSearchCancellation(searchCancellation);
+            }
+
+            void PostSearchWorkerResult(SearchWorkerResult result)
+            {
+                GCHandle handle = GCHandle.Alloc(result);
+                if (!NativeMethods.PostMessageW(hwnd, NativeMethods.WM_APP_SEARCH_COMPLETE, IntPtr.Zero, GCHandle.ToIntPtr(handle)))
+                {
+                    result.Reader?.Dispose();
+                    handle.Free();
+                }
+            }
+        });
+    }
+
+    private void MarkSearchStale()
+    {
+        _appendSearchPending = false;
+        _appendSearchInProgress = false;
+        _searchInProgress = false;
+        _searchDisplayActive = true;
+        _searchErrorText = "Search stale";
+        InvalidateSearchBar();
     }
 
     private CancellationTokenSource BeginSearchCancellation()
@@ -829,12 +1028,22 @@ internal sealed class ViewerWindow
 
         if (_closing)
         {
+            if (result.IsAppendUpdate)
+            {
+                _appendSearchInProgress = false;
+            }
+
             result.Reader?.Dispose();
             return;
         }
 
         if (result.RequestId != _latestSearchRequestId || string.IsNullOrEmpty(_searchQuery))
         {
+            if (result.IsAppendUpdate)
+            {
+                _appendSearchInProgress = false;
+            }
+
             if (result.IsFinal)
             {
                 LogSearchDiscarded(result);
@@ -858,6 +1067,11 @@ internal sealed class ViewerWindow
 
         if (!result.Success)
         {
+            if (result.IsAppendUpdate)
+            {
+                _appendSearchInProgress = false;
+            }
+
             _searchInProgress = false;
             _searchDisplayActive = true;
             _searchErrorText = result.UseRegex ? "Regex error" : "Search error";
@@ -882,12 +1096,21 @@ internal sealed class ViewerWindow
             if (result.Reader is FilteredVisualRowReader nextFilteredReader)
             {
                 long desiredTopRow = 0;
+                bool shouldKeepAtEnd = false;
                 if (_filteredPane.Reader is FilteredVisualRowReader currentFilteredReader)
                 {
                     desiredTopRow = currentFilteredReader.TopRowOrdinal;
+                    shouldKeepAtEnd = result.IsAppendUpdate && currentFilteredReader.IsAtEnd;
                 }
 
-                nextFilteredReader.ReadFromRowOrdinal(desiredTopRow, _filteredPane.VisibleDataLineCount);
+                if (shouldKeepAtEnd)
+                {
+                    nextFilteredReader.ReadFromPercentage(100d, _filteredPane.VisibleDataLineCount);
+                }
+                else
+                {
+                    nextFilteredReader.ReadFromRowOrdinal(desiredTopRow, _filteredPane.VisibleDataLineCount);
+                }
             }
 
             _filteredPane.SetEmptyContentText("(no matches)");
@@ -897,9 +1120,15 @@ internal sealed class ViewerWindow
         if (result.IsFinal)
         {
             _searchInProgress = false;
+            if (result.IsAppendUpdate)
+            {
+                _appendSearchInProgress = false;
+            }
+
             _searchProgressPercentage = 100d;
+            string eventName = result.IsAppendUpdate ? "search.append.complete" : "search.complete";
             AppLog.Instance.Info(
-                "search.complete",
+                eventName,
                 "complete",
                 new LogField("requestId", result.RequestId.ToString()),
                 new LogField("query", result.Query),
@@ -909,6 +1138,11 @@ internal sealed class ViewerWindow
                 new LogField("durationMs", result.ElapsedMilliseconds.ToString()),
                 new LogField("matchedLineCount", result.MatchedLineCount.ToString()),
                 new LogField("progressPercentage", Math.Round(_searchProgressPercentage).ToString()));
+
+            if (_appendSearchPending)
+            {
+                QueueAppendSearchIfNeeded();
+            }
         }
 
         InvalidateSearchBar();

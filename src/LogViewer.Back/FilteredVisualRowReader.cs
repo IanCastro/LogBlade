@@ -70,6 +70,19 @@ public sealed class FilteredVisualRowReader : IColumnViewportReader
     public long TopRowOrdinal => _topRowOrdinal;
     public long MatchedLineCount => _descriptors.Length;
     public long ViewportBytes => _viewportBytes;
+    public bool IsAtEnd
+    {
+        get
+        {
+            if (!HasContent)
+            {
+                return true;
+            }
+
+            long maxTopRow = Math.Max(0, _totalVisualRows - Math.Max(1, _viewportVisibleLines));
+            return _viewportLoaded && _topRowOrdinal >= maxTopRow;
+        }
+    }
     public double ScrollPercentage
     {
         get
@@ -250,6 +263,23 @@ public sealed class FilteredVisualRowReader : IColumnViewportReader
         }
 
         return clone;
+    }
+
+    internal LogEncodingKind Kind => _kind;
+    internal Encoding SourceEncoding => _encoding;
+
+    internal FilteredLineDescriptor[] CopyDescriptorsBefore(long offset)
+    {
+        ThrowIfDisposed();
+        int count = 0;
+        while (count < _descriptors.Length && _descriptors[count].StartOffset < offset)
+        {
+            count++;
+        }
+
+        FilteredLineDescriptor[] copy = new FilteredLineDescriptor[count];
+        Array.Copy(_descriptors, copy, count);
+        return copy;
     }
 
     public void Dispose()
