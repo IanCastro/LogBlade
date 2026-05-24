@@ -8,7 +8,8 @@ internal enum ViewportRequestKind
     LoadAtPercentage,
     ScrollByLines,
     JumpHome,
-    JumpEnd
+    JumpEnd,
+    RefreshTailIfAtEnd
 }
 
 internal readonly record struct ViewportRequest(long Id, ViewportRequestKind Kind, int DeltaLines, double RequestedPercentage, int VisibleLines);
@@ -170,6 +171,22 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
     }
 
+    public void QueueTailRefreshIfAtEnd()
+    {
+        if (_reader is not VisualRowReader { IsAtKnownEnd: true } || _hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        if (_pendingViewportRequest is ViewportRequest pending &&
+            pending.Kind != ViewportRequestKind.RefreshTailIfAtEnd)
+        {
+            return;
+        }
+
+        QueueViewportRequest(ViewportRequestKind.RefreshTailIfAtEnd, visibleLines: VisibleDataLineCount);
+    }
+
     public void Dispose()
     {
         ResetColumnResizeState(clearManualWidths: true);
@@ -276,6 +293,13 @@ internal sealed class ViewportPaneWindow : IDisposable
                         break;
                     case ViewportRequestKind.JumpEnd:
                         workerReader.ReadFromPercentage(100d, request.VisibleLines);
+                        break;
+                    case ViewportRequestKind.RefreshTailIfAtEnd:
+                        if (workerReader is VisualRowReader visualReader)
+                        {
+                            visualReader.RefreshTail(request.VisibleLines);
+                        }
+
                         break;
                 }
 

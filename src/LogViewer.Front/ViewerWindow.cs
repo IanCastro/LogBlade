@@ -52,6 +52,7 @@ internal sealed class ViewerWindow
     private IntPtr _searchEdit;
     private IntPtr _regexCheckbox;
     private IntPtr _ignoreCaseCheckbox;
+    private FileSystemWatcher? _fileWatcher;
     private GCHandle _selfHandle;
     private int _lineHeight = 16;
     private int _charWidth = 8;
@@ -70,6 +71,7 @@ internal sealed class ViewerWindow
     private CancellationTokenSource? _activeSearchCancellation;
     private bool _searchInProgress;
     private bool _searchDisplayActive;
+    private int _fileChangeMessagePending;
     private double _searchProgressPercentage;
     private long _searchMatchedLineCount;
     private string _searchErrorText = string.Empty;
@@ -228,6 +230,9 @@ internal sealed class ViewerWindow
                 case NativeMethods.WM_APP_SEARCH_COMPLETE:
                     self.OnSearchUpdate(lParam);
                     return IntPtr.Zero;
+                case NativeMethods.WM_APP_FILE_CHANGED:
+                    self.OnFileChanged();
+                    return IntPtr.Zero;
                 case NativeMethods.WM_DESTROY:
                     self._closing = true;
                     self.DisposeResources();
@@ -366,6 +371,7 @@ internal sealed class ViewerWindow
         NativeMethods.KillTimer(_hwnd, SearchDebounceTimerId);
         _latestSearchRequestId = ++_nextSearchRequestId;
         CancelActiveSearch();
+        StopFileWatcher();
         _detectedEncoding = null;
         _firstRenderLogged = false;
         _searchInProgress = false;
@@ -442,6 +448,7 @@ internal sealed class ViewerWindow
         {
             _detectedEncoding = result.DetectedEncoding;
             _mainPane.SetReader(result.Reader, result.PreloadedVisibleLines);
+            StartFileWatcher();
             if (result.DetectedEncoding is DetectedEncodingInfo detected)
             {
                 AppLog.Instance.Info(
@@ -467,6 +474,92 @@ internal sealed class ViewerWindow
         result.Reader?.Dispose();
         _mainPane?.SetStatus("Failed to open file.");
         NativeMethods.MessageBoxW(_hwnd, "Failed to open file: " + (result.Message ?? "unknown error"), Program.AppTitle, NativeMethods.MB_OK | NativeMethods.MB_ICONERROR);
+    }
+
+    private void StartFileWatcher()
+    {
+        StopFileWatcher();
+
+        string? directory = Path.GetDirectoryName(_path);
+        string fileName = Path.GetFileName(_path);
+        if (string.IsNullOrEmpty(directory) || string.IsNullOrEmpty(fileName))
+        {
+            return;
+        }
+
+        try
+        {
+            var watcher = new FileSystemWatcher(directory, fileName)
+            {
+                NotifyFilter = NotifyFilters.Size | NotifyFilters.LastWrite | NotifyFilters.FileName
+            };
+            watcher.Changed += OnWatchedFileChanged;
+            watcher.Created += OnWatchedFileChanged;
+            watcher.Renamed += OnWatchedFileRenamed;
+            watcher.EnableRaisingEvents = true;
+            _fileWatcher = watcher;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Instance.Error(
+                "file.watch.failed",
+                "failed",
+                new LogField("path", _path),
+                new LogField("reason", ex.Message));
+        }
+    }
+
+    private void StopFileWatcher()
+    {
+        FileSystemWatcher? watcher = _fileWatcher;
+        _fileWatcher = null;
+        Interlocked.Exchange(ref _fileChangeMessagePending, 0);
+        if (watcher is null)
+        {
+            return;
+        }
+
+        try
+        {
+            watcher.EnableRaisingEvents = false;
+            watcher.Changed -= OnWatchedFileChanged;
+            watcher.Created -= OnWatchedFileChanged;
+            watcher.Renamed -= OnWatchedFileRenamed;
+            watcher.Dispose();
+        }
+        catch
+        {
+        }
+    }
+
+    private void OnWatchedFileChanged(object sender, FileSystemEventArgs e)
+    {
+        if (_closing || _hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        if (Interlocked.Exchange(ref _fileChangeMessagePending, 1) == 0 &&
+            !NativeMethods.PostMessageW(_hwnd, NativeMethods.WM_APP_FILE_CHANGED, IntPtr.Zero, IntPtr.Zero))
+        {
+            Interlocked.Exchange(ref _fileChangeMessagePending, 0);
+        }
+    }
+
+    private void OnWatchedFileRenamed(object sender, RenamedEventArgs e)
+    {
+        OnWatchedFileChanged(sender, e);
+    }
+
+    private void OnFileChanged()
+    {
+        Interlocked.Exchange(ref _fileChangeMessagePending, 0);
+        if (_closing)
+        {
+            return;
+        }
+
+        _mainPane?.QueueTailRefreshIfAtEnd();
     }
 
     private void OnSize()
@@ -497,6 +590,7 @@ internal sealed class ViewerWindow
     {
         _latestSearchRequestId = ++_nextSearchRequestId;
         NativeMethods.KillTimer(_hwnd, SearchDebounceTimerId);
+        StopFileWatcher();
         CancelActiveSearch();
 
         if (string.IsNullOrEmpty(_searchQuery))

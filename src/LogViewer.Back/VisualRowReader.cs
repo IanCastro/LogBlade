@@ -71,7 +71,7 @@ public sealed class VisualRowReader : IViewportReader
     private readonly LogEncodingKind _kind;
     private readonly Encoding _encoding;
     private readonly long _dataOffset;
-    private readonly long _fileSize;
+    private long _fileSize;
     private readonly List<ViewportRow> _viewportRows = new();
     private long _topOffset;
     private long _viewportEndOffset;
@@ -114,6 +114,7 @@ public sealed class VisualRowReader : IViewportReader
     public long TopOffset => _topOffset;
     public long ViewportEndOffset => _viewportEndOffset;
     public long ViewportBytes => _viewportEndOffset >= _topOffset ? _viewportEndOffset - _topOffset : 0;
+    public bool IsAtKnownEnd => _viewportLoaded && _viewportEndOffset >= _fileSize;
     public double ScrollPercentage
     {
         get
@@ -217,6 +218,59 @@ public sealed class VisualRowReader : IViewportReader
         if (_viewportRows.Count < count && _viewportEndOffset >= _fileSize)
         {
             ScrollEnd(count);
+        }
+
+        return CurrentRows;
+    }
+
+    public bool RefreshFileSize()
+    {
+        long currentSize;
+        try
+        {
+            currentSize = new FileInfo(_filePath).Length;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+
+        if (currentSize == _fileSize)
+        {
+            return false;
+        }
+
+        _fileSize = currentSize;
+        return true;
+    }
+
+    public IReadOnlyList<string> RefreshTail(int visibleLines)
+    {
+        if (visibleLines <= 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        bool wasAtEnd = IsAtKnownEnd;
+        long previousSize = _fileSize;
+        if (!RefreshFileSize())
+        {
+            return CurrentRows;
+        }
+
+        if (_fileSize < previousSize)
+        {
+            ReadFromPercentage(0d, visibleLines);
+            return CurrentRows;
+        }
+
+        if (wasAtEnd)
+        {
+            ReadFromPercentage(100d, visibleLines);
         }
 
         return CurrentRows;

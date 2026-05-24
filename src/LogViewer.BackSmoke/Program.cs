@@ -19,6 +19,9 @@ internal static class Program
             RunInvalidRegexValidation();
             RunPageUpNearStartClampsToTop(tempRoot);
             RunPageUpInsideWrappedFirstLineClampsToTop(tempRoot);
+            RunRefreshTailAtEndShowsAppendedRows(tempRoot);
+            RunRefreshTailAwayFromEndDoesNotMove(tempRoot);
+            RunRefreshTailAfterTruncateReloadsFromStart(tempRoot);
 
             Console.WriteLine("Back smoke tests passed.");
             return 0;
@@ -149,6 +152,42 @@ internal static class Program
         AssertEqual("page up wrapped first segment", reader.CurrentRows[0], firstSegment);
         AssertEqual("page up wrapped second segment", reader.CurrentRows[1], secondSegmentPrefix);
         AssertEqual("page up wrapped first offset", reader.TopOffset, 0L);
+    }
+
+    private static void RunRefreshTailAtEndShowsAppendedRows(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "tail-at-end.log", "line-0\r\nline-1\r\n");
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        reader.ReadFromPercentage(100d, 2);
+        File.AppendAllText(path, "line-2\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        reader.RefreshTail(2);
+
+        AssertSequence("tail at end rows", reader.CurrentRows, "line-1", "line-2");
+    }
+
+    private static void RunRefreshTailAwayFromEndDoesNotMove(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "tail-away-from-end.log", "line-0\r\nline-1\r\nline-2\r\nline-3\r\n");
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        reader.ReadFromPercentage(0d, 2);
+        File.AppendAllText(path, "line-4\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        reader.RefreshTail(2);
+
+        AssertSequence("tail away rows", reader.CurrentRows, "line-0", "line-1");
+    }
+
+    private static void RunRefreshTailAfterTruncateReloadsFromStart(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "tail-truncate.log", "line-0\r\nline-1\r\nline-2\r\nline-3\r\n");
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        reader.ReadFromPercentage(100d, 2);
+        File.WriteAllText(path, "new-0\r\nnew-1\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        reader.RefreshTail(2);
+
+        AssertSequence("tail truncate rows", reader.CurrentRows, "new-0", "new-1");
     }
 
     private static string WriteLog(string tempRoot, string name, string content)
