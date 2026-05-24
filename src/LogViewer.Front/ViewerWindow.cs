@@ -78,6 +78,7 @@ internal sealed class ViewerWindow
     private string _searchErrorText = string.Empty;
     private bool _appendSearchPending;
     private bool _appendSearchInProgress;
+    private bool _searchStale;
 
     private static readonly NativeMethods.WindowProc s_wndProc = WindowProc;
 
@@ -602,6 +603,7 @@ internal sealed class ViewerWindow
 
         if (string.IsNullOrEmpty(_searchQuery))
         {
+            _searchStale = false;
             _searchInProgress = false;
             _searchDisplayActive = false;
             _searchProgressPercentage = 0d;
@@ -620,6 +622,7 @@ internal sealed class ViewerWindow
             return;
         }
 
+        _searchStale = false;
         _searchInProgress = true;
         _searchDisplayActive = true;
         _searchProgressPercentage = 0d;
@@ -783,13 +786,33 @@ internal sealed class ViewerWindow
             return;
         }
 
+        if (!TryGetCurrentFileSize(out long currentFileSize))
+        {
+            return;
+        }
+
+        FilteredVisualRowReader? currentReader = _filteredPane.Reader as FilteredVisualRowReader;
+        long knownSearchFileSize = currentReader?.FileSize
+            ?? (_mainPane?.Reader as VisualRowReader)?.FileSize
+            ?? currentFileSize;
+        if (currentFileSize < knownSearchFileSize)
+        {
+            MarkSearchStale();
+            return;
+        }
+
+        if (_searchStale)
+        {
+            return;
+        }
+
         if (_searchInProgress || _appendSearchInProgress)
         {
             _appendSearchPending = true;
             return;
         }
 
-        if (_filteredPane.Reader is not FilteredVisualRowReader currentReader)
+        if (currentReader is null)
         {
             return;
         }
@@ -800,32 +823,31 @@ internal sealed class ViewerWindow
             return;
         }
 
-        long currentFileSize;
-        try
-        {
-            currentFileSize = new FileInfo(_path).Length;
-        }
-        catch (IOException)
-        {
-            return;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return;
-        }
-
-        if (currentFileSize < currentReader.FileSize)
-        {
-            MarkSearchStale();
-            return;
-        }
-
         if (currentFileSize <= currentReader.FileSize)
         {
             return;
         }
 
         DispatchAppendSearch(currentReader, currentFileSize, options);
+    }
+
+    private bool TryGetCurrentFileSize(out long currentFileSize)
+    {
+        try
+        {
+            currentFileSize = new FileInfo(_path).Length;
+            return true;
+        }
+        catch (IOException)
+        {
+            currentFileSize = 0;
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            currentFileSize = 0;
+            return false;
+        }
     }
 
     private static bool AreSearchOptionsValid(SearchOptions options)
@@ -956,9 +978,12 @@ internal sealed class ViewerWindow
 
     private void MarkSearchStale()
     {
+        _latestSearchRequestId = ++_nextSearchRequestId;
+        CancelActiveSearch();
         _appendSearchPending = false;
         _appendSearchInProgress = false;
         _searchInProgress = false;
+        _searchStale = true;
         _searchDisplayActive = true;
         _searchErrorText = "Search stale";
         InvalidateSearchBar();

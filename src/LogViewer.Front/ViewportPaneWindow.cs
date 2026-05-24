@@ -296,14 +296,25 @@ internal sealed class ViewportPaneWindow : IDisposable
             return;
         }
 
-        bool wasAtEnd = visualReader.IsAtKnownEnd;
-        if (!visualReader.RefreshFileSize())
+        if (!visualReader.RefreshFileSize(out long previousSize, out long currentSize, out bool wasAtEnd))
         {
             return;
         }
 
         UpdateScrollBar();
         NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
+        if (currentSize < previousSize)
+        {
+            _tailRefreshPending = false;
+            _fileSizeRefreshPending = false;
+            _tailFollowSuspended = false;
+            QueueViewportRequest(
+                ViewportRequestKind.LoadAtPercentage,
+                requestedPercentage: 0d,
+                visibleLines: VisibleDataLineCount);
+            return;
+        }
+
         if (wasAtEnd && !_tailFollowSuspended)
         {
             _tailRefreshPending = true;

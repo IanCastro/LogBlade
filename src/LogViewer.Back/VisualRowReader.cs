@@ -225,21 +225,41 @@ public sealed class VisualRowReader : IViewportReader
 
     public bool RefreshFileSize()
     {
-        long currentSize;
+        return RefreshFileSize(out _, out _, out _);
+    }
+
+    public bool RefreshFileSize(out long previousSize, out long currentSize)
+    {
+        return RefreshFileSize(out previousSize, out currentSize, out _);
+    }
+
+    public bool RefreshFileSize(out long previousSize, out long currentSize, out bool wasAtEndBeforeRefresh)
+    {
+        previousSize = _fileSize;
+        wasAtEndBeforeRefresh = false;
         try
         {
             currentSize = new FileInfo(_filePath).Length;
         }
         catch (IOException)
         {
+            currentSize = previousSize;
             return false;
         }
         catch (UnauthorizedAccessException)
         {
+            currentSize = previousSize;
             return false;
         }
 
-        if (currentSize == _fileSize)
+        if (currentSize < previousSize)
+        {
+            _fileSize = currentSize;
+            return true;
+        }
+
+        wasAtEndBeforeRefresh = IsAtKnownEnd;
+        if (currentSize == previousSize)
         {
             return false;
         }
@@ -255,14 +275,12 @@ public sealed class VisualRowReader : IViewportReader
             return Array.Empty<string>();
         }
 
-        bool wasAtEnd = IsAtKnownEnd;
-        long previousSize = _fileSize;
-        if (!RefreshFileSize())
+        if (!RefreshFileSize(out long previousSize, out long currentSize, out bool wasAtEnd))
         {
             return CurrentRows;
         }
 
-        if (_fileSize < previousSize)
+        if (currentSize < previousSize)
         {
             _viewportLoaded = false;
             ReadFromPercentage(0d, visibleLines);
@@ -694,7 +712,28 @@ public sealed class VisualRowReader : IViewportReader
 
     private bool IsOffsetAtKnownEnd(long offset)
     {
-        return offset >= _fileSize || (HasContent && offset >= TrimTrailingBreaks());
+        if (offset >= _fileSize)
+        {
+            return true;
+        }
+
+        if (!HasContent)
+        {
+            return false;
+        }
+
+        try
+        {
+            return offset >= TrimTrailingBreaks();
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     private RealLineStartInfo FindRealLineStartContaining(long offset)

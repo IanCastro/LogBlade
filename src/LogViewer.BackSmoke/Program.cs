@@ -29,6 +29,8 @@ internal static class Program
             RunRefreshFileSizeAwayFromEndLetsJumpEndSeeAppendedRows(tempRoot);
             RunRefreshTailAwayFromEndDoesNotMove(tempRoot);
             RunRefreshTailAfterTruncateReloadsFromStart(tempRoot);
+            RunRefreshTailAfterTruncateToEmptyClearsRows(tempRoot);
+            RunRefreshFileSizeAfterTruncateLetsJumpEndSeeAppendedRows(tempRoot);
 
             Console.WriteLine("Back smoke tests passed.");
             return 0;
@@ -321,6 +323,35 @@ internal static class Program
         reader.RefreshTail(2);
 
         AssertSequence("tail truncate rows", reader.CurrentRows, "new-0", "new-1");
+    }
+
+    private static void RunRefreshTailAfterTruncateToEmptyClearsRows(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "tail-truncate-empty.log", "line-0\r\nline-1\r\nline-2\r\n");
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        reader.ReadFromPercentage(100d, 2);
+        File.WriteAllText(path, string.Empty, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        _ = reader.IsAtKnownEnd;
+        reader.RefreshTail(2);
+
+        AssertEqual("tail truncate empty count", reader.CurrentRows.Count, 0);
+        AssertEqual("tail truncate empty size", reader.FileSize, 0L);
+    }
+
+    private static void RunRefreshFileSizeAfterTruncateLetsJumpEndSeeAppendedRows(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "tail-truncate-append.log", "line-0\r\nline-1\r\nline-2\r\n");
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        reader.ReadFromPercentage(100d, 2);
+        File.WriteAllText(path, string.Empty, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        reader.RefreshTail(2);
+        File.AppendAllText(path, "after-0\r\nafter-1\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        AssertEqual("tail truncate append file size changed", reader.RefreshFileSize(), true);
+        reader.ReadFromPercentage(100d, 2);
+
+        AssertSequence("tail truncate append rows", reader.CurrentRows, "after-0", "after-1");
     }
 
     private static string WriteLog(string tempRoot, string name, string content)
