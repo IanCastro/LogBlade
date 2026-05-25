@@ -70,6 +70,14 @@ internal sealed class ViewportPaneWindow : IDisposable
     private int _resizeStartX;
     private int _resizeStartWidth;
     private bool _isColumnResizing;
+    private bool _isSelectingRows;
+    private bool _selectionDragMoved;
+    private int _selectionMouseDownX;
+    private int _selectionMouseDownY;
+    private int _selectionAnchorDataIndex = -1;
+    private int _selectionFocusDataIndex = -1;
+    private int _selectionStartDataIndex = -1;
+    private int _selectionEndDataIndex = -1;
 
     public ViewportPaneWindow(IntPtr font, int lineHeight, int charWidth, Action<ViewportPaneWindow>? onUsefulPaint = null, Action<ViewportPaneWindow>? onStale = null, Action<ViewportPaneWindow, long>? onRowActivated = null)
     {
@@ -136,6 +144,7 @@ internal sealed class ViewportPaneWindow : IDisposable
     public void SetStatus(string statusText, bool disposeReader = true, bool preserveColumnWidths = false)
     {
         ResetColumnResizeState(clearManualWidths: !preserveColumnWidths);
+        ClearSelection(invalidate: false);
         if (disposeReader)
         {
             _reader?.Dispose();
@@ -156,6 +165,7 @@ internal sealed class ViewportPaneWindow : IDisposable
             ResetColumnResizeState(clearManualWidths: !canPreserveColumnState);
         }
 
+        ClearSelection(invalidate: false);
         _reader?.Dispose();
         _reader = reader;
         _statusText = string.Empty;
@@ -232,6 +242,7 @@ internal sealed class ViewportPaneWindow : IDisposable
     public void Dispose()
     {
         ResetColumnResizeState(clearManualWidths: true);
+        ClearSelection(invalidate: false);
         _reader?.Dispose();
         _reader = null;
     }
@@ -359,6 +370,7 @@ internal sealed class ViewportPaneWindow : IDisposable
             return;
         }
 
+        ClearSelection(invalidate: true);
         int effectiveVisible = Math.Max(1, visibleLines ?? VisibleDataLineCount);
         var request = new ViewportRequest(
             Id: ++_nextViewportRequestId,
@@ -471,6 +483,7 @@ internal sealed class ViewportPaneWindow : IDisposable
 
         if (result.RequestId == _latestViewportRequestId && result.Success && result.Reader is not null)
         {
+            ClearSelection(invalidate: false);
             _reader?.Dispose();
             _reader = result.Reader;
             ResumeTailFollowIfAtEnd();
@@ -607,6 +620,12 @@ internal sealed class ViewportPaneWindow : IDisposable
             return;
         }
 
+        if (_isSelectingRows)
+        {
+            UpdateRowSelection(x, y);
+            return;
+        }
+
         int nextHover = HitTestColumnResize(x, y);
         if (_hoverResizeColumnIndex != nextHover)
         {
@@ -631,7 +650,10 @@ internal sealed class ViewportPaneWindow : IDisposable
             return;
         }
 
-        ActivateRowAt(y);
+        if (!BeginRowSelection(x, y))
+        {
+            ClearSelection(invalidate: true);
+        }
     }
 
     private void OnLButtonUp()
@@ -639,6 +661,12 @@ internal sealed class ViewportPaneWindow : IDisposable
         if (_isColumnResizing)
         {
             EndColumnResize();
+            return;
+        }
+
+        if (_isSelectingRows)
+        {
+            EndRowSelection();
         }
     }
 
@@ -665,21 +693,141 @@ internal sealed class ViewportPaneWindow : IDisposable
         return false;
     }
 
-    private void ActivateRowAt(int y)
+    private bool BeginRowSelection(int x, int y)
+    {
+        int rowIndex = GetDataRowIndexFromY(y, clamp: false);
+        if (rowIndex < 0)
+        {
+            return false;
+        }
+
+        _isSelectingRows = true;
+        _selectionDragMoved = false;
+        _selectionMouseDownX = x;
+        _selectionMouseDownY = y;
+        _selectionAnchorDataIndex = rowIndex;
+        _selectionFocusDataIndex = rowIndex;
+        SetSelectedRange(rowIndex, rowIndex);
+        NativeMethods.SetCapture(_hwnd);
+        return true;
+    }
+
+    private void UpdateRowSelection(int x, int y)
+    {
+        int rowIndex = GetDataRowIndexFromY(y, clamp: true);
+        if (rowIndex < 0)
+        {
+            return;
+        }
+
+        if (Math.Abs(x - _selectionMouseDownX) > 2 || Math.Abs(y - _selectionMouseDownY) > 2)
+        {
+            _selectionDragMoved = true;
+        }
+
+        if (rowIndex == _selectionFocusDataIndex)
+        {
+            return;
+        }
+
+        _selectionFocusDataIndex = rowIndex;
+        SetSelectedRange(_selectionAnchorDataIndex, rowIndex);
+    }
+
+    private void EndRowSelection()
+    {
+        int activatedRowIndex = _selectionFocusDataIndex;
+        bool shouldActivate = !_selectionDragMoved &&
+            _selectionStartDataIndex == _selectionEndDataIndex &&
+            activatedRowIndex >= 0;
+
+        _isSelectingRows = false;
+        NativeMethods.ReleaseCapture();
+
+        if (shouldActivate)
+        {
+            ActivateRowAt(activatedRowIndex);
+        }
+    }
+
+    private int GetDataRowIndexFromY(int y, bool clamp)
+    {
+        if (_reader is null || !_reader.HasContent || _reader.CurrentRows.Count == 0)
+        {
+            return -1;
+        }
+
+        int headerLines = GetHeaderLineCount(_reader);
+        int dataTop = headerLines * _lineHeight;
+        if (!clamp && (y < dataTop || y < 0))
+        {
+            return -1;
+        }
+
+        int rowIndex = (y / _lineHeight) - headerLines;
+        if (clamp)
+        {
+            return Math.Clamp(rowIndex, 0, _reader.CurrentRows.Count - 1);
+        }
+
+        return rowIndex >= 0 && rowIndex < _reader.CurrentRows.Count ? rowIndex : -1;
+    }
+
+    private void SetSelectedRange(int firstDataIndex, int lastDataIndex)
+    {
+        int start = Math.Min(firstDataIndex, lastDataIndex);
+        int end = Math.Max(firstDataIndex, lastDataIndex);
+        if (_selectionStartDataIndex == start && _selectionEndDataIndex == end)
+        {
+            return;
+        }
+
+        _selectionStartDataIndex = start;
+        _selectionEndDataIndex = end;
+        NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
+    }
+
+    private void ClearSelection(bool invalidate)
+    {
+        bool hadSelection = _isSelectingRows || _selectionStartDataIndex >= 0 || _selectionEndDataIndex >= 0;
+        if (_isSelectingRows)
+        {
+            NativeMethods.ReleaseCapture();
+        }
+
+        _isSelectingRows = false;
+        _selectionDragMoved = false;
+        _selectionMouseDownX = 0;
+        _selectionMouseDownY = 0;
+        _selectionAnchorDataIndex = -1;
+        _selectionFocusDataIndex = -1;
+        _selectionStartDataIndex = -1;
+        _selectionEndDataIndex = -1;
+
+        if (hadSelection && invalidate && _hwnd != IntPtr.Zero)
+        {
+            NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
+        }
+    }
+
+    private bool IsDataRowSelected(int dataRowIndex) =>
+        _selectionStartDataIndex >= 0 &&
+        dataRowIndex >= _selectionStartDataIndex &&
+        dataRowIndex <= _selectionEndDataIndex;
+
+    private void ActivateRowAt(int dataRowIndex)
     {
         if (_onRowActivated is null || _reader is not IFileOffsetViewportReader offsetReader)
         {
             return;
         }
 
-        int headerLines = GetHeaderLineCount(_reader);
-        int rowIndex = (y / _lineHeight) - headerLines;
-        if (rowIndex < 0 || rowIndex >= _reader.CurrentRows.Count)
+        if (dataRowIndex < 0 || dataRowIndex >= _reader.CurrentRows.Count)
         {
             return;
         }
 
-        long rowOrdinal = offsetReader.TopRowOrdinal + rowIndex;
+        long rowOrdinal = offsetReader.TopRowOrdinal + dataRowIndex;
         try
         {
             if (offsetReader.TryGetRowStartOffset(rowOrdinal, out long startOffset))
@@ -695,6 +843,12 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private void OnKeyDown(int key)
     {
+        if (key == NativeMethods.VK_C && IsControlKeyDown())
+        {
+            CopySelectionToClipboard();
+            return;
+        }
+
         switch (key)
         {
             case NativeMethods.VK_UP:
@@ -718,6 +872,86 @@ internal sealed class ViewportPaneWindow : IDisposable
                 break;
         }
     }
+
+    private void CopySelectionToClipboard()
+    {
+        if (_reader is null ||
+            _selectionStartDataIndex < 0 ||
+            _selectionEndDataIndex < _selectionStartDataIndex)
+        {
+            return;
+        }
+
+        IReadOnlyList<string> rows = _reader.CurrentRows;
+        int start = Math.Clamp(_selectionStartDataIndex, 0, rows.Count);
+        int end = Math.Clamp(_selectionEndDataIndex, -1, rows.Count - 1);
+        if (start > end || start >= rows.Count)
+        {
+            return;
+        }
+
+        List<string> selectedRows = new(end - start + 1);
+        for (int i = start; i <= end; i++)
+        {
+            selectedRows.Add(rows[i]);
+        }
+
+        SetClipboardText(string.Join("\r\n", selectedRows));
+    }
+
+    private bool SetClipboardText(string text)
+    {
+        if (string.IsNullOrEmpty(text) || !NativeMethods.OpenClipboard(_hwnd))
+        {
+            return false;
+        }
+
+        IntPtr handle = IntPtr.Zero;
+        try
+        {
+            NativeMethods.EmptyClipboard();
+            char[] chars = (text + "\0").ToCharArray();
+            nuint byteCount = (nuint)(chars.Length * sizeof(char));
+            handle = NativeMethods.GlobalAlloc(NativeMethods.GMEM_MOVEABLE, new UIntPtr(byteCount));
+            if (handle == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            IntPtr target = NativeMethods.GlobalLock(handle);
+            if (target == IntPtr.Zero)
+            {
+                NativeMethods.GlobalFree(handle);
+                handle = IntPtr.Zero;
+                return false;
+            }
+
+            Marshal.Copy(chars, 0, target, chars.Length);
+            NativeMethods.GlobalUnlock(handle);
+
+            if (NativeMethods.SetClipboardData(NativeMethods.CF_UNICODETEXT, handle) == IntPtr.Zero)
+            {
+                NativeMethods.GlobalFree(handle);
+                handle = IntPtr.Zero;
+                return false;
+            }
+
+            handle = IntPtr.Zero;
+            return true;
+        }
+        finally
+        {
+            if (handle != IntPtr.Zero)
+            {
+                NativeMethods.GlobalFree(handle);
+            }
+
+            NativeMethods.CloseClipboard();
+        }
+    }
+
+    private static bool IsControlKeyDown() =>
+        (NativeMethods.GetKeyState(NativeMethods.VK_CONTROL) & unchecked((short)0x8000)) != 0;
 
     private void OnPaint()
     {
@@ -776,8 +1010,28 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         NativeMethods.GetClientRect(_hwnd, out NativeMethods.RECT clientRect);
-        foreach (string row in _reader.CurrentRows)
+        IReadOnlyList<string> rows = _reader.CurrentRows;
+        for (int rowIndex = 0; rowIndex < rows.Count; rowIndex++)
         {
+            string row = rows[rowIndex];
+            bool selected = IsDataRowSelected(rowIndex);
+            if (selected)
+            {
+                NativeMethods.RECT rowRect = new()
+                {
+                    left = 0,
+                    top = y,
+                    right = clientRect.right,
+                    bottom = y + _lineHeight
+                };
+                NativeMethods.FillRect(hdc, ref rowRect, NativeMethods.GetSysColorBrush(NativeMethods.COLOR_HIGHLIGHT));
+                NativeMethods.SetTextColor(hdc, NativeMethods.GetSysColor(NativeMethods.COLOR_HIGHLIGHTTEXT));
+            }
+            else
+            {
+                NativeMethods.SetTextColor(hdc, NativeMethods.RGB(0, 0, 0));
+            }
+
             string visibleText = SliceVisibleText(row);
             if (visibleText.Length > 0)
             {
@@ -801,16 +1055,18 @@ internal sealed class ViewportPaneWindow : IDisposable
         IReadOnlyList<string> headers = GetGridHeaders(reader);
         int[] widths = CalculateColumnWidths(reader);
 
-        PaintGridRow(hdc, clientRect, headers, widths, y: 0, isHeader: true);
+        PaintGridRow(hdc, clientRect, headers, widths, y: 0, isHeader: true, isSelected: false);
 
         int y = _lineHeight;
         int visibleNonEmptyLines = 0;
+        int dataRowIndex = 0;
         if (reader.ColumnHeaders.Count > 0)
         {
             foreach (IReadOnlyList<string> row in reader.CurrentCells)
             {
-                PaintGridRow(hdc, clientRect, row, widths, y, isHeader: false);
+                PaintGridRow(hdc, clientRect, row, widths, y, isHeader: false, IsDataRowSelected(dataRowIndex));
                 visibleNonEmptyLines++;
+                dataRowIndex++;
 
                 y += _lineHeight;
                 if (y >= clientRect.bottom)
@@ -823,8 +1079,9 @@ internal sealed class ViewportPaneWindow : IDisposable
         {
             foreach (string row in reader.CurrentRows)
             {
-                PaintGridRow(hdc, clientRect, new[] { row }, widths, y, isHeader: false);
+                PaintGridRow(hdc, clientRect, new[] { row }, widths, y, isHeader: false, IsDataRowSelected(dataRowIndex));
                 visibleNonEmptyLines++;
+                dataRowIndex++;
 
                 y += _lineHeight;
                 if (y >= clientRect.bottom)
@@ -837,7 +1094,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         return visibleNonEmptyLines;
     }
 
-    private void PaintGridRow(IntPtr hdc, NativeMethods.RECT clientRect, IReadOnlyList<string> cells, IReadOnlyList<int> widths, int y, bool isHeader)
+    private void PaintGridRow(IntPtr hdc, NativeMethods.RECT clientRect, IReadOnlyList<string> cells, IReadOnlyList<int> widths, int y, bool isHeader, bool isSelected)
     {
         int startChars = 0;
         for (int i = 0; i < widths.Count; i++)
@@ -854,22 +1111,24 @@ internal sealed class ViewportPaneWindow : IDisposable
             if (Intersects(cellRect, clientRect))
             {
                 string value = i < cells.Count ? cells[i] : string.Empty;
-                PaintGridCell(hdc, cellRect, Intersect(cellRect, clientRect), value, widthChars, isHeader);
+                PaintGridCell(hdc, cellRect, Intersect(cellRect, clientRect), value, widthChars, isHeader, isSelected);
             }
 
             startChars += widthChars;
         }
     }
 
-    private void PaintGridCell(IntPtr hdc, NativeMethods.RECT cellRect, NativeMethods.RECT visibleRect, string text, int widthChars, bool isHeader)
+    private void PaintGridCell(IntPtr hdc, NativeMethods.RECT cellRect, NativeMethods.RECT visibleRect, string text, int widthChars, bool isHeader, bool isSelected)
     {
         if (visibleRect.right <= visibleRect.left || visibleRect.bottom <= visibleRect.top)
         {
             return;
         }
 
-        IntPtr backgroundBrush = NativeMethods.GetSysColorBrush(isHeader ? NativeMethods.COLOR_3DFACE : NativeMethods.COLOR_WINDOW);
+        int backgroundColor = isSelected ? NativeMethods.COLOR_HIGHLIGHT : isHeader ? NativeMethods.COLOR_3DFACE : NativeMethods.COLOR_WINDOW;
+        IntPtr backgroundBrush = NativeMethods.GetSysColorBrush(backgroundColor);
         NativeMethods.FillRect(hdc, ref visibleRect, backgroundBrush);
+        NativeMethods.SetTextColor(hdc, NativeMethods.GetSysColor(isSelected ? NativeMethods.COLOR_HIGHLIGHTTEXT : NativeMethods.COLOR_WINDOWTEXT));
 
         NativeMethods.RECT textRect = cellRect;
         textRect.left += GridCellPaddingPx;

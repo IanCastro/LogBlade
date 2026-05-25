@@ -72,6 +72,7 @@ internal static class NativeMethods
     public const int COLOR_WINDOW = 5;
     public const int COLOR_WINDOWTEXT = 8;
     public const int COLOR_HIGHLIGHT = 13;
+    public const int COLOR_HIGHLIGHTTEXT = 14;
     public const int COLOR_3DFACE = 15;
     public const int COLOR_BTNSHADOW = 16;
     public const int COLOR_3DLIGHT = 22;
@@ -101,6 +102,10 @@ internal static class NativeMethods
     public const int VK_NEXT = 0x22;
     public const int VK_HOME = 0x24;
     public const int VK_END = 0x23;
+    public const int VK_C = 0x43;
+    public const int VK_CONTROL = 0x11;
+    public const int CF_UNICODETEXT = 13;
+    public const uint GMEM_MOVEABLE = 0x0002;
     public static readonly IntPtr IDC_ARROW = new(32512);
     public static readonly IntPtr IDC_SIZEWE = new(32644);
 
@@ -306,6 +311,9 @@ internal static class NativeMethods
     public static extern IntPtr GetSysColorBrush(int nIndex);
 
     [DllImport("user32.dll")]
+    public static extern int GetSysColor(int nIndex);
+
+    [DllImport("user32.dll")]
     public static extern IntPtr GetDC(IntPtr hWnd);
 
     [DllImport("user32.dll")]
@@ -386,6 +394,9 @@ internal static class NativeMethods
     public static extern IntPtr SetFocus(IntPtr hWnd);
 
     [DllImport("user32.dll")]
+    public static extern short GetKeyState(int nVirtKey);
+
+    [DllImport("user32.dll")]
     public static extern IntPtr SetCapture(IntPtr hWnd);
 
     [DllImport("user32.dll")]
@@ -419,6 +430,34 @@ internal static class NativeMethods
 
     [DllImport("kernel32.dll")]
     public static extern IntPtr GetCurrentProcess();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool OpenClipboard(IntPtr hWndNewOwner);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool EmptyClipboard();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr SetClipboardData(uint uFormat, IntPtr hMem);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool CloseClipboard();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr GlobalAlloc(uint uFlags, UIntPtr dwBytes);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr GlobalLock(IntPtr hMem);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GlobalUnlock(IntPtr hMem);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr GlobalFree(IntPtr hMem);
 
     [DllImport("dwmapi.dll")]
     public static extern int DwmFlush();
