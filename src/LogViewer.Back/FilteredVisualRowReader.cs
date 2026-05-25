@@ -185,7 +185,7 @@ public sealed class FilteredVisualRowReader : IColumnViewportReader, IFileOffset
             }
 
             string text = FilteredLineUtilities.ReadLineText(fs, _encoding, descriptor.StartOffset, descriptor.EndOffset);
-            rows.Add(new ViewportSelectedRow(key, text));
+            rows.Add(new ViewportSelectedRow(key, text, CreateSelectedCells(text, descriptor)));
         }
 
         return rows;
@@ -443,6 +443,9 @@ public sealed class FilteredVisualRowReader : IColumnViewportReader, IFileOffset
 
         return cells;
     }
+
+    private string[] CreateSelectedCells(string rowText, FilteredLineDescriptor descriptor) =>
+        _captureGroupCount > 0 ? CreateCells(rowText, descriptor, includeCaptureGroups: true) : new[] { rowText };
 
     private (int DescriptorIndex, int SegmentIndex) MapTopRow(long rowOrdinal)
     {

@@ -23,7 +23,7 @@ public readonly record struct ViewportRowSelectionRange(ViewportRowSelectionKey 
     public bool Contains(ViewportRowSelectionKey key) => key.CompareTo(Start) >= 0 && key.CompareTo(End) <= 0;
 }
 
-public readonly record struct ViewportSelectedRow(ViewportRowSelectionKey Key, string Text);
+public readonly record struct ViewportSelectedRow(ViewportRowSelectionKey Key, string Text, IReadOnlyList<string>? Cells = null);
 
 public interface IViewportReader : IDisposable
 {

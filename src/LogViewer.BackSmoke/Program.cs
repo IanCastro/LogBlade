@@ -30,6 +30,8 @@ internal static class Program
             RunVisualSelectionSelectsAllRows(tempRoot);
             RunFilteredSelectionRangeAcrossResults(tempRoot);
             RunFilteredSelectionSelectsAllRows(tempRoot);
+            RunFilteredSelectionCopiesCaptureCells(tempRoot);
+            RunFilteredSelectionCopiesLiteralTextCell(tempRoot);
             RunInvalidRegexValidation();
             RunAppendSearchAddsMatches(tempRoot);
             RunAppendSearchWithoutMatchKeepsCount(tempRoot);
@@ -337,6 +339,44 @@ internal static class Program
             Array.Empty<ViewportRowSelectionKey>());
 
         AssertSelectedRows("filtered selection all", rows, "alpha-0", "alpha-1");
+    }
+
+    private static void RunFilteredSelectionCopiesCaptureCells(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "filtered-selection-cells.log", "aaabccc xx aabcc\r\nplain\r\n");
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("(a+)b(c+)", UseRegex: true, IgnoreCase: false));
+
+        IReadOnlyList<ViewportSelectedRow> rows = ((ISelectableViewportReader)reader).ReadSelectedRows(
+            selectAll: true,
+            Array.Empty<ViewportRowSelectionRange>(),
+            Array.Empty<ViewportRowSelectionKey>());
+
+        AssertEqual("filtered selection cells row count", rows.Count, 1);
+        AssertSequence("filtered selection cells", rows[0].Cells ?? Array.Empty<string>(), "aaabccc xx aabcc", "aaa", "ccc");
+    }
+
+    private static void RunFilteredSelectionCopiesLiteralTextCell(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "filtered-selection-literal-cell.log", "line.with.dot\r\nplain\r\n");
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions(".", UseRegex: false, IgnoreCase: false));
+
+        IReadOnlyList<ViewportSelectedRow> rows = ((ISelectableViewportReader)reader).ReadSelectedRows(
+            selectAll: true,
+            Array.Empty<ViewportRowSelectionRange>(),
+            Array.Empty<ViewportRowSelectionKey>());
+
+        AssertEqual("filtered selection literal cell row count", rows.Count, 1);
+        AssertSequence("filtered selection literal cell", rows[0].Cells ?? Array.Empty<string>(), "line.with.dot");
     }
 
     private static void RunInvalidRegexValidation()

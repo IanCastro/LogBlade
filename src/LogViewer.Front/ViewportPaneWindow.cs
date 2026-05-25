@@ -1257,7 +1257,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         List<string> selectedRows = new(selected.Count);
         foreach (ViewportSelectedRow row in selected)
         {
-            selectedRows.Add(row.Text);
+            selectedRows.Add(CreateClipboardRow(row));
         }
 
         if (selectedRows.Count == 0)
@@ -1267,6 +1267,25 @@ internal sealed class ViewportPaneWindow : IDisposable
 
         SetClipboardText(string.Join("\r\n", selectedRows));
     }
+
+    private string CreateClipboardRow(ViewportSelectedRow row)
+    {
+        if (_reader is not IColumnViewportReader || row.Cells is null || row.Cells.Count == 0)
+        {
+            return NormalizeClipboardCell(row.Text);
+        }
+
+        string[] cells = new string[row.Cells.Count];
+        for (int i = 0; i < row.Cells.Count; i++)
+        {
+            cells[i] = NormalizeClipboardCell(row.Cells[i]);
+        }
+
+        return string.Join("\t", cells);
+    }
+
+    private static string NormalizeClipboardCell(string value) =>
+        value.Replace('\r', ' ').Replace('\n', ' ').Replace('\t', ' ');
 
     private bool SetClipboardText(string text)
     {
