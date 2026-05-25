@@ -1217,7 +1217,11 @@ internal sealed class ViewerWindow
                 }
 
                 _filteredPane.SetEmptyContentText("(no matches)");
-                _filteredPane.SetReader(result.Reader, _filteredPane.VisibleDataLineCount, preserveColumnWidths: true);
+                _filteredPane.SetReader(
+                    result.Reader,
+                    _filteredPane.VisibleDataLineCount,
+                    preserveColumnWidths: true,
+                    preserveSelection: true);
             }
             catch (FilteredLineStaleException)
             {

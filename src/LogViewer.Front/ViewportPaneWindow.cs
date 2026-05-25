@@ -165,7 +165,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
     }
 
-    public void SetReader(IViewportReader reader, int preloadedVisibleLines, bool preserveColumnWidths = false)
+    public void SetReader(IViewportReader reader, int preloadedVisibleLines, bool preserveColumnWidths = false, bool preserveSelection = false)
     {
         bool canPreserveColumnState = CanPreserveColumnState(reader, preserveColumnWidths);
         if (!_isColumnResizing || !canPreserveColumnState)
@@ -173,7 +173,11 @@ internal sealed class ViewportPaneWindow : IDisposable
             ResetColumnResizeState(clearManualWidths: !canPreserveColumnState);
         }
 
-        ClearSelection(invalidate: false);
+        if (!preserveSelection)
+        {
+            ClearSelection(invalidate: false);
+        }
+
         _reader?.Dispose();
         _reader = reader;
         _statusText = string.Empty;
