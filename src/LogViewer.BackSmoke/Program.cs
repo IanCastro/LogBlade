@@ -16,6 +16,9 @@ internal static class Program
             RunRegexCaptureGroups(tempRoot);
             RunRegexWithoutGroupsUsesPlainRows(tempRoot);
             RunLiteralSearchUsesPlainRows(tempRoot);
+            RunLiteralInvertMatch(tempRoot);
+            RunRegexInvertMatch(tempRoot);
+            RunRegexCaptureGroupsInvertUsesPlainRows(tempRoot);
             RunWrappedLineCaptureGroups(tempRoot);
             RunFilteredLineStaleWhenStartMoves(tempRoot);
             RunFilteredLineStaleWhenEndMoves(tempRoot);
@@ -37,6 +40,7 @@ internal static class Program
             RunAppendSearchWithoutMatchKeepsCount(tempRoot);
             RunAppendSearchRescansPartialLastLine(tempRoot);
             RunAppendSearchPreservesRegexCaptureGroups(tempRoot);
+            RunAppendSearchInvertMatch(tempRoot);
             RunAppendSearchStalesWhenEarlierLineGrows(tempRoot);
             RunPageUpNearStartClampsToTop(tempRoot);
             RunPageUpInsideWrappedFirstLineClampsToTop(tempRoot);
@@ -111,6 +115,51 @@ internal static class Program
         reader.ReadFromPercentage(0d, 10);
         AssertEqual("literal headers", ((IColumnViewportReader)reader).ColumnHeaders.Count, 0);
         AssertSequence("literal rows", reader.CurrentRows, "line.with.dot");
+    }
+
+    private static void RunLiteralInvertMatch(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "literal-invert.log", "alpha\r\nplain\r\nbeta\r\n");
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("alpha", UseRegex: false, IgnoreCase: false, InvertMatch: true));
+
+        reader.ReadFromPercentage(0d, 10);
+        AssertEqual("literal invert headers", ((IColumnViewportReader)reader).ColumnHeaders.Count, 0);
+        AssertSequence("literal invert rows", reader.CurrentRows, "plain", "beta");
+    }
+
+    private static void RunRegexInvertMatch(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "regex-invert.log", "alpha\r\nplain\r\nbeta\r\n");
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("^a", UseRegex: true, IgnoreCase: false, InvertMatch: true));
+
+        reader.ReadFromPercentage(0d, 10);
+        AssertEqual("regex invert headers", ((IColumnViewportReader)reader).ColumnHeaders.Count, 0);
+        AssertSequence("regex invert rows", reader.CurrentRows, "plain", "beta");
+    }
+
+    private static void RunRegexCaptureGroupsInvertUsesPlainRows(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "regex-capture-invert.log", "aaabccc\r\nplain\r\n");
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("(a+)b(c+)", UseRegex: true, IgnoreCase: false, InvertMatch: true));
+
+        reader.ReadFromPercentage(0d, 10);
+        AssertEqual("regex capture invert headers", ((IColumnViewportReader)reader).ColumnHeaders.Count, 0);
+        AssertSequence("regex capture invert rows", reader.CurrentRows, "plain");
     }
 
     private static void RunWrappedLineCaptureGroups(string tempRoot)
@@ -468,6 +517,25 @@ internal static class Program
         AssertEqual("append capture text", columns.CurrentCells[1][0], "aaabccc");
         AssertEqual("append capture group 0", columns.CurrentCells[1][1], "aaa");
         AssertEqual("append capture group 1", columns.CurrentCells[1][2], "ccc");
+    }
+
+    private static void RunAppendSearchInvertMatch(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "append-search-invert.log", "alpha\r\nplain\r\n");
+        SearchOptions options = new("alpha", UseRegex: false, IgnoreCase: false, InvertMatch: true);
+
+        using FilteredVisualRowReader initial = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            options);
+
+        File.AppendAllText(path, "beta\r\nalpha again\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        using FilteredVisualRowReader appended = BuildAppendedReader(initial, options);
+        appended.ReadFromPercentage(0d, 10);
+
+        AssertEqual("append invert count", appended.MatchedLineCount, 2L);
+        AssertSequence("append invert rows", appended.CurrentRows, "plain", "beta");
     }
 
     private static void RunAppendSearchStalesWhenEarlierLineGrows(string tempRoot)

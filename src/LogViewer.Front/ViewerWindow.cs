@@ -20,6 +20,7 @@ internal sealed class SearchWorkerResult
     public string Query { get; set; } = string.Empty;
     public bool UseRegex { get; set; }
     public bool IgnoreCase { get; set; }
+    public bool InvertMatch { get; set; }
     public bool Success { get; set; }
     public string? Message { get; set; }
     public IViewportReader? Reader { get; set; }
@@ -46,6 +47,7 @@ internal sealed class ViewerWindow
     private const int SearchToggleGap = 8;
     private const int RegexToggleWidth = 72;
     private const int IgnoreCaseToggleWidth = 112;
+    private const int InvertMatchToggleWidth = 120;
 
     private readonly string _path;
     private readonly string _titleSuffix;
@@ -54,6 +56,7 @@ internal sealed class ViewerWindow
     private IntPtr _searchEdit;
     private IntPtr _regexCheckbox;
     private IntPtr _ignoreCaseCheckbox;
+    private IntPtr _invertMatchCheckbox;
     private FileSystemWatcher? _fileWatcher;
     private GCHandle _selfHandle;
     private int _lineHeight = 16;
@@ -63,6 +66,7 @@ internal sealed class ViewerWindow
     private string _searchQuery = string.Empty;
     private bool _useRegex = true;
     private bool _ignoreCase;
+    private bool _invertMatch;
     private DetectedEncodingInfo? _detectedEncoding;
     private ViewportPaneWindow? _mainPane;
     private ViewportPaneWindow? _filteredPane;
@@ -91,6 +95,7 @@ internal sealed class ViewerWindow
         NativeMethods.RECT SearchEditRect,
         NativeMethods.RECT SearchRegexToggleRect,
         NativeMethods.RECT SearchIgnoreCaseToggleRect,
+        NativeMethods.RECT SearchInvertMatchToggleRect,
         NativeMethods.RECT SearchProgressRect);
 
     public ViewerWindow(string path)
@@ -356,10 +361,31 @@ internal sealed class ViewerWindow
             throw new InvalidOperationException("CreateWindowExW failed for ignore-case checkbox.");
         }
 
+        _invertMatchCheckbox = NativeMethods.CreateWindowExW(
+            0,
+            "BUTTON",
+            "Invert match",
+            NativeMethods.WS_CHILD | NativeMethods.WS_VISIBLE | NativeMethods.WS_TABSTOP | NativeMethods.BS_AUTOCHECKBOX,
+            0,
+            0,
+            1,
+            1,
+            _hwnd,
+            IntPtr.Zero,
+            hInstance,
+            IntPtr.Zero);
+
+        if (_invertMatchCheckbox == IntPtr.Zero)
+        {
+            throw new InvalidOperationException("CreateWindowExW failed for invert-match checkbox.");
+        }
+
         NativeMethods.SendMessageW(_regexCheckbox, NativeMethods.WM_SETFONT, _font, new IntPtr(1));
         NativeMethods.SendMessageW(_ignoreCaseCheckbox, NativeMethods.WM_SETFONT, _font, new IntPtr(1));
+        NativeMethods.SendMessageW(_invertMatchCheckbox, NativeMethods.WM_SETFONT, _font, new IntPtr(1));
         NativeMethods.SendMessageW(_regexCheckbox, NativeMethods.BM_SETCHECK, new IntPtr(NativeMethods.BST_CHECKED), IntPtr.Zero);
         NativeMethods.SendMessageW(_ignoreCaseCheckbox, NativeMethods.BM_SETCHECK, new IntPtr(NativeMethods.BST_UNCHECKED), IntPtr.Zero);
+        NativeMethods.SendMessageW(_invertMatchCheckbox, NativeMethods.BM_SETCHECK, new IntPtr(NativeMethods.BST_UNCHECKED), IntPtr.Zero);
         ReadSearchModeFromControls();
 
         RecalculateLayout();
@@ -587,7 +613,7 @@ internal sealed class ViewerWindow
             return;
         }
 
-        if ((lParam == _regexCheckbox || lParam == _ignoreCaseCheckbox) && notification == NativeMethods.BN_CLICKED)
+        if ((lParam == _regexCheckbox || lParam == _ignoreCaseCheckbox || lParam == _invertMatchCheckbox) && notification == NativeMethods.BN_CLICKED)
         {
             ReadSearchModeFromControls();
             RestartSearchAfterInputChange();
@@ -617,7 +643,7 @@ internal sealed class ViewerWindow
             return;
         }
 
-        SearchOptions options = new(_searchQuery, _useRegex, _ignoreCase);
+        SearchOptions options = new(_searchQuery, _useRegex, _ignoreCase, _invertMatch);
         if (!TryValidateSearchOptions(options))
         {
             return;
@@ -661,6 +687,7 @@ internal sealed class ViewerWindow
                 new LogField("queryLength", options.Query.Length.ToString()),
                 new LogField("useRegex", options.UseRegex.ToString()),
                 new LogField("ignoreCase", options.IgnoreCase.ToString()),
+                new LogField("invertMatch", options.InvertMatch.ToString()),
                 new LogField("durationMs", "0"),
                 new LogField("reason", ex.Message));
             return false;
@@ -675,7 +702,7 @@ internal sealed class ViewerWindow
         }
 
         NativeMethods.KillTimer(_hwnd, SearchDebounceTimerId);
-        DispatchSearch(_latestSearchRequestId, new SearchOptions(_searchQuery, _useRegex, _ignoreCase));
+        DispatchSearch(_latestSearchRequestId, new SearchOptions(_searchQuery, _useRegex, _ignoreCase, _invertMatch));
     }
 
     private void DispatchSearch(long requestId, SearchOptions options)
@@ -704,6 +731,7 @@ internal sealed class ViewerWindow
                 new LogField("queryLength", query.Length.ToString()),
                 new LogField("useRegex", options.UseRegex.ToString()),
                 new LogField("ignoreCase", options.IgnoreCase.ToString()),
+                new LogField("invertMatch", options.InvertMatch.ToString()),
                 new LogField("visibleLines", visibleLines.ToString()));
 
             try
@@ -720,6 +748,7 @@ internal sealed class ViewerWindow
                         Query = query,
                         UseRegex = options.UseRegex,
                         IgnoreCase = options.IgnoreCase,
+                        InvertMatch = options.InvertMatch,
                         Success = true,
                         Reader = update.Reader,
                         PreloadedVisibleLines = visibleLines,
@@ -741,6 +770,7 @@ internal sealed class ViewerWindow
                     new LogField("queryLength", query.Length.ToString()),
                     new LogField("useRegex", options.UseRegex.ToString()),
                     new LogField("ignoreCase", options.IgnoreCase.ToString()),
+                    new LogField("invertMatch", options.InvertMatch.ToString()),
                     new LogField("durationMs", workerStopwatch.ElapsedMilliseconds.ToString()),
                     new LogField("matchedLineCount", lastMatchedLineCount.ToString()),
                     new LogField("progressPercentage", Math.Round(Math.Clamp(lastProgressPercentage, 0d, 100d)).ToString()));
@@ -753,6 +783,7 @@ internal sealed class ViewerWindow
                     Query = query,
                     UseRegex = options.UseRegex,
                     IgnoreCase = options.IgnoreCase,
+                    InvertMatch = options.InvertMatch,
                     Success = false,
                     IsStale = true,
                     Message = ex.Message,
@@ -771,6 +802,7 @@ internal sealed class ViewerWindow
                     Query = query,
                     UseRegex = options.UseRegex,
                     IgnoreCase = options.IgnoreCase,
+                    InvertMatch = options.InvertMatch,
                     Success = false,
                     Message = ex.Message,
                     ProgressPercentage = _searchProgressPercentage,
@@ -836,7 +868,7 @@ internal sealed class ViewerWindow
             return;
         }
 
-        SearchOptions options = new(_searchQuery, _useRegex, _ignoreCase);
+        SearchOptions options = new(_searchQuery, _useRegex, _ignoreCase, _invertMatch);
         if (!AreSearchOptionsValid(options))
         {
             return;
@@ -918,6 +950,7 @@ internal sealed class ViewerWindow
                 new LogField("queryLength", query.Length.ToString()),
                 new LogField("useRegex", options.UseRegex.ToString()),
                 new LogField("ignoreCase", options.IgnoreCase.ToString()),
+                new LogField("invertMatch", options.InvertMatch.ToString()),
                 new LogField("oldFileSize", readerSnapshot.FileSize.ToString()),
                 new LogField("newFileSize", newFileSize.ToString()));
 
@@ -935,6 +968,7 @@ internal sealed class ViewerWindow
                         Query = query,
                         UseRegex = options.UseRegex,
                         IgnoreCase = options.IgnoreCase,
+                        InvertMatch = options.InvertMatch,
                         Success = true,
                         Reader = update.Reader,
                         PreloadedVisibleLines = visibleLines,
@@ -956,6 +990,7 @@ internal sealed class ViewerWindow
                     new LogField("queryLength", query.Length.ToString()),
                     new LogField("useRegex", options.UseRegex.ToString()),
                     new LogField("ignoreCase", options.IgnoreCase.ToString()),
+                    new LogField("invertMatch", options.InvertMatch.ToString()),
                     new LogField("durationMs", workerStopwatch.ElapsedMilliseconds.ToString()),
                     new LogField("matchedLineCount", lastMatchedLineCount.ToString()),
                     new LogField("progressPercentage", Math.Round(Math.Clamp(lastProgressPercentage, 0d, 100d)).ToString()));
@@ -968,6 +1003,7 @@ internal sealed class ViewerWindow
                     Query = query,
                     UseRegex = options.UseRegex,
                     IgnoreCase = options.IgnoreCase,
+                    InvertMatch = options.InvertMatch,
                     Success = false,
                     IsStale = true,
                     Message = ex.Message,
@@ -986,6 +1022,7 @@ internal sealed class ViewerWindow
                     Query = query,
                     UseRegex = options.UseRegex,
                     IgnoreCase = options.IgnoreCase,
+                    InvertMatch = options.InvertMatch,
                     Success = false,
                     Message = ex.Message,
                     ProgressPercentage = _searchProgressPercentage,
@@ -1187,6 +1224,7 @@ internal sealed class ViewerWindow
                 new LogField("queryLength", result.Query.Length.ToString()),
                 new LogField("useRegex", result.UseRegex.ToString()),
                 new LogField("ignoreCase", result.IgnoreCase.ToString()),
+                new LogField("invertMatch", result.InvertMatch.ToString()),
                 new LogField("durationMs", result.ElapsedMilliseconds.ToString()),
                 new LogField("reason", result.Message ?? "unknown error"));
             return;
@@ -1249,6 +1287,7 @@ internal sealed class ViewerWindow
                 new LogField("queryLength", result.Query.Length.ToString()),
                 new LogField("useRegex", result.UseRegex.ToString()),
                 new LogField("ignoreCase", result.IgnoreCase.ToString()),
+                new LogField("invertMatch", result.InvertMatch.ToString()),
                 new LogField("durationMs", result.ElapsedMilliseconds.ToString()),
                 new LogField("matchedLineCount", result.MatchedLineCount.ToString()),
                 new LogField("progressPercentage", Math.Round(_searchProgressPercentage).ToString()));
@@ -1272,6 +1311,7 @@ internal sealed class ViewerWindow
             new LogField("queryLength", result.Query.Length.ToString()),
             new LogField("useRegex", result.UseRegex.ToString()),
             new LogField("ignoreCase", result.IgnoreCase.ToString()),
+            new LogField("invertMatch", result.InvertMatch.ToString()),
             new LogField("durationMs", result.ElapsedMilliseconds.ToString()),
             new LogField("matchedLineCount", result.MatchedLineCount.ToString()));
     }
@@ -1379,11 +1419,19 @@ internal sealed class ViewerWindow
             bottom = inputBottom
         };
 
-        NativeMethods.RECT ignoreCaseRect = new()
+        NativeMethods.RECT invertMatchRect = new()
         {
-            left = Math.Max(inputRowRect.left, inputRowRect.right - IgnoreCaseToggleWidth),
+            left = Math.Max(inputRowRect.left, inputRowRect.right - InvertMatchToggleWidth),
             top = inputRowRect.top,
             right = inputRowRect.right,
+            bottom = inputRowRect.bottom
+        };
+        int ignoreCaseRight = Math.Max(inputRowRect.left, invertMatchRect.left - SearchToggleGap);
+        NativeMethods.RECT ignoreCaseRect = new()
+        {
+            left = Math.Max(inputRowRect.left, ignoreCaseRight - IgnoreCaseToggleWidth),
+            top = inputRowRect.top,
+            right = ignoreCaseRight,
             bottom = inputRowRect.bottom
         };
         int regexRight = Math.Max(inputRowRect.left, ignoreCaseRect.left - SearchToggleGap);
@@ -1413,7 +1461,7 @@ internal sealed class ViewerWindow
             }
             : CreateZeroRect();
 
-        _layout = new WindowLayout(clientRect, viewerRect, searchAreaRect, searchResultsRect, editRect, regexRect, ignoreCaseRect, progressRect);
+        _layout = new WindowLayout(clientRect, viewerRect, searchAreaRect, searchResultsRect, editRect, regexRect, ignoreCaseRect, invertMatchRect, progressRect);
     }
 
     private void ApplyLayout()
@@ -1442,9 +1490,17 @@ internal sealed class ViewerWindow
             GetRectWidth(_layout.SearchIgnoreCaseToggleRect),
             GetRectHeight(_layout.SearchIgnoreCaseToggleRect),
             true);
+        NativeMethods.MoveWindow(
+            _invertMatchCheckbox,
+            _layout.SearchInvertMatchToggleRect.left,
+            _layout.SearchInvertMatchToggleRect.top,
+            GetRectWidth(_layout.SearchInvertMatchToggleRect),
+            GetRectHeight(_layout.SearchInvertMatchToggleRect),
+            true);
         NativeMethods.ShowWindow(_searchEdit, NativeMethods.SW_SHOW);
         NativeMethods.ShowWindow(_regexCheckbox, NativeMethods.SW_SHOW);
         NativeMethods.ShowWindow(_ignoreCaseCheckbox, NativeMethods.SW_SHOW);
+        NativeMethods.ShowWindow(_invertMatchCheckbox, NativeMethods.SW_SHOW);
     }
 
     private void ScheduleSearch()
@@ -1480,6 +1536,11 @@ internal sealed class ViewerWindow
             NativeMethods.DestroyWindow(_ignoreCaseCheckbox);
         }
 
+        if (_invertMatchCheckbox != IntPtr.Zero)
+        {
+            NativeMethods.DestroyWindow(_invertMatchCheckbox);
+        }
+
         if (_font != IntPtr.Zero && _font != NativeMethods.GetStockObject(NativeMethods.SYSTEM_FIXED_FONT))
         {
             NativeMethods.DeleteObject(_font);
@@ -1493,6 +1554,7 @@ internal sealed class ViewerWindow
         _searchEdit = IntPtr.Zero;
         _regexCheckbox = IntPtr.Zero;
         _ignoreCaseCheckbox = IntPtr.Zero;
+        _invertMatchCheckbox = IntPtr.Zero;
         _font = IntPtr.Zero;
     }
 
@@ -1565,6 +1627,7 @@ internal sealed class ViewerWindow
     {
         _useRegex = IsButtonChecked(_regexCheckbox);
         _ignoreCase = IsButtonChecked(_ignoreCaseCheckbox);
+        _invertMatch = IsButtonChecked(_invertMatchCheckbox);
     }
 
     private static bool IsButtonChecked(IntPtr hwnd)

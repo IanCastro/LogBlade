@@ -8,7 +8,7 @@ using System.Threading;
 
 public readonly record struct SearchProgressUpdate(double ProgressPercentage, long MatchedLineCount, long ElapsedMilliseconds, FilteredVisualRowReader? Reader, bool IsFinal);
 
-public readonly record struct SearchOptions(string Query, bool UseRegex, bool IgnoreCase);
+public readonly record struct SearchOptions(string Query, bool UseRegex, bool IgnoreCase, bool InvertMatch = false);
 
 public static class LogSearchBuilder
 {
@@ -36,14 +36,7 @@ public static class LogSearchBuilder
 
         foreach (RealLineData line in SearchRealLineScanner.Enumerate(fullPath, encoding, kind, dataOffset, fileSize))
         {
-            if (matcher.TryMatch(line.Text, out string[]? captureGroups))
-            {
-                descriptors.Add(new FilteredLineDescriptor(
-                    line.StartOffset,
-                    line.EndOffset,
-                    FilteredLineUtilities.CountVisualRows(line.Text),
-                    captureGroups));
-            }
+            AddDescriptorIfIncluded(descriptors, line, matcher, options);
         }
 
         return new FilteredVisualRowReader(fullPath, kind, encoding, dataOffset, fileSize, descriptors);
@@ -77,14 +70,7 @@ public static class LogSearchBuilder
         {
             cancellationToken.ThrowIfCancellationRequested();
             scannedOffset = line.EndOffset;
-            if (matcher.TryMatch(line.Text, out string[]? captureGroups))
-            {
-                descriptors.Add(new FilteredLineDescriptor(
-                    line.StartOffset,
-                    line.EndOffset,
-                    FilteredLineUtilities.CountVisualRows(line.Text),
-                    captureGroups));
-            }
+            AddDescriptorIfIncluded(descriptors, line, matcher, options);
 
             long now = Environment.TickCount64;
             bool firstPartialWithMatches = !partialPublished && descriptors.Count > 0;
@@ -165,14 +151,7 @@ public static class LogSearchBuilder
         {
             cancellationToken.ThrowIfCancellationRequested();
             scannedOffset = line.EndOffset;
-            if (matcher.TryMatch(line.Text, out string[]? captureGroups))
-            {
-                descriptors.Add(new FilteredLineDescriptor(
-                    line.StartOffset,
-                    line.EndOffset,
-                    FilteredLineUtilities.CountVisualRows(line.Text),
-                    captureGroups));
-            }
+            AddDescriptorIfIncluded(descriptors, line, matcher, options);
 
             long now = Environment.TickCount64;
             if (now - lastPublishedTick >= ProgressPublishIntervalMs)
@@ -228,6 +207,25 @@ public static class LogSearchBuilder
             LogEncodingKind.Utf16Be => FindPreviousUtf16LineStart(fs, dataOffset, oldFileSize, littleEndian: false),
             _ => FindPreviousSingleByteLineStart(fs, dataOffset, oldFileSize)
         };
+    }
+
+    private static void AddDescriptorIfIncluded(
+        List<FilteredLineDescriptor> descriptors,
+        RealLineData line,
+        SearchMatcher matcher,
+        SearchOptions options)
+    {
+        bool matched = matcher.TryMatch(line.Text, out string[]? captureGroups);
+        if (matched == options.InvertMatch)
+        {
+            return;
+        }
+
+        descriptors.Add(new FilteredLineDescriptor(
+            line.StartOffset,
+            line.EndOffset,
+            FilteredLineUtilities.CountVisualRows(line.Text),
+            matched && !options.InvertMatch ? captureGroups : null));
     }
 
     private static bool EndsWithLineBreak(FileStream fs, LogEncodingKind kind, long dataOffset, long oldFileSize)
