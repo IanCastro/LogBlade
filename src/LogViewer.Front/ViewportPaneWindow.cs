@@ -70,14 +70,16 @@ internal sealed class ViewportPaneWindow : IDisposable
     private int _resizeStartX;
     private int _resizeStartWidth;
     private bool _isColumnResizing;
+    private readonly HashSet<int> _selectedDataRows = new();
+    private HashSet<int>? _selectionDragBaseRows;
     private bool _isSelectingRows;
     private bool _selectionDragMoved;
+    private bool _selectionMouseStartedWithControl;
+    private bool _selectionMouseStartedWithShift;
     private int _selectionMouseDownX;
     private int _selectionMouseDownY;
     private int _selectionAnchorDataIndex = -1;
     private int _selectionFocusDataIndex = -1;
-    private int _selectionStartDataIndex = -1;
-    private int _selectionEndDataIndex = -1;
 
     public ViewportPaneWindow(IntPtr font, int lineHeight, int charWidth, Action<ViewportPaneWindow>? onUsefulPaint = null, Action<ViewportPaneWindow>? onStale = null, Action<ViewportPaneWindow, long>? onRowActivated = null)
     {
@@ -701,13 +703,22 @@ internal sealed class ViewportPaneWindow : IDisposable
             return false;
         }
 
+        bool control = IsControlKeyDown();
+        bool shift = IsShiftKeyDown();
         _isSelectingRows = true;
         _selectionDragMoved = false;
+        _selectionMouseStartedWithControl = control;
+        _selectionMouseStartedWithShift = shift;
         _selectionMouseDownX = x;
         _selectionMouseDownY = y;
-        _selectionAnchorDataIndex = rowIndex;
+        _selectionDragBaseRows = new HashSet<int>(_selectedDataRows);
+        if (!shift || _selectionAnchorDataIndex < 0)
+        {
+            _selectionAnchorDataIndex = rowIndex;
+        }
+
         _selectionFocusDataIndex = rowIndex;
-        SetSelectedRange(rowIndex, rowIndex);
+        ApplyMouseSelection(rowIndex, isDrag: false);
         NativeMethods.SetCapture(_hwnd);
         return true;
     }
@@ -731,17 +742,22 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         _selectionFocusDataIndex = rowIndex;
-        SetSelectedRange(_selectionAnchorDataIndex, rowIndex);
+        ApplyMouseSelection(rowIndex, isDrag: true);
     }
 
     private void EndRowSelection()
     {
         int activatedRowIndex = _selectionFocusDataIndex;
         bool shouldActivate = !_selectionDragMoved &&
-            _selectionStartDataIndex == _selectionEndDataIndex &&
+            !_selectionMouseStartedWithControl &&
+            !_selectionMouseStartedWithShift &&
+            _selectedDataRows.Count == 1 &&
             activatedRowIndex >= 0;
 
         _isSelectingRows = false;
+        _selectionDragBaseRows = null;
+        _selectionMouseStartedWithControl = false;
+        _selectionMouseStartedWithShift = false;
         NativeMethods.ReleaseCapture();
 
         if (shouldActivate)
@@ -773,23 +789,78 @@ internal sealed class ViewportPaneWindow : IDisposable
         return rowIndex >= 0 && rowIndex < _reader.CurrentRows.Count ? rowIndex : -1;
     }
 
-    private void SetSelectedRange(int firstDataIndex, int lastDataIndex)
+    private void ApplyMouseSelection(int rowIndex, bool isDrag)
     {
-        int start = Math.Min(firstDataIndex, lastDataIndex);
-        int end = Math.Max(firstDataIndex, lastDataIndex);
-        if (_selectionStartDataIndex == start && _selectionEndDataIndex == end)
+        HashSet<int> next = _selectionDragBaseRows is null
+            ? new HashSet<int>()
+            : new HashSet<int>(_selectionDragBaseRows);
+
+        if (_selectionMouseStartedWithControl && _selectionMouseStartedWithShift)
+        {
+            AddRange(next, _selectionAnchorDataIndex, rowIndex);
+        }
+        else if (_selectionMouseStartedWithShift)
+        {
+            next.Clear();
+            AddRange(next, _selectionAnchorDataIndex, rowIndex);
+        }
+        else if (_selectionMouseStartedWithControl)
+        {
+            if (isDrag)
+            {
+                AddRange(next, _selectionAnchorDataIndex, rowIndex);
+            }
+            else
+            {
+                ToggleRow(next, rowIndex);
+            }
+        }
+        else
+        {
+            next.Clear();
+            AddRange(next, _selectionAnchorDataIndex, rowIndex);
+        }
+
+        ReplaceSelectedRows(next);
+    }
+
+    private void ReplaceSelectedRows(HashSet<int> next)
+    {
+        if (_selectedDataRows.SetEquals(next))
         {
             return;
         }
 
-        _selectionStartDataIndex = start;
-        _selectionEndDataIndex = end;
+        _selectedDataRows.Clear();
+        foreach (int rowIndex in next)
+        {
+            _selectedDataRows.Add(rowIndex);
+        }
+
         NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
+    }
+
+    private static void AddRange(HashSet<int> target, int firstDataIndex, int lastDataIndex)
+    {
+        int start = Math.Min(firstDataIndex, lastDataIndex);
+        int end = Math.Max(firstDataIndex, lastDataIndex);
+        for (int i = start; i <= end; i++)
+        {
+            target.Add(i);
+        }
+    }
+
+    private static void ToggleRow(HashSet<int> target, int rowIndex)
+    {
+        if (!target.Remove(rowIndex))
+        {
+            target.Add(rowIndex);
+        }
     }
 
     private void ClearSelection(bool invalidate)
     {
-        bool hadSelection = _isSelectingRows || _selectionStartDataIndex >= 0 || _selectionEndDataIndex >= 0;
+        bool hadSelection = _isSelectingRows || _selectedDataRows.Count > 0;
         if (_isSelectingRows)
         {
             NativeMethods.ReleaseCapture();
@@ -797,12 +868,14 @@ internal sealed class ViewportPaneWindow : IDisposable
 
         _isSelectingRows = false;
         _selectionDragMoved = false;
+        _selectionMouseStartedWithControl = false;
+        _selectionMouseStartedWithShift = false;
+        _selectionDragBaseRows = null;
         _selectionMouseDownX = 0;
         _selectionMouseDownY = 0;
         _selectionAnchorDataIndex = -1;
         _selectionFocusDataIndex = -1;
-        _selectionStartDataIndex = -1;
-        _selectionEndDataIndex = -1;
+        _selectedDataRows.Clear();
 
         if (hadSelection && invalidate && _hwnd != IntPtr.Zero)
         {
@@ -811,9 +884,7 @@ internal sealed class ViewportPaneWindow : IDisposable
     }
 
     private bool IsDataRowSelected(int dataRowIndex) =>
-        _selectionStartDataIndex >= 0 &&
-        dataRowIndex >= _selectionStartDataIndex &&
-        dataRowIndex <= _selectionEndDataIndex;
+        _selectedDataRows.Contains(dataRowIndex);
 
     private void ActivateRowAt(int dataRowIndex)
     {
@@ -849,6 +920,11 @@ internal sealed class ViewportPaneWindow : IDisposable
             return;
         }
 
+        if (IsShiftKeyDown() && TryHandleShiftSelectionKey(key))
+        {
+            return;
+        }
+
         switch (key)
         {
             case NativeMethods.VK_UP:
@@ -873,27 +949,70 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
     }
 
+    private bool TryHandleShiftSelectionKey(int key)
+    {
+        if (_reader is null || !_reader.HasContent || _reader.CurrentRows.Count == 0)
+        {
+            return false;
+        }
+
+        int rowCount = _reader.CurrentRows.Count;
+        int current = _selectionFocusDataIndex >= 0
+            ? Math.Clamp(_selectionFocusDataIndex, 0, rowCount - 1)
+            : 0;
+        int target = key switch
+        {
+            NativeMethods.VK_UP => Math.Max(0, current - 1),
+            NativeMethods.VK_DOWN => Math.Min(rowCount - 1, current + 1),
+            NativeMethods.VK_PRIOR => 0,
+            NativeMethods.VK_NEXT => rowCount - 1,
+            NativeMethods.VK_HOME => 0,
+            NativeMethods.VK_END => rowCount - 1,
+            _ => -1
+        };
+
+        if (target < 0)
+        {
+            return false;
+        }
+
+        if (_selectionAnchorDataIndex < 0)
+        {
+            _selectionAnchorDataIndex = current;
+        }
+
+        _selectionFocusDataIndex = target;
+        HashSet<int> next = IsControlKeyDown()
+            ? new HashSet<int>(_selectedDataRows)
+            : new HashSet<int>();
+        AddRange(next, _selectionAnchorDataIndex, target);
+        ReplaceSelectedRows(next);
+        return true;
+    }
+
     private void CopySelectionToClipboard()
     {
         if (_reader is null ||
-            _selectionStartDataIndex < 0 ||
-            _selectionEndDataIndex < _selectionStartDataIndex)
+            _selectedDataRows.Count == 0)
         {
             return;
         }
 
         IReadOnlyList<string> rows = _reader.CurrentRows;
-        int start = Math.Clamp(_selectionStartDataIndex, 0, rows.Count);
-        int end = Math.Clamp(_selectionEndDataIndex, -1, rows.Count - 1);
-        if (start > end || start >= rows.Count)
+        List<int> selectedIndexes = new(_selectedDataRows);
+        selectedIndexes.Sort();
+        List<string> selectedRows = new(selectedIndexes.Count);
+        foreach (int rowIndex in selectedIndexes)
         {
-            return;
+            if (rowIndex >= 0 && rowIndex < rows.Count)
+            {
+                selectedRows.Add(rows[rowIndex]);
+            }
         }
 
-        List<string> selectedRows = new(end - start + 1);
-        for (int i = start; i <= end; i++)
+        if (selectedRows.Count == 0)
         {
-            selectedRows.Add(rows[i]);
+            return;
         }
 
         SetClipboardText(string.Join("\r\n", selectedRows));
@@ -952,6 +1071,9 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private static bool IsControlKeyDown() =>
         (NativeMethods.GetKeyState(NativeMethods.VK_CONTROL) & unchecked((short)0x8000)) != 0;
+
+    private static bool IsShiftKeyDown() =>
+        (NativeMethods.GetKeyState(NativeMethods.VK_SHIFT) & unchecked((short)0x8000)) != 0;
 
     private void OnPaint()
     {

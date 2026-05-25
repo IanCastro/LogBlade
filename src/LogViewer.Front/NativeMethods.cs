@@ -104,6 +104,7 @@ internal static class NativeMethods
     public const int VK_END = 0x23;
     public const int VK_C = 0x43;
     public const int VK_CONTROL = 0x11;
+    public const int VK_SHIFT = 0x10;
     public const int CF_UNICODETEXT = 13;
     public const uint GMEM_MOVEABLE = 0x0002;
     public static readonly IntPtr IDC_ARROW = new(32512);
