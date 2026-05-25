@@ -150,13 +150,80 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
             ViewportRowSelectionKey[] keys = new ViewportRowSelectionKey[_viewportRows.Count];
             for (int i = 0; i < _viewportRows.Count; i++)
             {
-                ViewportRow row = _viewportRows[i];
-                keys[i] = new ViewportRowSelectionKey(row.StartOffset, row.EndOffset, row.SegmentIndex);
+                keys[i] = ToSelectionKey(_viewportRows[i]);
             }
 
             return keys;
         }
     }
+
+    public IReadOnlyList<ViewportSelectedRow> ReadSelectedRows(bool selectAll, IReadOnlyList<ViewportRowSelectionRange> ranges, IReadOnlyList<ViewportRowSelectionKey> excludedKeys)
+    {
+        RefreshFileSize();
+        if (!HasContent || (!selectAll && ranges.Count == 0))
+        {
+            return Array.Empty<ViewportSelectedRow>();
+        }
+
+        HashSet<ViewportRowSelectionKey> excluded = new(excludedKeys);
+        HashSet<ViewportRowSelectionKey> emitted = new();
+        List<ViewportSelectedRow> rows = new();
+        if (selectAll)
+        {
+            EnumerateSelectedRows(DefaultTopPosition(), null, excluded, emitted, rows);
+            return rows;
+        }
+
+        foreach (ViewportRowSelectionRange range in ranges)
+        {
+            EnumerateSelectedRows(LocateVisualPositionForOffset(range.Start.StartOffset), range.End, excluded, emitted, rows);
+        }
+
+        rows.Sort((left, right) => left.Key.CompareTo(right.Key));
+        return rows;
+    }
+
+    private void EnumerateSelectedRows(
+        VisualPosition start,
+        ViewportRowSelectionKey? endKey,
+        HashSet<ViewportRowSelectionKey> excluded,
+        HashSet<ViewportRowSelectionKey> emitted,
+        List<ViewportSelectedRow> rows)
+    {
+        if (!HasContent || start.StartOffset >= _fileSize)
+        {
+            return;
+        }
+
+        using FileStream fs = OpenSourceStream(_filePath);
+        VisualPosition current = start;
+        fs.Position = current.StartOffset;
+        while (current.StartOffset < _fileSize)
+        {
+            VisualReadResult read = ReadVisualRow(fs, current);
+            ViewportRowSelectionKey key = ToSelectionKey(read.Row);
+            if (endKey.HasValue && key.CompareTo(endKey.Value) > 0)
+            {
+                break;
+            }
+
+            if (!excluded.Contains(key) && emitted.Add(key))
+            {
+                rows.Add(new ViewportSelectedRow(key, read.Row.Text));
+            }
+
+            if (read.NextPosition is null)
+            {
+                break;
+            }
+
+            current = read.NextPosition.Value;
+            fs.Position = current.StartOffset;
+        }
+    }
+
+    private static ViewportRowSelectionKey ToSelectionKey(ViewportRow row) =>
+        new(row.StartOffset, row.EndOffset, row.SegmentIndex);
 
     internal IReadOnlyList<ViewportRow> ViewportRows => _viewportRows;
 

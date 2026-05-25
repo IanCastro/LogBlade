@@ -158,6 +158,39 @@ public sealed class FilteredVisualRowReader : IColumnViewportReader, IFileOffset
         }
     }
 
+    public IReadOnlyList<ViewportSelectedRow> ReadSelectedRows(bool selectAll, IReadOnlyList<ViewportRowSelectionRange> ranges, IReadOnlyList<ViewportRowSelectionKey> excludedKeys)
+    {
+        ThrowIfDisposed();
+        if (!HasContent || (!selectAll && ranges.Count == 0))
+        {
+            return Array.Empty<ViewportSelectedRow>();
+        }
+
+        HashSet<ViewportRowSelectionKey> excluded = new(excludedKeys);
+        HashSet<ViewportRowSelectionKey> emitted = new();
+        List<ViewportSelectedRow> rows = new();
+        using FileStream fs = VisualRowReader.OpenSourceStream(_filePath);
+        for (int i = 0; i < _descriptors.Length; i++)
+        {
+            FilteredLineDescriptor descriptor = _descriptors[i];
+            ViewportRowSelectionKey key = new(descriptor.StartOffset, descriptor.EndOffset, 0);
+            if (excluded.Contains(key) || !emitted.Add(key))
+            {
+                continue;
+            }
+
+            if (!selectAll && !IsSelectionKeyInRanges(key, ranges))
+            {
+                continue;
+            }
+
+            string text = FilteredLineUtilities.ReadLineText(fs, _encoding, descriptor.StartOffset, descriptor.EndOffset);
+            rows.Add(new ViewportSelectedRow(key, text));
+        }
+
+        return rows;
+    }
+
     public IReadOnlyList<string> ReadNext(int count)
     {
         ThrowIfDisposed();
@@ -427,6 +460,19 @@ public sealed class FilteredVisualRowReader : IColumnViewportReader, IFileOffset
         long rowStart = _descriptorRowStarts[index];
         int segmentIndex = (int)Math.Max(0, rowOrdinal - rowStart);
         return (index, segmentIndex);
+    }
+
+    private static bool IsSelectionKeyInRanges(ViewportRowSelectionKey key, IReadOnlyList<ViewportRowSelectionRange> ranges)
+    {
+        for (int i = 0; i < ranges.Count; i++)
+        {
+            if (ranges[i].Contains(key))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private void ThrowIfDisposed()

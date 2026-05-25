@@ -26,6 +26,10 @@ internal static class Program
             RunFilteredLineValidationAcceptsEmptyLine(tempRoot);
             RunSearchRowOffsetSyncsMainReader(tempRoot);
             RunSearchRowOffsetDetectsStaleLine(tempRoot);
+            RunVisualSelectionRangeAcrossViewport(tempRoot);
+            RunVisualSelectionSelectsAllRows(tempRoot);
+            RunFilteredSelectionRangeAcrossResults(tempRoot);
+            RunFilteredSelectionSelectsAllRows(tempRoot);
             RunInvalidRegexValidation();
             RunAppendSearchAddsMatches(tempRoot);
             RunAppendSearchWithoutMatchKeepsCount(tempRoot);
@@ -260,6 +264,79 @@ internal static class Program
         AssertThrows<FilteredLineStaleException>(
             "search row offset stale",
             () => ((IFileOffsetViewportReader)filtered).TryGetRowStartOffset(0, out _));
+    }
+
+    private static void RunVisualSelectionRangeAcrossViewport(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "visual-selection-range.log", "line-0\r\nline-1\r\nline-2\r\nline-3\r\n");
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        reader.ReadFromPercentage(0d, 2);
+        ISelectableViewportReader selectable = reader;
+        ViewportRowSelectionKey first = selectable.CurrentRowSelectionKeys[0];
+        reader.ReadFromPercentage(100d, 2);
+        ViewportRowSelectionKey last = selectable.CurrentRowSelectionKeys[1];
+
+        IReadOnlyList<ViewportSelectedRow> rows = selectable.ReadSelectedRows(
+            selectAll: false,
+            new[] { new ViewportRowSelectionRange(first, last) },
+            Array.Empty<ViewportRowSelectionKey>());
+
+        AssertSelectedRows("visual selection range", rows, "line-0", "line-1", "line-2", "line-3");
+    }
+
+    private static void RunVisualSelectionSelectsAllRows(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "visual-selection-all.log", "line-0\r\nline-1\r\nline-2\r\n");
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        IReadOnlyList<ViewportSelectedRow> rows = ((ISelectableViewportReader)reader).ReadSelectedRows(
+            selectAll: true,
+            Array.Empty<ViewportRowSelectionRange>(),
+            Array.Empty<ViewportRowSelectionKey>());
+
+        AssertSelectedRows("visual selection all", rows, "line-0", "line-1", "line-2");
+    }
+
+    private static void RunFilteredSelectionRangeAcrossResults(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "filtered-selection-range.log", "alpha-0\r\nskip\r\nalpha-1\r\nalpha-2\r\n");
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
+
+        reader.ReadFromPercentage(0d, 2);
+        ISelectableViewportReader selectable = reader;
+        ViewportRowSelectionKey first = selectable.CurrentRowSelectionKeys[0];
+        reader.ReadFromPercentage(100d, 2);
+        ViewportRowSelectionKey last = selectable.CurrentRowSelectionKeys[1];
+        IReadOnlyList<ViewportSelectedRow> rows = selectable.ReadSelectedRows(
+            selectAll: false,
+            new[] { new ViewportRowSelectionRange(first, last) },
+            Array.Empty<ViewportRowSelectionKey>());
+
+        AssertSelectedRows("filtered selection range", rows, "alpha-0", "alpha-1", "alpha-2");
+    }
+
+    private static void RunFilteredSelectionSelectsAllRows(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "filtered-selection-all.log", "alpha-0\r\nskip\r\nalpha-1\r\n");
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
+
+        IReadOnlyList<ViewportSelectedRow> rows = ((ISelectableViewportReader)reader).ReadSelectedRows(
+            selectAll: true,
+            Array.Empty<ViewportRowSelectionRange>(),
+            Array.Empty<ViewportRowSelectionKey>());
+
+        AssertSelectedRows("filtered selection all", rows, "alpha-0", "alpha-1");
     }
 
     private static void RunInvalidRegexValidation()
@@ -530,6 +607,15 @@ internal static class Program
         for (int i = 0; i < expected.Length; i++)
         {
             AssertEqual(name + " [" + i + "]", actual[i], expected[i]);
+        }
+    }
+
+    private static void AssertSelectedRows(string name, IReadOnlyList<ViewportSelectedRow> actual, params string[] expected)
+    {
+        AssertEqual(name + " count", actual.Count, expected.Length);
+        for (int i = 0; i < expected.Length; i++)
+        {
+            AssertEqual(name + " [" + i + "]", actual[i].Text, expected[i]);
         }
     }
 

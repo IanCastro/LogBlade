@@ -70,8 +70,12 @@ internal sealed class ViewportPaneWindow : IDisposable
     private int _resizeStartX;
     private int _resizeStartWidth;
     private bool _isColumnResizing;
-    private readonly Dictionary<ViewportRowSelectionKey, string> _selectedRows = new();
-    private Dictionary<ViewportRowSelectionKey, string>? _selectionDragBaseRows;
+    private readonly List<ViewportRowSelectionRange> _selectionRanges = new();
+    private readonly HashSet<ViewportRowSelectionKey> _selectionExcludedRows = new();
+    private List<ViewportRowSelectionRange>? _selectionDragBaseRanges;
+    private HashSet<ViewportRowSelectionKey>? _selectionDragBaseExcludedRows;
+    private bool _selectionSelectAllRows;
+    private bool _selectionDragBaseSelectAllRows;
     private bool _isSelectingRows;
     private bool _selectionDragMoved;
     private bool _selectionMouseStartedWithControl;
@@ -698,7 +702,7 @@ internal sealed class ViewportPaneWindow : IDisposable
     private bool BeginRowSelection(int x, int y)
     {
         int rowIndex = GetDataRowIndexFromY(y, clamp: false);
-        if (rowIndex < 0)
+        if (rowIndex < 0 || !TryGetCurrentRowSelection(rowIndex, out ViewportRowSelectionKey rowKey, out _))
         {
             return false;
         }
@@ -711,15 +715,21 @@ internal sealed class ViewportPaneWindow : IDisposable
         _selectionMouseStartedWithShift = shift;
         _selectionMouseDownX = x;
         _selectionMouseDownY = y;
-        _selectionDragBaseRows = new Dictionary<ViewportRowSelectionKey, string>(_selectedRows);
-        if (!shift || !TryFindCurrentRowIndex(_selectionAnchorKey, out _selectionAnchorDataIndex))
+        _selectionDragBaseRanges = new List<ViewportRowSelectionRange>(_selectionRanges);
+        _selectionDragBaseExcludedRows = new HashSet<ViewportRowSelectionKey>(_selectionExcludedRows);
+        _selectionDragBaseSelectAllRows = _selectionSelectAllRows;
+        if (!shift || _selectionAnchorKey is null)
         {
             _selectionAnchorDataIndex = rowIndex;
-            _selectionAnchorKey = GetCurrentRowSelectionKey(rowIndex);
+            _selectionAnchorKey = rowKey;
+        }
+        else
+        {
+            TryFindCurrentRowIndex(_selectionAnchorKey, out _selectionAnchorDataIndex);
         }
 
         _selectionFocusDataIndex = rowIndex;
-        _selectionFocusKey = GetCurrentRowSelectionKey(rowIndex);
+        _selectionFocusKey = rowKey;
         ApplyMouseSelection(rowIndex, isDrag: false);
         NativeMethods.SetCapture(_hwnd);
         return true;
@@ -754,11 +764,12 @@ internal sealed class ViewportPaneWindow : IDisposable
         bool shouldActivate = !_selectionDragMoved &&
             !_selectionMouseStartedWithControl &&
             !_selectionMouseStartedWithShift &&
-            _selectedRows.Count == 1 &&
             activatedRowIndex >= 0;
 
         _isSelectingRows = false;
-        _selectionDragBaseRows = null;
+        _selectionDragBaseRanges = null;
+        _selectionDragBaseExcludedRows = null;
+        _selectionDragBaseSelectAllRows = false;
         _selectionMouseStartedWithControl = false;
         _selectionMouseStartedWithShift = false;
         NativeMethods.ReleaseCapture();
@@ -794,65 +805,92 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private void ApplyMouseSelection(int rowIndex, bool isDrag)
     {
-        Dictionary<ViewportRowSelectionKey, string> next = _selectionDragBaseRows is null
-            ? new Dictionary<ViewportRowSelectionKey, string>()
-            : new Dictionary<ViewportRowSelectionKey, string>(_selectionDragBaseRows);
+        if (!TryGetCurrentRowSelection(rowIndex, out ViewportRowSelectionKey rowKey, out _))
+        {
+            return;
+        }
+
+        List<ViewportRowSelectionRange> nextRanges = _selectionDragBaseRanges is null
+            ? new List<ViewportRowSelectionRange>()
+            : new List<ViewportRowSelectionRange>(_selectionDragBaseRanges);
+        HashSet<ViewportRowSelectionKey> nextExcluded = _selectionDragBaseExcludedRows is null
+            ? new HashSet<ViewportRowSelectionKey>()
+            : new HashSet<ViewportRowSelectionKey>(_selectionDragBaseExcludedRows);
+        bool nextSelectAll = _selectionDragBaseSelectAllRows;
+        ViewportRowSelectionKey anchorKey = _selectionAnchorKey ?? rowKey;
 
         if (_selectionMouseStartedWithControl && _selectionMouseStartedWithShift)
         {
-            AddRangeSelection(next, _selectionAnchorDataIndex, rowIndex);
+            AddRangeSelection(nextRanges, nextExcluded, anchorKey, rowKey);
         }
         else if (_selectionMouseStartedWithShift)
         {
-            next.Clear();
-            AddRangeSelection(next, _selectionAnchorDataIndex, rowIndex);
+            nextSelectAll = false;
+            nextRanges.Clear();
+            nextExcluded.Clear();
+            AddRangeSelection(nextRanges, nextExcluded, anchorKey, rowKey);
         }
         else if (_selectionMouseStartedWithControl)
         {
             if (isDrag)
             {
-                AddRangeSelection(next, _selectionAnchorDataIndex, rowIndex);
+                AddRangeSelection(nextRanges, nextExcluded, anchorKey, rowKey);
             }
             else
             {
-                ToggleRowSelection(next, rowIndex);
+                ToggleRowSelection(ref nextSelectAll, nextRanges, nextExcluded, rowKey);
             }
         }
         else
         {
-            next.Clear();
-            AddRangeSelection(next, _selectionAnchorDataIndex, rowIndex);
+            nextSelectAll = false;
+            nextRanges.Clear();
+            nextExcluded.Clear();
+            AddRangeSelection(nextRanges, nextExcluded, anchorKey, rowKey);
         }
 
-        ReplaceSelectedRows(next);
+        ReplaceSelection(nextSelectAll, nextRanges, nextExcluded);
     }
 
-    private void ReplaceSelectedRows(Dictionary<ViewportRowSelectionKey, string> next)
+    private void ReplaceSelection(bool selectAll, List<ViewportRowSelectionRange> ranges, HashSet<ViewportRowSelectionKey> excluded)
     {
-        if (SelectedRowsEqual(next))
+        if (SelectionEqual(selectAll, ranges, excluded))
         {
             return;
         }
 
-        _selectedRows.Clear();
-        foreach (KeyValuePair<ViewportRowSelectionKey, string> row in next)
+        _selectionSelectAllRows = selectAll;
+        _selectionRanges.Clear();
+        _selectionRanges.AddRange(ranges);
+        _selectionExcludedRows.Clear();
+        foreach (ViewportRowSelectionKey key in excluded)
         {
-            _selectedRows[row.Key] = row.Value;
+            _selectionExcludedRows.Add(key);
         }
 
         NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
     }
 
-    private bool SelectedRowsEqual(Dictionary<ViewportRowSelectionKey, string> next)
+    private bool SelectionEqual(bool selectAll, List<ViewportRowSelectionRange> ranges, HashSet<ViewportRowSelectionKey> excluded)
     {
-        if (_selectedRows.Count != next.Count)
+        if (_selectionSelectAllRows != selectAll ||
+            _selectionRanges.Count != ranges.Count ||
+            _selectionExcludedRows.Count != excluded.Count)
         {
             return false;
         }
 
-        foreach (KeyValuePair<ViewportRowSelectionKey, string> row in next)
+        for (int i = 0; i < ranges.Count; i++)
         {
-            if (!_selectedRows.TryGetValue(row.Key, out string? text) || !string.Equals(text, row.Value, StringComparison.Ordinal))
+            if (!_selectionRanges[i].Equals(ranges[i]))
+            {
+                return false;
+            }
+        }
+
+        foreach (ViewportRowSelectionKey key in excluded)
+        {
+            if (!_selectionExcludedRows.Contains(key))
             {
                 return false;
             }
@@ -861,40 +899,50 @@ internal sealed class ViewportPaneWindow : IDisposable
         return true;
     }
 
-    private void AddRangeSelection(Dictionary<ViewportRowSelectionKey, string> target, int firstDataIndex, int lastDataIndex)
+    private static void AddRangeSelection(List<ViewportRowSelectionRange> ranges, HashSet<ViewportRowSelectionKey> excluded, ViewportRowSelectionKey first, ViewportRowSelectionKey last)
     {
-        int start = Math.Min(firstDataIndex, lastDataIndex);
-        int end = Math.Max(firstDataIndex, lastDataIndex);
-        for (int i = start; i <= end; i++)
-        {
-            AddRowSelection(target, i);
-        }
+        ViewportRowSelectionRange range = new(first, last);
+        ranges.Add(range);
+        RemoveExcludedRowsInRange(excluded, range);
     }
 
-    private void AddRowSelection(Dictionary<ViewportRowSelectionKey, string> target, int rowIndex)
+    private static void ToggleRowSelection(ref bool selectAll, List<ViewportRowSelectionRange> ranges, HashSet<ViewportRowSelectionKey> excluded, ViewportRowSelectionKey key)
     {
-        if (TryGetCurrentRowSelection(rowIndex, out ViewportRowSelectionKey key, out string? text))
+        if (IsSelectionKeySelected(selectAll, ranges, excluded, key))
         {
-            target[key] = text;
+            excluded.Add(key);
+            return;
         }
+
+        excluded.Remove(key);
+        ranges.Add(new ViewportRowSelectionRange(key, key));
     }
 
-    private void ToggleRowSelection(Dictionary<ViewportRowSelectionKey, string> target, int rowIndex)
+    private static void RemoveExcludedRowsInRange(HashSet<ViewportRowSelectionKey> excluded, ViewportRowSelectionRange range)
     {
-        if (!TryGetCurrentRowSelection(rowIndex, out ViewportRowSelectionKey key, out string? text))
+        if (excluded.Count == 0)
         {
             return;
         }
 
-        if (!target.Remove(key))
+        List<ViewportRowSelectionKey> toRemove = new();
+        foreach (ViewportRowSelectionKey key in excluded)
         {
-            target[key] = text;
+            if (range.Contains(key))
+            {
+                toRemove.Add(key);
+            }
+        }
+
+        for (int i = 0; i < toRemove.Count; i++)
+        {
+            excluded.Remove(toRemove[i]);
         }
     }
 
     private void ClearSelection(bool invalidate)
     {
-        bool hadSelection = _isSelectingRows || _selectedRows.Count > 0;
+        bool hadSelection = _isSelectingRows || HasSelection;
         if (_isSelectingRows)
         {
             NativeMethods.ReleaseCapture();
@@ -904,14 +952,18 @@ internal sealed class ViewportPaneWindow : IDisposable
         _selectionDragMoved = false;
         _selectionMouseStartedWithControl = false;
         _selectionMouseStartedWithShift = false;
-        _selectionDragBaseRows = null;
+        _selectionDragBaseRanges = null;
+        _selectionDragBaseExcludedRows = null;
+        _selectionDragBaseSelectAllRows = false;
         _selectionMouseDownX = 0;
         _selectionMouseDownY = 0;
         _selectionAnchorDataIndex = -1;
         _selectionFocusDataIndex = -1;
         _selectionAnchorKey = null;
         _selectionFocusKey = null;
-        _selectedRows.Clear();
+        _selectionSelectAllRows = false;
+        _selectionRanges.Clear();
+        _selectionExcludedRows.Clear();
 
         if (hadSelection && invalidate && _hwnd != IntPtr.Zero)
         {
@@ -921,7 +973,39 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private bool IsDataRowSelected(int dataRowIndex) =>
         TryGetCurrentRowSelection(dataRowIndex, out ViewportRowSelectionKey key, out _) &&
-        _selectedRows.ContainsKey(key);
+        IsSelectionKeySelected(key);
+
+    private bool IsSelectionKeySelected(ViewportRowSelectionKey key) =>
+        IsSelectionKeySelected(_selectionSelectAllRows, _selectionRanges, _selectionExcludedRows, key);
+
+    private static bool IsSelectionKeySelected(
+        bool selectAll,
+        IReadOnlyList<ViewportRowSelectionRange> ranges,
+        HashSet<ViewportRowSelectionKey> excluded,
+        ViewportRowSelectionKey key)
+    {
+        if (excluded.Contains(key))
+        {
+            return false;
+        }
+
+        if (selectAll)
+        {
+            return true;
+        }
+
+        for (int i = 0; i < ranges.Count; i++)
+        {
+            if (ranges[i].Contains(key))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private bool HasSelection => _selectionSelectAllRows || _selectionRanges.Count > 0;
 
     private bool TryGetCurrentRowSelection(int rowIndex, out ViewportRowSelectionKey key, out string text)
     {
@@ -996,6 +1080,12 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private void OnKeyDown(int key)
     {
+        if (key == NativeMethods.VK_A && IsControlKeyDown())
+        {
+            SelectAllRows();
+            return;
+        }
+
         if (key == NativeMethods.VK_C && IsControlKeyDown())
         {
             CopySelectionToClipboard();
@@ -1033,17 +1123,13 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private bool TryHandleShiftSelectionKey(int key)
     {
-        if (_reader is null || !_reader.HasContent || _reader.CurrentRows.Count == 0)
+        if (_reader is null || !_reader.HasContent || _reader.CurrentRows.Count == 0 || _reader is not ISelectableViewportReader)
         {
             return false;
         }
 
         int rowCount = _reader.CurrentRows.Count;
-        int current = TryFindCurrentRowIndex(_selectionFocusKey, out int currentFocusIndex)
-            ? currentFocusIndex
-            : _selectionFocusDataIndex >= 0
-                ? Math.Clamp(_selectionFocusDataIndex, 0, rowCount - 1)
-                : 0;
+        int current = ResolveKeyboardSelectionFocusIndex();
         int target = key switch
         {
             NativeMethods.VK_UP => Math.Max(0, current - 1),
@@ -1060,47 +1146,118 @@ internal sealed class ViewportPaneWindow : IDisposable
             return false;
         }
 
-        if (!TryFindCurrentRowIndex(_selectionAnchorKey, out _selectionAnchorDataIndex))
+        if (_selectionAnchorKey is null)
         {
             _selectionAnchorDataIndex = current;
             _selectionAnchorKey = GetCurrentRowSelectionKey(current);
         }
+        else
+        {
+            TryFindCurrentRowIndex(_selectionAnchorKey, out _selectionAnchorDataIndex);
+        }
 
         _selectionFocusDataIndex = target;
         _selectionFocusKey = GetCurrentRowSelectionKey(target);
-        Dictionary<ViewportRowSelectionKey, string> next = IsControlKeyDown()
-            ? new Dictionary<ViewportRowSelectionKey, string>(_selectedRows)
-            : new Dictionary<ViewportRowSelectionKey, string>();
-        AddRangeSelection(next, _selectionAnchorDataIndex, target);
-        ReplaceSelectedRows(next);
+        if (_selectionAnchorKey is null || _selectionFocusKey is null)
+        {
+            return false;
+        }
+
+        bool control = IsControlKeyDown();
+        bool nextSelectAll = control && _selectionSelectAllRows;
+        List<ViewportRowSelectionRange> nextRanges = control
+            ? new List<ViewportRowSelectionRange>(_selectionRanges)
+            : new List<ViewportRowSelectionRange>();
+        HashSet<ViewportRowSelectionKey> nextExcluded = control
+            ? new HashSet<ViewportRowSelectionKey>(_selectionExcludedRows)
+            : new HashSet<ViewportRowSelectionKey>();
+        AddRangeSelection(nextRanges, nextExcluded, _selectionAnchorKey.Value, _selectionFocusKey.Value);
+        ReplaceSelection(nextSelectAll, nextRanges, nextExcluded);
         return true;
     }
 
-    private void CopySelectionToClipboard()
+    private int ResolveKeyboardSelectionFocusIndex()
     {
-        if (_reader is null ||
-            _selectedRows.Count == 0)
+        if (_reader is null || _reader.CurrentRows.Count == 0)
+        {
+            return 0;
+        }
+
+        if (TryFindCurrentRowIndex(_selectionFocusKey, out int currentFocusIndex))
+        {
+            return currentFocusIndex;
+        }
+
+        if (_selectionFocusKey is not null && _reader is ISelectableViewportReader selectableReader)
+        {
+            IReadOnlyList<ViewportRowSelectionKey> keys = selectableReader.CurrentRowSelectionKeys;
+            if (keys.Count > 0)
+            {
+                if (_selectionFocusKey.Value.CompareTo(keys[0]) < 0)
+                {
+                    return 0;
+                }
+
+                if (_selectionFocusKey.Value.CompareTo(keys[keys.Count - 1]) > 0)
+                {
+                    return keys.Count - 1;
+                }
+            }
+        }
+
+        return _selectionFocusDataIndex >= 0
+            ? Math.Clamp(_selectionFocusDataIndex, 0, _reader.CurrentRows.Count - 1)
+            : 0;
+    }
+
+    private void SelectAllRows()
+    {
+        if (_reader is not ISelectableViewportReader || _reader is null || !_reader.HasContent)
         {
             return;
         }
 
-        List<KeyValuePair<ViewportRowSelectionKey, string>> selected = new(_selectedRows);
-        selected.Sort((left, right) =>
+        _selectionSelectAllRows = true;
+        _selectionRanges.Clear();
+        _selectionExcludedRows.Clear();
+        if (_reader.CurrentRows.Count > 0)
         {
-            int start = left.Key.StartOffset.CompareTo(right.Key.StartOffset);
-            if (start != 0)
-            {
-                return start;
-            }
+            _selectionAnchorDataIndex = 0;
+            _selectionFocusDataIndex = _reader.CurrentRows.Count - 1;
+            _selectionAnchorKey = GetCurrentRowSelectionKey(_selectionAnchorDataIndex);
+            _selectionFocusKey = GetCurrentRowSelectionKey(_selectionFocusDataIndex);
+        }
 
-            int segment = left.Key.SegmentIndex.CompareTo(right.Key.SegmentIndex);
-            return segment != 0 ? segment : left.Key.EndOffset.CompareTo(right.Key.EndOffset);
-        });
+        if (_hwnd != IntPtr.Zero)
+        {
+            NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
+        }
+    }
+
+    private void CopySelectionToClipboard()
+    {
+        if (_reader is not ISelectableViewportReader selectableReader || !HasSelection)
+        {
+            return;
+        }
+
+        ViewportRowSelectionKey[] excluded = new ViewportRowSelectionKey[_selectionExcludedRows.Count];
+        _selectionExcludedRows.CopyTo(excluded);
+        IReadOnlyList<ViewportSelectedRow> selected;
+        try
+        {
+            selected = selectableReader.ReadSelectedRows(_selectionSelectAllRows, _selectionRanges, excluded);
+        }
+        catch (FilteredLineStaleException)
+        {
+            _onStale?.Invoke(this);
+            return;
+        }
 
         List<string> selectedRows = new(selected.Count);
-        foreach (KeyValuePair<ViewportRowSelectionKey, string> row in selected)
+        foreach (ViewportSelectedRow row in selected)
         {
-            selectedRows.Add(row.Value);
+            selectedRows.Add(row.Text);
         }
 
         if (selectedRows.Count == 0)
