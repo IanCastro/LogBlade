@@ -112,7 +112,7 @@ internal static class FilteredLineUtilities
         return buffer;
     }
 
-    private static void ValidateLineRange(FileStream fs, Encoding encoding, long startOffset, long endOffset)
+    public static void ValidateLineRange(FileStream fs, Encoding encoding, long startOffset, long endOffset)
     {
         long fileSize = fs.Length;
         if (startOffset < 0 || endOffset < startOffset || endOffset > fileSize)

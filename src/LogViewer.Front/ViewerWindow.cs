@@ -292,7 +292,7 @@ internal sealed class ViewerWindow
         _mainPane.Create(_hwnd, hInstance);
         _mainPane.SetStatus("Loading file...");
 
-        _filteredPane = new ViewportPaneWindow(_font, _lineHeight, _charWidth, onStale: OnFilteredPaneStale);
+        _filteredPane = new ViewportPaneWindow(_font, _lineHeight, _charWidth, onStale: OnFilteredPaneStale, onRowActivated: OnFilteredRowActivated);
         _filteredPane.Create(_hwnd, hInstance);
         _filteredPane.SetEmptyContentText("(no matches)");
         _filteredPane.SetStatus(string.Empty);
@@ -1046,6 +1046,17 @@ internal sealed class ViewerWindow
         }
 
         MarkSearchStale();
+    }
+
+    private void OnFilteredRowActivated(ViewportPaneWindow pane, long startOffset)
+    {
+        if (!ReferenceEquals(pane, _filteredPane) || _closing || _mainPane is null)
+        {
+            return;
+        }
+
+        _mainPane.JumpToFileOffset(startOffset);
+        _mainPane.Focus();
     }
 
     private CancellationTokenSource BeginSearchCancellation()

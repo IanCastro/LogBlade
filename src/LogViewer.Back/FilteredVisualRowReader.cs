@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 
-public sealed class FilteredVisualRowReader : IColumnViewportReader
+public sealed class FilteredVisualRowReader : IColumnViewportReader, IFileOffsetViewportReader
 {
     private string _filePath;
     private LogEncodingKind _kind;
@@ -237,6 +237,28 @@ public sealed class FilteredVisualRowReader : IColumnViewportReader
 
         LoadViewportAtRow(topRowOrdinal, visibleLines);
         return CurrentRows;
+    }
+
+    public bool TryGetRowStartOffset(long rowOrdinal, out long startOffset)
+    {
+        ThrowIfDisposed();
+        startOffset = 0;
+        if (rowOrdinal < 0 || rowOrdinal >= _totalVisualRows || _descriptors.Length == 0)
+        {
+            return false;
+        }
+
+        (int descriptorIndex, _) = MapTopRow(rowOrdinal);
+        if (descriptorIndex < 0 || descriptorIndex >= _descriptors.Length)
+        {
+            return false;
+        }
+
+        FilteredLineDescriptor descriptor = _descriptors[descriptorIndex];
+        using FileStream fs = VisualRowReader.OpenSourceStream(_filePath);
+        FilteredLineUtilities.ValidateLineRange(fs, _encoding, descriptor.StartOffset, descriptor.EndOffset);
+        startOffset = descriptor.StartOffset;
+        return true;
     }
 
     public IViewportReader CloneForWorker()

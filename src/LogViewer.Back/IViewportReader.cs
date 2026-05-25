@@ -23,3 +23,9 @@ public interface IColumnViewportReader : IViewportReader
     IReadOnlyList<string> ColumnHeaders { get; }
     IReadOnlyList<IReadOnlyList<string>> CurrentCells { get; }
 }
+
+public interface IFileOffsetViewportReader : IViewportReader
+{
+    long TopRowOrdinal { get; }
+    bool TryGetRowStartOffset(long rowOrdinal, out long startOffset);
+}

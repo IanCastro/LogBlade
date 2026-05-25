@@ -24,6 +24,8 @@ internal static class Program
             RunFilteredLineValidationAcceptsUtf16Be(tempRoot);
             RunFilteredLineValidationAcceptsFinalLineWithoutBreak(tempRoot);
             RunFilteredLineValidationAcceptsEmptyLine(tempRoot);
+            RunSearchRowOffsetSyncsMainReader(tempRoot);
+            RunSearchRowOffsetDetectsStaleLine(tempRoot);
             RunInvalidRegexValidation();
             RunAppendSearchAddsMatches(tempRoot);
             RunAppendSearchWithoutMatchKeepsCount(tempRoot);
@@ -224,6 +226,40 @@ internal static class Program
 
         reader.ReadFromPercentage(0d, 10);
         AssertSequence("filtered empty line rows", reader.CurrentRows, string.Empty);
+    }
+
+    private static void RunSearchRowOffsetSyncsMainReader(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "search-row-offset-sync.log", "zero\r\none alpha\r\ntwo beta alpha\r\nthree\r\n");
+
+        using FilteredVisualRowReader filtered = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
+
+        AssertEqual("search row offset available", ((IFileOffsetViewportReader)filtered).TryGetRowStartOffset(1, out long startOffset), true);
+
+        using VisualRowReader main = new(path, Encoding.UTF8, dataOffset: 0);
+        main.ReadFromOffset(startOffset, 2);
+
+        AssertSequence("search row offset main rows", main.CurrentRows, "two beta alpha", "three");
+    }
+
+    private static void RunSearchRowOffsetDetectsStaleLine(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "search-row-offset-stale.log", "one\r\ntwo alpha\r\n");
+
+        using FilteredVisualRowReader filtered = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
+
+        File.WriteAllText(path, "one extended\r\ntwo alpha\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        AssertThrows<FilteredLineStaleException>(
+            "search row offset stale",
+            () => ((IFileOffsetViewportReader)filtered).TryGetRowStartOffset(0, out _));
     }
 
     private static void RunInvalidRegexValidation()

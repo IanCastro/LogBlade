@@ -223,6 +223,35 @@ public sealed class VisualRowReader : IViewportReader
         return CurrentRows;
     }
 
+    public IReadOnlyList<string> ReadFromOffset(long offset, int count)
+    {
+        if (count <= 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        RefreshFileSize();
+        if (!HasContent)
+        {
+            _viewportVisibleLines = Math.Max(1, count);
+            _viewportRows.Clear();
+            _topOffset = _dataOffset;
+            _viewportEndOffset = _dataOffset;
+            _viewportLoaded = true;
+            return Array.Empty<string>();
+        }
+
+        long bounded = Math.Clamp(offset, _dataOffset, _fileSize);
+        RealLineStartInfo realLineStart = FindRealLineStartContaining(bounded);
+        LoadViewportAt(new VisualPosition(
+            realLineStart.StartOffset,
+            realLineStart.StartOffset,
+            realLineStart.Kind,
+            VisualStartKind.RealStart,
+            0), count);
+        return CurrentRows;
+    }
+
     public bool RefreshFileSize()
     {
         return RefreshFileSize(out _, out _, out _);

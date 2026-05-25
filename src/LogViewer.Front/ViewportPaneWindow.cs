@@ -6,13 +6,14 @@ using System.Threading;
 internal enum ViewportRequestKind
 {
     LoadAtPercentage,
+    LoadAtOffset,
     ScrollByLines,
     JumpHome,
     JumpEnd,
     RefreshTailIfAtEnd
 }
 
-internal readonly record struct ViewportRequest(long Id, ViewportRequestKind Kind, int DeltaLines, double RequestedPercentage, int VisibleLines);
+internal readonly record struct ViewportRequest(long Id, ViewportRequestKind Kind, int DeltaLines, double RequestedPercentage, long RequestedOffset, int VisibleLines);
 
 internal sealed class ViewportWorkerResult
 {
@@ -45,6 +46,7 @@ internal sealed class ViewportPaneWindow : IDisposable
     private readonly int _charWidth;
     private readonly Action<ViewportPaneWindow>? _onUsefulPaint;
     private readonly Action<ViewportPaneWindow>? _onStale;
+    private readonly Action<ViewportPaneWindow, long>? _onRowActivated;
 
     private IntPtr _hwnd;
     private GCHandle _selfHandle;
@@ -69,13 +71,14 @@ internal sealed class ViewportPaneWindow : IDisposable
     private int _resizeStartWidth;
     private bool _isColumnResizing;
 
-    public ViewportPaneWindow(IntPtr font, int lineHeight, int charWidth, Action<ViewportPaneWindow>? onUsefulPaint = null, Action<ViewportPaneWindow>? onStale = null)
+    public ViewportPaneWindow(IntPtr font, int lineHeight, int charWidth, Action<ViewportPaneWindow>? onUsefulPaint = null, Action<ViewportPaneWindow>? onStale = null, Action<ViewportPaneWindow, long>? onRowActivated = null)
     {
         _font = font;
         _lineHeight = Math.Max(1, lineHeight);
         _charWidth = Math.Max(1, charWidth);
         _onUsefulPaint = onUsefulPaint;
         _onStale = onStale;
+        _onRowActivated = onRowActivated;
     }
 
     public IntPtr Hwnd => _hwnd;
@@ -175,6 +178,17 @@ internal sealed class ViewportPaneWindow : IDisposable
         {
             NativeMethods.SetFocus(_hwnd);
         }
+    }
+
+    public void JumpToFileOffset(long offset)
+    {
+        if (_reader is null)
+        {
+            return;
+        }
+
+        SuspendTailFollow();
+        QueueViewportRequest(ViewportRequestKind.LoadAtOffset, requestedOffset: offset, visibleLines: VisibleDataLineCount);
     }
 
     public void QueueTailRefreshIfAtEnd()
@@ -338,7 +352,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
     }
 
-    private void QueueViewportRequest(ViewportRequestKind kind, int deltaLines = 0, double requestedPercentage = 0d, int? visibleLines = null)
+    private void QueueViewportRequest(ViewportRequestKind kind, int deltaLines = 0, double requestedPercentage = 0d, long requestedOffset = 0L, int? visibleLines = null)
     {
         if (_reader is null || _hwnd == IntPtr.Zero)
         {
@@ -351,6 +365,7 @@ internal sealed class ViewportPaneWindow : IDisposable
             Kind: kind,
             DeltaLines: deltaLines,
             RequestedPercentage: requestedPercentage,
+            RequestedOffset: requestedOffset,
             VisibleLines: effectiveVisible);
 
         _latestViewportRequestId = request.Id;
@@ -383,6 +398,13 @@ internal sealed class ViewportPaneWindow : IDisposable
                 {
                     case ViewportRequestKind.LoadAtPercentage:
                         workerReader.ReadFromPercentage(request.RequestedPercentage, request.VisibleLines);
+                        break;
+                    case ViewportRequestKind.LoadAtOffset:
+                        if (workerReader is VisualRowReader offsetReader)
+                        {
+                            offsetReader.ReadFromOffset(request.RequestedOffset, request.VisibleLines);
+                        }
+
                         break;
                     case ViewportRequestKind.ScrollByLines:
                         if (request.DeltaLines >= 0)
@@ -606,7 +628,10 @@ internal sealed class ViewportPaneWindow : IDisposable
         if (resizeColumn >= 0)
         {
             BeginColumnResize(resizeColumn, x);
+            return;
         }
+
+        ActivateRowAt(y);
     }
 
     private void OnLButtonUp()
@@ -638,6 +663,34 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         return false;
+    }
+
+    private void ActivateRowAt(int y)
+    {
+        if (_onRowActivated is null || _reader is not IFileOffsetViewportReader offsetReader)
+        {
+            return;
+        }
+
+        int headerLines = GetHeaderLineCount(_reader);
+        int rowIndex = (y / _lineHeight) - headerLines;
+        if (rowIndex < 0 || rowIndex >= _reader.CurrentRows.Count)
+        {
+            return;
+        }
+
+        long rowOrdinal = offsetReader.TopRowOrdinal + rowIndex;
+        try
+        {
+            if (offsetReader.TryGetRowStartOffset(rowOrdinal, out long startOffset))
+            {
+                _onRowActivated(this, startOffset);
+            }
+        }
+        catch (FilteredLineStaleException)
+        {
+            _onStale?.Invoke(this);
+        }
     }
 
     private void OnKeyDown(int key)
