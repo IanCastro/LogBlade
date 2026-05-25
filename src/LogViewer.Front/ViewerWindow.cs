@@ -1056,7 +1056,6 @@ internal sealed class ViewerWindow
         }
 
         _mainPane.JumpToFileOffset(startOffset);
-        _mainPane.Focus();
     }
 
     private CancellationTokenSource BeginSearchCancellation()
