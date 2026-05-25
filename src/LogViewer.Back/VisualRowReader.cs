@@ -35,7 +35,7 @@ internal enum VisualStartKind
     ForcedWrap
 }
 
-public sealed class VisualRowReader : IViewportReader
+public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
 {
     public const int VisibleSegmentChars = 4096;
     internal const int SegmentChars = VisibleSegmentChars;
@@ -141,6 +141,20 @@ public sealed class VisualRowReader : IViewportReader
             }
 
             return rows;
+        }
+    }
+    public IReadOnlyList<ViewportRowSelectionKey> CurrentRowSelectionKeys
+    {
+        get
+        {
+            ViewportRowSelectionKey[] keys = new ViewportRowSelectionKey[_viewportRows.Count];
+            for (int i = 0; i < _viewportRows.Count; i++)
+            {
+                ViewportRow row = _viewportRows[i];
+                keys[i] = new ViewportRowSelectionKey(row.StartOffset, row.EndOffset, row.SegmentIndex);
+            }
+
+            return keys;
         }
     }
 

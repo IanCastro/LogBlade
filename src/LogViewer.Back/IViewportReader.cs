@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 
+public readonly record struct ViewportRowSelectionKey(long StartOffset, long EndOffset, int SegmentIndex);
+
 public interface IViewportReader : IDisposable
 {
     string FilePath { get; }
@@ -28,4 +30,9 @@ public interface IFileOffsetViewportReader : IViewportReader
 {
     long TopRowOrdinal { get; }
     bool TryGetRowStartOffset(long rowOrdinal, out long startOffset);
+}
+
+public interface ISelectableViewportReader : IViewportReader
+{
+    IReadOnlyList<ViewportRowSelectionKey> CurrentRowSelectionKeys { get; }
 }

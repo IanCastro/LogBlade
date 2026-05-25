@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 
-public sealed class FilteredVisualRowReader : IColumnViewportReader, IFileOffsetViewportReader
+public sealed class FilteredVisualRowReader : IColumnViewportReader, IFileOffsetViewportReader, ISelectableViewportReader
 {
     private string _filePath;
     private LogEncodingKind _kind;
@@ -15,6 +15,7 @@ public sealed class FilteredVisualRowReader : IColumnViewportReader, IFileOffset
     private string[] _columnHeaders = Array.Empty<string>();
     private readonly List<string> _currentRows = new();
     private readonly List<IReadOnlyList<string>> _currentCells = new();
+    private readonly List<ViewportRowSelectionKey> _currentRowSelectionKeys = new();
     private int _captureGroupCount;
     private long _totalVisualRows;
     private long _topRowOrdinal;
@@ -147,6 +148,16 @@ public sealed class FilteredVisualRowReader : IColumnViewportReader, IFileOffset
         }
     }
 
+    public IReadOnlyList<ViewportRowSelectionKey> CurrentRowSelectionKeys
+    {
+        get
+        {
+            ViewportRowSelectionKey[] keys = new ViewportRowSelectionKey[_currentRowSelectionKeys.Count];
+            _currentRowSelectionKeys.CopyTo(keys);
+            return keys;
+        }
+    }
+
     public IReadOnlyList<string> ReadNext(int count)
     {
         ThrowIfDisposed();
@@ -273,6 +284,7 @@ public sealed class FilteredVisualRowReader : IColumnViewportReader, IFileOffset
             _viewportLoaded = _viewportLoaded
         };
         clone._currentRows.AddRange(_currentRows);
+        clone._currentRowSelectionKeys.AddRange(_currentRowSelectionKeys);
         foreach (IReadOnlyList<string> row in _currentCells)
         {
             string[] copy = new string[row.Count];
@@ -313,6 +325,7 @@ public sealed class FilteredVisualRowReader : IColumnViewportReader, IFileOffset
 
         _currentRows.Clear();
         _currentCells.Clear();
+        _currentRowSelectionKeys.Clear();
         _descriptors = Array.Empty<FilteredLineDescriptor>();
         _descriptorRowStarts = Array.Empty<long>();
         _columnHeaders = Array.Empty<string>();
@@ -337,6 +350,7 @@ public sealed class FilteredVisualRowReader : IColumnViewportReader, IFileOffset
         _viewportVisibleLines = visibleLines;
         _currentRows.Clear();
         _currentCells.Clear();
+        _currentRowSelectionKeys.Clear();
         _viewportBytes = 0;
         _viewportLoaded = true;
 
@@ -363,6 +377,7 @@ public sealed class FilteredVisualRowReader : IColumnViewportReader, IFileOffset
             FilteredLineDescriptor descriptor = _descriptors[currentDescriptorIndex];
             string text = FilteredLineUtilities.ReadLineText(fs, _encoding, descriptor.StartOffset, descriptor.EndOffset);
             _currentRows.Add(text);
+            _currentRowSelectionKeys.Add(new ViewportRowSelectionKey(descriptor.StartOffset, descriptor.EndOffset, 0));
             if (_captureGroupCount > 0)
             {
                 _currentCells.Add(CreateCells(text, descriptor, includeCaptureGroups: true));
