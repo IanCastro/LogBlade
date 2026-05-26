@@ -1120,7 +1120,7 @@ internal sealed class ViewportPaneWindow : IDisposable
             return;
         }
 
-        if (TryHandleSearchResultArrowNavigation(key))
+        if (TryHandleSearchResultKeyboardNavigation(key))
         {
             return;
         }
@@ -1140,24 +1140,69 @@ internal sealed class ViewportPaneWindow : IDisposable
                 ScrollByLines(VisibleDataLineCount);
                 break;
             case NativeMethods.VK_HOME:
+                if (IsControlKeyDown())
+                {
+                    Scroll(NativeMethods.SB_TOP, 0);
+                    break;
+                }
+
                 SetHorizontalOffset(0);
-                Scroll(NativeMethods.SB_TOP, 0);
                 break;
             case NativeMethods.VK_END:
-                Scroll(NativeMethods.SB_BOTTOM, 0);
+                if (IsControlKeyDown())
+                {
+                    Scroll(NativeMethods.SB_BOTTOM, 0);
+                    break;
+                }
+
+                SetHorizontalOffset(int.MaxValue);
                 break;
         }
     }
 
-    private bool TryHandleSearchResultArrowNavigation(int key)
+    private bool TryHandleSearchResultKeyboardNavigation(int key)
     {
+        bool control = IsControlKeyDown();
         if (_onRowActivated is null ||
-            (key != NativeMethods.VK_UP && key != NativeMethods.VK_DOWN) ||
-            IsControlKeyDown() ||
             _reader is null ||
             !_reader.HasContent ||
             _reader.CurrentRows.Count == 0 ||
             _reader is not ISelectableViewportReader)
+        {
+            return false;
+        }
+
+        if (control)
+        {
+            return key switch
+            {
+                NativeMethods.VK_HOME => QueueSearchKeyboardSelectionRequest(
+                    ViewportRequestKind.JumpHome,
+                    PendingSearchKeyboardSelection.FirstVisibleRow),
+                NativeMethods.VK_END => QueueSearchKeyboardSelectionRequest(
+                    ViewportRequestKind.JumpEnd,
+                    PendingSearchKeyboardSelection.LastVisibleRow),
+                _ => false
+            };
+        }
+
+        if (key == NativeMethods.VK_PRIOR)
+        {
+            return QueueSearchKeyboardSelectionRequest(
+                ViewportRequestKind.ScrollByLines,
+                PendingSearchKeyboardSelection.FirstVisibleRow,
+                deltaLines: -VisibleDataLineCount);
+        }
+
+        if (key == NativeMethods.VK_NEXT)
+        {
+            return QueueSearchKeyboardSelectionRequest(
+                ViewportRequestKind.ScrollByLines,
+                PendingSearchKeyboardSelection.LastVisibleRow,
+                deltaLines: VisibleDataLineCount);
+        }
+
+        if (key != NativeMethods.VK_UP && key != NativeMethods.VK_DOWN)
         {
             return false;
         }
@@ -1210,9 +1255,18 @@ internal sealed class ViewportPaneWindow : IDisposable
         PendingSearchKeyboardSelection pendingSelection = direction < 0
             ? PendingSearchKeyboardSelection.FirstVisibleRow
             : PendingSearchKeyboardSelection.LastVisibleRow;
-        long requestId = QueueViewportRequest(
+        return QueueSearchKeyboardSelectionRequest(
             ViewportRequestKind.ScrollByLines,
-            deltaLines: direction,
+            pendingSelection,
+            deltaLines: direction);
+    }
+
+    private bool QueueSearchKeyboardSelectionRequest(ViewportRequestKind kind, PendingSearchKeyboardSelection pendingSelection, int deltaLines = 0)
+    {
+        ClearPendingSearchKeyboardSelection();
+        long requestId = QueueViewportRequest(
+            kind,
+            deltaLines: deltaLines,
             visibleLines: VisibleDataLineCount);
         if (requestId == 0L)
         {
@@ -1932,6 +1986,7 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private void SetHorizontalOffset(int requestedOffset)
     {
+        ClearPendingSearchKeyboardSelection();
         int maxOffset = Math.Max(0, GetContentWidthChars() - _visibleColumnCount);
         int nextOffset = Math.Clamp(requestedOffset, 0, maxOffset);
         if (nextOffset == _xOffsetChars)
