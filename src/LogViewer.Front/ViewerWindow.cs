@@ -296,7 +296,7 @@ internal sealed class ViewerWindow
     {
         _hwnd = hwnd;
         _font = NativeMethods.CreateFontW(
-            -18,
+            -13,
             0,
             0,
             0,
