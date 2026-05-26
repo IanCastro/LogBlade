@@ -26,6 +26,13 @@ internal sealed class ViewportWorkerResult
 
 internal sealed class ViewportPaneWindow : IDisposable
 {
+    private enum PendingSearchKeyboardSelection
+    {
+        None,
+        FirstVisibleRow,
+        LastVisibleRow
+    }
+
     private const int WheelLinesPerNotch = 3;
     private const int ScrollRange = 1_000_000;
     private const int VerticalScrollVirtualRows = 4000;
@@ -80,6 +87,8 @@ internal sealed class ViewportPaneWindow : IDisposable
     private bool _selectionDragMoved;
     private bool _selectionMouseStartedWithControl;
     private bool _selectionMouseStartedWithShift;
+    private PendingSearchKeyboardSelection _pendingSearchKeyboardSelection;
+    private long _pendingSearchKeyboardSelectionRequestId;
     private int _selectionMouseDownX;
     private int _selectionMouseDownY;
     private int _selectionAnchorDataIndex = -1;
@@ -298,6 +307,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         _fileSizeRefreshPending = false;
         _tailFollowSuspended = false;
         _pendingViewportRequest = null;
+        ClearPendingSearchKeyboardSelection();
     }
 
     private void QueuePendingTailRefreshIfReady()
@@ -375,11 +385,11 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
     }
 
-    private void QueueViewportRequest(ViewportRequestKind kind, int deltaLines = 0, double requestedPercentage = 0d, long requestedOffset = 0L, int? visibleLines = null)
+    private long QueueViewportRequest(ViewportRequestKind kind, int deltaLines = 0, double requestedPercentage = 0d, long requestedOffset = 0L, int? visibleLines = null)
     {
         if (_reader is null || _hwnd == IntPtr.Zero)
         {
-            return;
+            return 0L;
         }
 
         int effectiveVisible = Math.Max(1, visibleLines ?? VisibleDataLineCount);
@@ -397,6 +407,8 @@ internal sealed class ViewportPaneWindow : IDisposable
         {
             DispatchViewportRequest();
         }
+
+        return request.Id;
     }
 
     private void DispatchViewportRequest()
@@ -498,10 +510,16 @@ internal sealed class ViewportPaneWindow : IDisposable
             _reader = result.Reader;
             ResumeTailFollowIfAtEnd();
             UpdateScrollBar();
+            ApplyPendingSearchKeyboardSelection(result.RequestId);
             NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
         }
         else
         {
+            if (result.RequestId == _pendingSearchKeyboardSelectionRequestId)
+            {
+                ClearPendingSearchKeyboardSelection();
+            }
+
             if (result.IsStale)
             {
                 _onStale?.Invoke(this);
@@ -651,6 +669,7 @@ internal sealed class ViewportPaneWindow : IDisposable
     private void OnLButtonDown(IntPtr lParam)
     {
         Focus();
+        ClearPendingSearchKeyboardSelection();
         int x = NativeMethods.LowWord(lParam);
         int y = NativeMethods.HighWord(lParam);
         int resizeColumn = HitTestColumnResize(x, y);
@@ -1101,6 +1120,11 @@ internal sealed class ViewportPaneWindow : IDisposable
             return;
         }
 
+        if (TryHandleSearchResultArrowNavigation(key))
+        {
+            return;
+        }
+
         switch (key)
         {
             case NativeMethods.VK_UP:
@@ -1123,6 +1147,108 @@ internal sealed class ViewportPaneWindow : IDisposable
                 Scroll(NativeMethods.SB_BOTTOM, 0);
                 break;
         }
+    }
+
+    private bool TryHandleSearchResultArrowNavigation(int key)
+    {
+        if (_onRowActivated is null ||
+            (key != NativeMethods.VK_UP && key != NativeMethods.VK_DOWN) ||
+            IsControlKeyDown() ||
+            _reader is null ||
+            !_reader.HasContent ||
+            _reader.CurrentRows.Count == 0 ||
+            _reader is not ISelectableViewportReader)
+        {
+            return false;
+        }
+
+        ClearPendingSearchKeyboardSelection();
+        if (!HasSelection || _selectionFocusKey is null)
+        {
+            return SelectSingleCurrentRow(0, activate: true);
+        }
+
+        if (!TryFindCurrentRowIndex(_selectionFocusKey, out int current))
+        {
+            return SelectSingleCurrentRow(ResolveKeyboardSelectionFocusIndex(), activate: true);
+        }
+
+        int direction = key == NativeMethods.VK_UP ? -1 : 1;
+        int target = FindAdjacentSelectionRowIndex(current, direction);
+        if (target != current)
+        {
+            return SelectSingleCurrentRow(target, activate: true);
+        }
+
+        return QueueSearchKeyboardSelectionScroll(direction);
+    }
+
+    private bool SelectSingleCurrentRow(int rowIndex, bool activate)
+    {
+        if (!TryGetCurrentRowSelection(rowIndex, out ViewportRowSelectionKey rowKey, out _))
+        {
+            return false;
+        }
+
+        _selectionAnchorDataIndex = rowIndex;
+        _selectionFocusDataIndex = rowIndex;
+        _selectionAnchorKey = rowKey;
+        _selectionFocusKey = rowKey;
+
+        List<ViewportRowSelectionRange> ranges = new() { new ViewportRowSelectionRange(rowKey, rowKey) };
+        ReplaceSelection(selectAll: false, ranges, new HashSet<ViewportRowSelectionKey>());
+        if (activate)
+        {
+            ActivateRowAt(rowIndex);
+        }
+
+        return true;
+    }
+
+    private bool QueueSearchKeyboardSelectionScroll(int direction)
+    {
+        PendingSearchKeyboardSelection pendingSelection = direction < 0
+            ? PendingSearchKeyboardSelection.FirstVisibleRow
+            : PendingSearchKeyboardSelection.LastVisibleRow;
+        long requestId = QueueViewportRequest(
+            ViewportRequestKind.ScrollByLines,
+            deltaLines: direction,
+            visibleLines: VisibleDataLineCount);
+        if (requestId == 0L)
+        {
+            return false;
+        }
+
+        _pendingSearchKeyboardSelection = pendingSelection;
+        _pendingSearchKeyboardSelectionRequestId = requestId;
+        return true;
+    }
+
+    private void ApplyPendingSearchKeyboardSelection(long requestId)
+    {
+        if (_pendingSearchKeyboardSelection == PendingSearchKeyboardSelection.None ||
+            _pendingSearchKeyboardSelectionRequestId != requestId)
+        {
+            return;
+        }
+
+        PendingSearchKeyboardSelection pendingSelection = _pendingSearchKeyboardSelection;
+        ClearPendingSearchKeyboardSelection();
+        if (_reader is null || _reader.CurrentRows.Count == 0)
+        {
+            return;
+        }
+
+        int rowIndex = pendingSelection == PendingSearchKeyboardSelection.FirstVisibleRow
+            ? 0
+            : _reader.CurrentRows.Count - 1;
+        SelectSingleCurrentRow(rowIndex, activate: true);
+    }
+
+    private void ClearPendingSearchKeyboardSelection()
+    {
+        _pendingSearchKeyboardSelection = PendingSearchKeyboardSelection.None;
+        _pendingSearchKeyboardSelectionRequestId = 0L;
     }
 
     private bool TryHandleShiftSelectionKey(int key)
@@ -1746,6 +1872,7 @@ internal sealed class ViewportPaneWindow : IDisposable
             return;
         }
 
+        ClearPendingSearchKeyboardSelection();
         if (deltaLines < 0)
         {
             SuspendTailFollow();
@@ -1761,6 +1888,7 @@ internal sealed class ViewportPaneWindow : IDisposable
             return;
         }
 
+        ClearPendingSearchKeyboardSelection();
         int visible = VisibleDataLineCount;
         switch (command)
         {
