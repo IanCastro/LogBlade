@@ -1136,8 +1136,8 @@ internal sealed class ViewportPaneWindow : IDisposable
         int current = ResolveKeyboardSelectionFocusIndex();
         int target = key switch
         {
-            NativeMethods.VK_UP => Math.Max(0, current - 1),
-            NativeMethods.VK_DOWN => Math.Min(rowCount - 1, current + 1),
+            NativeMethods.VK_UP => FindAdjacentSelectionRowIndex(current, -1),
+            NativeMethods.VK_DOWN => FindAdjacentSelectionRowIndex(current, 1),
             NativeMethods.VK_PRIOR => 0,
             NativeMethods.VK_NEXT => rowCount - 1,
             NativeMethods.VK_HOME => 0,
@@ -1187,6 +1187,14 @@ internal sealed class ViewportPaneWindow : IDisposable
             return 0;
         }
 
+        if (_selectionFocusKey is not null &&
+            _selectionFocusDataIndex >= 0 &&
+            _selectionFocusDataIndex < _reader.CurrentRows.Count &&
+            GetCurrentRowSelectionKey(_selectionFocusDataIndex) == _selectionFocusKey)
+        {
+            return _selectionFocusDataIndex;
+        }
+
         if (TryFindCurrentRowIndex(_selectionFocusKey, out int currentFocusIndex))
         {
             return currentFocusIndex;
@@ -1212,6 +1220,32 @@ internal sealed class ViewportPaneWindow : IDisposable
         return _selectionFocusDataIndex >= 0
             ? Math.Clamp(_selectionFocusDataIndex, 0, _reader.CurrentRows.Count - 1)
             : 0;
+    }
+
+    private int FindAdjacentSelectionRowIndex(int current, int direction)
+    {
+        if (_reader is not ISelectableViewportReader selectableReader)
+        {
+            return Math.Clamp(current + direction, 0, _reader?.CurrentRows.Count - 1 ?? 0);
+        }
+
+        IReadOnlyList<ViewportRowSelectionKey> keys = selectableReader.CurrentRowSelectionKeys;
+        if (keys.Count == 0)
+        {
+            return 0;
+        }
+
+        current = Math.Clamp(current, 0, keys.Count - 1);
+        ViewportRowSelectionKey currentKey = keys[current];
+        for (int i = current + direction; i >= 0 && i < keys.Count; i += direction)
+        {
+            if (!keys[i].Equals(currentKey))
+            {
+                return i;
+            }
+        }
+
+        return current;
     }
 
     private void SelectAllRows()

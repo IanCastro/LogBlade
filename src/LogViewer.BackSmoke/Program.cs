@@ -31,6 +31,10 @@ internal static class Program
             RunSearchRowOffsetDetectsStaleLine(tempRoot);
             RunVisualSelectionRangeAcrossViewport(tempRoot);
             RunVisualSelectionSelectsAllRows(tempRoot);
+            RunVisualSelectionWrappedRowCopiesOriginalLine(tempRoot);
+            RunVisualSelectionWrappedRangeDeduplicatesLine(tempRoot);
+            RunVisualSelectionSelectAllUsesRealLines(tempRoot);
+            RunVisualSelectionWrappedExclusionExcludesWholeLine(tempRoot);
             RunFilteredSelectionRangeAcrossResults(tempRoot);
             RunFilteredSelectionSelectsAllRows(tempRoot);
             RunFilteredSelectionCopiesCaptureCells(tempRoot);
@@ -347,6 +351,75 @@ internal static class Program
             Array.Empty<ViewportRowSelectionKey>());
 
         AssertSelectedRows("visual selection all", rows, "line-0", "line-1", "line-2");
+    }
+
+    private static void RunVisualSelectionWrappedRowCopiesOriginalLine(string tempRoot)
+    {
+        string wrappedLine = new string('a', VisualRowReader.VisibleSegmentChars) + "tail";
+        string path = WriteLog(tempRoot, "visual-selection-wrapped-line.log", wrappedLine + "\r\nnext\r\n");
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        reader.ReadFromPercentage(0d, 3);
+        ISelectableViewportReader selectable = reader;
+        ViewportRowSelectionKey secondSegment = selectable.CurrentRowSelectionKeys[1];
+
+        IReadOnlyList<ViewportSelectedRow> rows = selectable.ReadSelectedRows(
+            selectAll: false,
+            new[] { new ViewportRowSelectionRange(secondSegment, secondSegment) },
+            Array.Empty<ViewportRowSelectionKey>());
+
+        AssertSelectedRows("visual selection wrapped line", rows, wrappedLine);
+    }
+
+    private static void RunVisualSelectionWrappedRangeDeduplicatesLine(string tempRoot)
+    {
+        string wrappedLine = new string('b', VisualRowReader.VisibleSegmentChars) + "tail";
+        string path = WriteLog(tempRoot, "visual-selection-wrapped-range.log", wrappedLine + "\r\nnext\r\n");
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        reader.ReadFromPercentage(0d, 3);
+        ISelectableViewportReader selectable = reader;
+        ViewportRowSelectionKey secondSegment = selectable.CurrentRowSelectionKeys[1];
+        ViewportRowSelectionKey nextLine = selectable.CurrentRowSelectionKeys[2];
+
+        IReadOnlyList<ViewportSelectedRow> rows = selectable.ReadSelectedRows(
+            selectAll: false,
+            new[] { new ViewportRowSelectionRange(secondSegment, nextLine) },
+            Array.Empty<ViewportRowSelectionKey>());
+
+        AssertSelectedRows("visual selection wrapped range", rows, wrappedLine, "next");
+    }
+
+    private static void RunVisualSelectionSelectAllUsesRealLines(string tempRoot)
+    {
+        string wrappedLine = new string('c', VisualRowReader.VisibleSegmentChars) + "tail";
+        string path = WriteLog(tempRoot, "visual-selection-all-wrapped.log", wrappedLine + "\r\nnext\r\n");
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        IReadOnlyList<ViewportSelectedRow> rows = ((ISelectableViewportReader)reader).ReadSelectedRows(
+            selectAll: true,
+            Array.Empty<ViewportRowSelectionRange>(),
+            Array.Empty<ViewportRowSelectionKey>());
+
+        AssertSelectedRows("visual selection all wrapped", rows, wrappedLine, "next");
+    }
+
+    private static void RunVisualSelectionWrappedExclusionExcludesWholeLine(string tempRoot)
+    {
+        string wrappedLine = new string('d', VisualRowReader.VisibleSegmentChars) + "tail";
+        string path = WriteLog(tempRoot, "visual-selection-wrapped-excluded.log", wrappedLine + "\r\nnext\r\n");
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        reader.ReadFromPercentage(0d, 3);
+        ISelectableViewportReader selectable = reader;
+        ViewportRowSelectionKey secondSegment = selectable.CurrentRowSelectionKeys[1];
+
+        IReadOnlyList<ViewportSelectedRow> rows = selectable.ReadSelectedRows(
+            selectAll: true,
+            Array.Empty<ViewportRowSelectionRange>(),
+            new[] { secondSegment });
+
+        AssertSelectedRows("visual selection wrapped excluded", rows, "next");
     }
 
     private static void RunFilteredSelectionRangeAcrossResults(string tempRoot)

@@ -209,7 +209,16 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
 
             if (!excluded.Contains(key) && emitted.Add(key))
             {
-                rows.Add(new ViewportSelectedRow(key, read.Row.Text));
+                string lineText = ReadSelectedLogicalLineText(fs, read.Row, read.NextPosition, out VisualPosition? nextLinePosition);
+                rows.Add(new ViewportSelectedRow(key, lineText));
+                if (nextLinePosition is null)
+                {
+                    break;
+                }
+
+                current = nextLinePosition.Value;
+                fs.Position = current.StartOffset;
+                continue;
             }
 
             if (read.NextPosition is null)
@@ -222,8 +231,25 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
         }
     }
 
+    private string ReadSelectedLogicalLineText(FileStream fs, ViewportRow firstRow, VisualPosition? nextPosition, out VisualPosition? nextLinePosition)
+    {
+        StringBuilder builder = new(firstRow.Text.Length);
+        builder.Append(firstRow.Text);
+
+        while (nextPosition is VisualPosition next && next.RealLineStartOffset == firstRow.RealLineStartOffset)
+        {
+            fs.Position = next.StartOffset;
+            VisualReadResult read = ReadVisualRow(fs, next);
+            builder.Append(read.Row.Text);
+            nextPosition = read.NextPosition;
+        }
+
+        nextLinePosition = nextPosition;
+        return builder.ToString();
+    }
+
     private static ViewportRowSelectionKey ToSelectionKey(ViewportRow row) =>
-        new(row.StartOffset, row.EndOffset, row.SegmentIndex);
+        new(row.RealLineStartOffset, row.RealLineStartOffset, 0);
 
     internal IReadOnlyList<ViewportRow> ViewportRows => _viewportRows;
 
