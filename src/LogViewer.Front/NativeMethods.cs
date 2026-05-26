@@ -20,6 +20,7 @@ internal static class NativeMethods
     public const int SW_HIDE = 0;
     public const int SW_SHOW = 5;
     public const int SW_SHOWDEFAULT = 10;
+    public const int GWLP_WNDPROC = -4;
     public const int GWLP_USERDATA = -21;
     public const int WM_CREATE = 0x0001;
     public const int WM_DESTROY = 0x0002;
@@ -42,6 +43,7 @@ internal static class NativeMethods
     public const int WM_NCDESTROY = 0x0082;
     public const int BM_GETCHECK = 0x00F0;
     public const int BM_SETCHECK = 0x00F1;
+    public const int EM_SETSEL = 0x00B1;
     public const int WM_APP = 0x8000;
     public const int WM_APP_BEGIN_OPEN = WM_APP + 1;
     public const int WM_APP_OPEN_COMPLETE = WM_APP + 2;
@@ -420,6 +422,12 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     public static extern IntPtr SetWindowLongPtrW(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetParent(IntPtr hWnd);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr CallWindowProcW(IntPtr lpPrevWndFunc, IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     public static extern IntPtr GetModuleHandleW(string? lpModuleName);

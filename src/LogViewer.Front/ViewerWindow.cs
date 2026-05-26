@@ -57,6 +57,7 @@ internal sealed class ViewerWindow
     private IntPtr _regexCheckbox;
     private IntPtr _ignoreCaseCheckbox;
     private IntPtr _invertMatchCheckbox;
+    private IntPtr _originalSearchEditProc;
     private FileSystemWatcher? _fileWatcher;
     private GCHandle _selfHandle;
     private int _lineHeight = 16;
@@ -86,6 +87,7 @@ internal sealed class ViewerWindow
     private bool _searchStale;
 
     private static readonly NativeMethods.WindowProc s_wndProc = WindowProc;
+    private static readonly NativeMethods.WindowProc s_searchEditProc = SearchEditProc;
 
     private readonly record struct WindowLayout(
         NativeMethods.RECT ClientRect,
@@ -192,6 +194,30 @@ internal sealed class ViewerWindow
     {
         IntPtr ptr = NativeMethods.GetWindowLongPtrW(hwnd, NativeMethods.GWLP_USERDATA);
         return ptr == IntPtr.Zero ? null : (ViewerWindow?)GCHandle.FromIntPtr(ptr).Target;
+    }
+
+    private static ViewerWindow? FromSearchEditHandle(IntPtr hwnd)
+    {
+        IntPtr parent = NativeMethods.GetParent(hwnd);
+        return parent == IntPtr.Zero ? null : FromHandle(parent);
+    }
+
+    private static IntPtr SearchEditProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
+    {
+        ViewerWindow? self = FromSearchEditHandle(hwnd);
+        if (msg == NativeMethods.WM_KEYDOWN &&
+            wParam.ToInt32() == NativeMethods.VK_A &&
+            IsControlKeyDown() &&
+            self is not null)
+        {
+            NativeMethods.SendMessageW(hwnd, NativeMethods.EM_SETSEL, IntPtr.Zero, new IntPtr(-1));
+            return IntPtr.Zero;
+        }
+
+        IntPtr originalProc = self?._originalSearchEditProc ?? IntPtr.Zero;
+        return originalProc == IntPtr.Zero
+            ? NativeMethods.DefWindowProcW(hwnd, msg, wParam, lParam)
+            : NativeMethods.CallWindowProcW(originalProc, hwnd, msg, wParam, lParam);
     }
 
     private static IntPtr WindowProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
@@ -322,6 +348,10 @@ internal sealed class ViewerWindow
         }
 
         NativeMethods.SendMessageW(_searchEdit, NativeMethods.WM_SETFONT, _font, new IntPtr(1));
+        _originalSearchEditProc = NativeMethods.SetWindowLongPtrW(
+            _searchEdit,
+            NativeMethods.GWLP_WNDPROC,
+            Marshal.GetFunctionPointerForDelegate(s_searchEditProc));
 
         _regexCheckbox = NativeMethods.CreateWindowExW(
             0,
@@ -1523,6 +1553,12 @@ internal sealed class ViewerWindow
 
         if (_searchEdit != IntPtr.Zero)
         {
+            if (_originalSearchEditProc != IntPtr.Zero)
+            {
+                NativeMethods.SetWindowLongPtrW(_searchEdit, NativeMethods.GWLP_WNDPROC, _originalSearchEditProc);
+                _originalSearchEditProc = IntPtr.Zero;
+            }
+
             NativeMethods.DestroyWindow(_searchEdit);
         }
 
@@ -1555,6 +1591,7 @@ internal sealed class ViewerWindow
         _regexCheckbox = IntPtr.Zero;
         _ignoreCaseCheckbox = IntPtr.Zero;
         _invertMatchCheckbox = IntPtr.Zero;
+        _originalSearchEditProc = IntPtr.Zero;
         _font = IntPtr.Zero;
     }
 
@@ -1629,6 +1666,9 @@ internal sealed class ViewerWindow
         _ignoreCase = IsButtonChecked(_ignoreCaseCheckbox);
         _invertMatch = IsButtonChecked(_invertMatchCheckbox);
     }
+
+    private static bool IsControlKeyDown() =>
+        (NativeMethods.GetKeyState(NativeMethods.VK_CONTROL) & unchecked((short)0x8000)) != 0;
 
     private static bool IsButtonChecked(IntPtr hwnd)
     {
