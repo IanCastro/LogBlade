@@ -111,6 +111,7 @@ internal static class NativeMethods
     public const int CF_UNICODETEXT = 13;
     public const uint GMEM_MOVEABLE = 0x0002;
     public static readonly IntPtr IDC_ARROW = new(32512);
+    public static readonly IntPtr IDC_SIZENS = new(32645);
     public static readonly IntPtr IDC_SIZEWE = new(32644);
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
@@ -310,6 +311,14 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     public static extern IntPtr SetCursor(IntPtr hCursor);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetCursorPos(out POINT lpPoint);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool ScreenToClient(IntPtr hWnd, ref POINT lpPoint);
 
     [DllImport("user32.dll")]
     public static extern IntPtr GetSysColorBrush(int nIndex);

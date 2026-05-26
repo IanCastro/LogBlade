@@ -38,8 +38,6 @@ internal sealed class ViewerWindow
     private const int SearchAreaHeight = 60;
     private const int SearchInputRowHeight = 24;
     private const int SearchProgressRowHeight = 24;
-    private const int SearchResultsMinHeight = 160;
-    private const int SearchResultsMaxHeight = 420;
     private const int SearchDebounceMs = 200;
     private const nuint SearchDebounceTimerId = 1;
     private const int SearchInnerPadding = 4;
@@ -48,6 +46,7 @@ internal sealed class ViewerWindow
     private const int RegexToggleWidth = 72;
     private const int IgnoreCaseToggleWidth = 112;
     private const int InvertMatchToggleWidth = 120;
+    private const int SearchResizeHitSlopPx = 4;
 
     private readonly string _path;
     private readonly string _titleSuffix;
@@ -85,6 +84,8 @@ internal sealed class ViewerWindow
     private bool _appendSearchPending;
     private bool _appendSearchInProgress;
     private bool _searchStale;
+    private double? _customSearchResultsRatio;
+    private bool _isSearchResultsResizing;
 
     private static readonly NativeMethods.WindowProc s_wndProc = WindowProc;
     private static readonly NativeMethods.WindowProc s_searchEditProc = SearchEditProc;
@@ -256,6 +257,26 @@ internal sealed class ViewerWindow
                     return new IntPtr(1);
                 case NativeMethods.WM_PAINT:
                     self.OnPaint();
+                    return IntPtr.Zero;
+                case NativeMethods.WM_SETCURSOR:
+                    if (self.OnSetCursor())
+                    {
+                        return new IntPtr(1);
+                    }
+
+                    return NativeMethods.DefWindowProcW(hwnd, msg, wParam, lParam);
+                case NativeMethods.WM_MOUSEMOVE:
+                    self.OnMouseMove(lParam);
+                    return IntPtr.Zero;
+                case NativeMethods.WM_LBUTTONDOWN:
+                    if (self.OnLButtonDown(lParam))
+                    {
+                        return IntPtr.Zero;
+                    }
+
+                    return NativeMethods.DefWindowProcW(hwnd, msg, wParam, lParam);
+                case NativeMethods.WM_LBUTTONUP:
+                    self.OnLButtonUp();
                     return IntPtr.Zero;
                 case NativeMethods.WM_APP_BEGIN_OPEN:
                     self.BeginBackgroundOpen();
@@ -631,6 +652,82 @@ internal sealed class ViewerWindow
         RecalculateLayout();
         ApplyLayout();
         InvalidateHost();
+    }
+
+    private bool OnSetCursor()
+    {
+        if (_isSearchResultsResizing || IsSearchResizeHit(GetClientCursorY()))
+        {
+            NativeMethods.SetCursor(NativeMethods.LoadCursorW(IntPtr.Zero, NativeMethods.IDC_SIZENS));
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool OnLButtonDown(IntPtr lParam)
+    {
+        int y = NativeMethods.HighWord(lParam);
+        if (!IsSearchResizeHit(y))
+        {
+            return false;
+        }
+
+        _isSearchResultsResizing = true;
+        NativeMethods.SetCapture(_hwnd);
+        NativeMethods.SetCursor(NativeMethods.LoadCursorW(IntPtr.Zero, NativeMethods.IDC_SIZENS));
+        return true;
+    }
+
+    private void OnMouseMove(IntPtr lParam)
+    {
+        if (!_isSearchResultsResizing)
+        {
+            return;
+        }
+
+        int y = NativeMethods.HighWord(lParam);
+        NativeMethods.GetClientRect(_hwnd, out NativeMethods.RECT clientRect);
+        int clientHeight = GetRectHeight(clientRect);
+        int availableHeight = Math.Max(0, clientHeight - SearchAreaHeight);
+        int requestedHeight = Math.Max(0, clientRect.bottom - SearchAreaHeight - y);
+        _customSearchResultsRatio = availableHeight > 0
+            ? Math.Clamp(requestedHeight / (double)availableHeight, 0d, 1d)
+            : 0d;
+        RecalculateLayout();
+        ApplyLayout();
+        InvalidateHost();
+    }
+
+    private void OnLButtonUp()
+    {
+        if (!_isSearchResultsResizing)
+        {
+            return;
+        }
+
+        _isSearchResultsResizing = false;
+        NativeMethods.ReleaseCapture();
+    }
+
+    private bool IsSearchResizeHit(int y)
+    {
+        if (string.IsNullOrEmpty(_searchQuery) || IsZeroRect(_layout.SearchAreaRect))
+        {
+            return false;
+        }
+
+        return Math.Abs(y - _layout.SearchAreaRect.top) <= SearchResizeHitSlopPx;
+    }
+
+    private int GetClientCursorY()
+    {
+        if (!NativeMethods.GetCursorPos(out NativeMethods.POINT point))
+        {
+            return int.MinValue;
+        }
+
+        return NativeMethods.ScreenToClient(_hwnd, ref point) ? point.y : int.MinValue;
     }
 
     private void OnCommand(IntPtr wParam, IntPtr lParam)
@@ -1408,8 +1505,10 @@ internal sealed class ViewerWindow
         int searchResultsHeight = 0;
         if (!string.IsNullOrEmpty(_searchQuery))
         {
-            searchResultsHeight = Math.Clamp((int)Math.Round(clientHeight * 0.35d), SearchResultsMinHeight, SearchResultsMaxHeight);
-            searchResultsHeight = Math.Min(searchResultsHeight, Math.Max(0, clientHeight - SearchAreaHeight));
+            int availableHeight = Math.Max(0, clientHeight - SearchAreaHeight);
+            double preferredRatio = _customSearchResultsRatio ?? 0.35d;
+            int preferredHeight = (int)Math.Round(availableHeight * preferredRatio);
+            searchResultsHeight = ClampSearchResultsHeight(preferredHeight, availableHeight);
         }
 
         int viewerBottom = Math.Max(clientRect.top, clientRect.bottom - SearchAreaHeight - searchResultsHeight);
@@ -1548,6 +1647,12 @@ internal sealed class ViewerWindow
         NativeMethods.KillTimer(_hwnd, SearchDebounceTimerId);
         StopFileWatcher();
         CancelActiveSearch();
+        if (_isSearchResultsResizing)
+        {
+            _isSearchResultsResizing = false;
+            NativeMethods.ReleaseCapture();
+        }
+
         _mainPane?.Dispose();
         _filteredPane?.Dispose();
 
@@ -1711,4 +1816,9 @@ internal sealed class ViewerWindow
     private static int GetRectWidth(NativeMethods.RECT rect) => Math.Max(0, rect.right - rect.left);
 
     private static int GetRectHeight(NativeMethods.RECT rect) => Math.Max(0, rect.bottom - rect.top);
+
+    private static int ClampSearchResultsHeight(int requestedHeight, int availableHeight)
+    {
+        return Math.Clamp(requestedHeight, 0, Math.Max(0, availableHeight));
+    }
 }
