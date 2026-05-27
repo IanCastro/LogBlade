@@ -14,12 +14,19 @@ internal static class NativeMethods
     public const int WS_OVERLAPPEDWINDOW = 0x00CF0000;
     public const int WS_HSCROLL = 0x00100000;
     public const int WS_VSCROLL = 0x00200000;
+    public const int WS_EX_TRANSPARENT = 0x00000020;
     public const int ES_AUTOHSCROLL = 0x0080;
     public const int BS_AUTOCHECKBOX = 0x00000003;
     public const int CW_USEDEFAULT = unchecked((int)0x80000000);
     public const int SW_HIDE = 0;
     public const int SW_SHOW = 5;
     public const int SW_SHOWDEFAULT = 10;
+    public const uint SWP_NOSIZE = 0x0001;
+    public const uint SWP_NOMOVE = 0x0002;
+    public const uint SWP_NOZORDER = 0x0004;
+    public const uint SWP_NOACTIVATE = 0x0010;
+    public const uint SWP_SHOWWINDOW = 0x0040;
+    public const uint SWP_HIDEWINDOW = 0x0080;
     public const int GWLP_WNDPROC = -4;
     public const int GWLP_USERDATA = -21;
     public const int WM_CREATE = 0x0001;
@@ -115,6 +122,7 @@ internal static class NativeMethods
     public static readonly IntPtr IDC_ARROW = new(32512);
     public static readonly IntPtr IDC_SIZENS = new(32645);
     public static readonly IntPtr IDC_SIZEWE = new(32644);
+    public static readonly IntPtr HWND_TOP = IntPtr.Zero;
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     public struct WNDCLASSEXW
@@ -288,6 +296,10 @@ internal static class NativeMethods
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool MoveWindow(IntPtr hWnd, int X, int Y, int nWidth, int nHeight, bool bRepaint);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
 
     [DllImport("user32.dll")]
     public static extern bool UpdateWindow(IntPtr hWnd);

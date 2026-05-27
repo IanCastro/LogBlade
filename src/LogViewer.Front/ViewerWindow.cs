@@ -47,12 +47,14 @@ internal sealed class ViewerWindow
     private const int IgnoreCaseToggleWidth = 112;
     private const int InvertMatchToggleWidth = 120;
     private const int SearchResizeHitSlopPx = 4;
+    private const string SearchResizeGripClassName = "LogViewerSearchResizeGripWindow";
 
     private readonly string _path;
     private readonly string _titleSuffix;
     private IntPtr _hwnd;
     private IntPtr _font;
     private IntPtr _searchEdit;
+    private IntPtr _searchResizeGrip;
     private IntPtr _regexCheckbox;
     private IntPtr _ignoreCaseCheckbox;
     private IntPtr _invertMatchCheckbox;
@@ -89,6 +91,8 @@ internal sealed class ViewerWindow
 
     private static readonly NativeMethods.WindowProc s_wndProc = WindowProc;
     private static readonly NativeMethods.WindowProc s_searchEditProc = SearchEditProc;
+    private static readonly NativeMethods.WindowProc s_searchResizeGripProc = SearchResizeGripProc;
+    private static bool s_searchResizeGripRegistered;
 
     private readonly record struct WindowLayout(
         NativeMethods.RECT ClientRect,
@@ -203,6 +207,12 @@ internal sealed class ViewerWindow
         return parent == IntPtr.Zero ? null : FromHandle(parent);
     }
 
+    private static ViewerWindow? FromSearchResizeGripHandle(IntPtr hwnd)
+    {
+        IntPtr parent = NativeMethods.GetParent(hwnd);
+        return parent == IntPtr.Zero ? null : FromHandle(parent);
+    }
+
     private static IntPtr SearchEditProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
     {
         ViewerWindow? self = FromSearchEditHandle(hwnd);
@@ -219,6 +229,39 @@ internal sealed class ViewerWindow
         return originalProc == IntPtr.Zero
             ? NativeMethods.DefWindowProcW(hwnd, msg, wParam, lParam)
             : NativeMethods.CallWindowProcW(originalProc, hwnd, msg, wParam, lParam);
+    }
+
+    private static IntPtr SearchResizeGripProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
+    {
+        ViewerWindow? self = FromSearchResizeGripHandle(hwnd);
+        switch (msg)
+        {
+            case NativeMethods.WM_SETCURSOR:
+                NativeMethods.SetCursor(NativeMethods.LoadCursorW(IntPtr.Zero, NativeMethods.IDC_SIZENS));
+                return new IntPtr(1);
+            case NativeMethods.WM_LBUTTONDOWN:
+                self?.BeginSearchResultsResizeFromGrip(lParam);
+                return IntPtr.Zero;
+            case NativeMethods.WM_MOUSEMOVE:
+                self?.UpdateSearchResultsResizeFromGrip(lParam);
+                return IntPtr.Zero;
+            case NativeMethods.WM_LBUTTONUP:
+                self?.EndSearchResultsResize();
+                return IntPtr.Zero;
+            case NativeMethods.WM_ERASEBKGND:
+                return new IntPtr(1);
+            case NativeMethods.WM_PAINT:
+                NativeMethods.PAINTSTRUCT ps;
+                IntPtr hdc = NativeMethods.BeginPaint(hwnd, out ps);
+                if (hdc != IntPtr.Zero)
+                {
+                    NativeMethods.EndPaint(hwnd, ref ps);
+                }
+
+                return IntPtr.Zero;
+            default:
+                return NativeMethods.DefWindowProcW(hwnd, msg, wParam, lParam);
+        }
     }
 
     private static IntPtr WindowProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
@@ -438,9 +481,60 @@ internal sealed class ViewerWindow
         NativeMethods.SendMessageW(_ignoreCaseCheckbox, NativeMethods.BM_SETCHECK, new IntPtr(NativeMethods.BST_UNCHECKED), IntPtr.Zero);
         NativeMethods.SendMessageW(_invertMatchCheckbox, NativeMethods.BM_SETCHECK, new IntPtr(NativeMethods.BST_UNCHECKED), IntPtr.Zero);
         ReadSearchModeFromControls();
+        CreateSearchResizeGrip(hInstance);
 
         RecalculateLayout();
         ApplyLayout();
+    }
+
+    private void CreateSearchResizeGrip(IntPtr hInstance)
+    {
+        EnsureSearchResizeGripClassRegistered(hInstance);
+        _searchResizeGrip = NativeMethods.CreateWindowExW(
+            NativeMethods.WS_EX_TRANSPARENT,
+            SearchResizeGripClassName,
+            string.Empty,
+            NativeMethods.WS_CHILD,
+            0,
+            0,
+            1,
+            1,
+            _hwnd,
+            IntPtr.Zero,
+            hInstance,
+            IntPtr.Zero);
+
+        if (_searchResizeGrip == IntPtr.Zero)
+        {
+            throw new InvalidOperationException("CreateWindowExW failed for search resize grip.");
+        }
+    }
+
+    private static void EnsureSearchResizeGripClassRegistered(IntPtr hInstance)
+    {
+        if (s_searchResizeGripRegistered)
+        {
+            return;
+        }
+
+        NativeMethods.WNDCLASSEXW wc = new()
+        {
+            cbSize = (uint)Marshal.SizeOf<NativeMethods.WNDCLASSEXW>(),
+            style = 0,
+            lpfnWndProc = s_searchResizeGripProc,
+            hInstance = hInstance,
+            hCursor = NativeMethods.LoadCursorW(IntPtr.Zero, NativeMethods.IDC_SIZENS),
+            hbrBackground = IntPtr.Zero,
+            lpszClassName = SearchResizeGripClassName
+        };
+
+        ushort atom = NativeMethods.RegisterClassExW(ref wc);
+        if (atom == 0)
+        {
+            throw new InvalidOperationException("RegisterClassExW failed for search resize grip.");
+        }
+
+        s_searchResizeGripRegistered = true;
     }
 
     private void BeginBackgroundOpen()
@@ -679,6 +773,14 @@ internal sealed class ViewerWindow
         return true;
     }
 
+    private void BeginSearchResultsResizeFromGrip(IntPtr lParam)
+    {
+        _isSearchResultsResizing = true;
+        NativeMethods.SetCapture(_searchResizeGrip);
+        NativeMethods.SetCursor(NativeMethods.LoadCursorW(IntPtr.Zero, NativeMethods.IDC_SIZENS));
+        ResizeSearchResults(GetGripMouseYInHost(lParam));
+    }
+
     private void OnMouseMove(IntPtr lParam)
     {
         if (!_isSearchResultsResizing)
@@ -686,7 +788,21 @@ internal sealed class ViewerWindow
             return;
         }
 
-        int y = NativeMethods.HighWord(lParam);
+        ResizeSearchResults(NativeMethods.HighWord(lParam));
+    }
+
+    private void UpdateSearchResultsResizeFromGrip(IntPtr lParam)
+    {
+        if (!_isSearchResultsResizing)
+        {
+            return;
+        }
+
+        ResizeSearchResults(GetGripMouseYInHost(lParam));
+    }
+
+    private void ResizeSearchResults(int y)
+    {
         NativeMethods.GetClientRect(_hwnd, out NativeMethods.RECT clientRect);
         int clientHeight = GetRectHeight(clientRect);
         int availableHeight = Math.Max(0, clientHeight - SearchAreaHeight);
@@ -701,6 +817,11 @@ internal sealed class ViewerWindow
 
     private void OnLButtonUp()
     {
+        EndSearchResultsResize();
+    }
+
+    private void EndSearchResultsResize()
+    {
         if (!_isSearchResultsResizing)
         {
             return;
@@ -709,6 +830,12 @@ internal sealed class ViewerWindow
         _isSearchResultsResizing = false;
         NativeMethods.ReleaseCapture();
     }
+
+    private int GetGripMouseYInHost(IntPtr lParam) =>
+        NativeMethods.HighWord(lParam) + GetSearchResizeGripTop();
+
+    private int GetSearchResizeGripTop() =>
+        Math.Max(_layout.ClientRect.top, _layout.SearchAreaRect.top - SearchResizeHitSlopPx);
 
     private bool IsSearchResizeHit(int y)
     {
@@ -1630,6 +1757,30 @@ internal sealed class ViewerWindow
         NativeMethods.ShowWindow(_regexCheckbox, NativeMethods.SW_SHOW);
         NativeMethods.ShowWindow(_ignoreCaseCheckbox, NativeMethods.SW_SHOW);
         NativeMethods.ShowWindow(_invertMatchCheckbox, NativeMethods.SW_SHOW);
+        ApplySearchResizeGripLayout();
+    }
+
+    private void ApplySearchResizeGripLayout()
+    {
+        if (_searchResizeGrip == IntPtr.Zero)
+        {
+            return;
+        }
+
+        bool visible = !string.IsNullOrEmpty(_searchQuery) && !IsZeroRect(_layout.SearchAreaRect);
+        uint visibilityFlag = visible ? NativeMethods.SWP_SHOWWINDOW : NativeMethods.SWP_HIDEWINDOW;
+        int top = GetSearchResizeGripTop();
+        int height = visible
+            ? Math.Min(SearchResizeHitSlopPx * 2 + 1, Math.Max(0, _layout.ClientRect.bottom - top))
+            : 1;
+        NativeMethods.SetWindowPos(
+            _searchResizeGrip,
+            NativeMethods.HWND_TOP,
+            _layout.ClientRect.left,
+            top,
+            GetRectWidth(_layout.ClientRect),
+            Math.Max(1, height),
+            NativeMethods.SWP_NOACTIVATE | visibilityFlag);
     }
 
     private void ScheduleSearch()
@@ -1667,6 +1818,11 @@ internal sealed class ViewerWindow
             NativeMethods.DestroyWindow(_searchEdit);
         }
 
+        if (_searchResizeGrip != IntPtr.Zero)
+        {
+            NativeMethods.DestroyWindow(_searchResizeGrip);
+        }
+
         if (_regexCheckbox != IntPtr.Zero)
         {
             NativeMethods.DestroyWindow(_regexCheckbox);
@@ -1693,6 +1849,7 @@ internal sealed class ViewerWindow
         }
 
         _searchEdit = IntPtr.Zero;
+        _searchResizeGrip = IntPtr.Zero;
         _regexCheckbox = IntPtr.Zero;
         _ignoreCaseCheckbox = IntPtr.Zero;
         _invertMatchCheckbox = IntPtr.Zero;
