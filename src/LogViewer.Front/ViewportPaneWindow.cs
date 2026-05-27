@@ -1127,6 +1127,12 @@ internal sealed class ViewportPaneWindow : IDisposable
 
         switch (key)
         {
+            case NativeMethods.VK_LEFT:
+                SetHorizontalOffset(_xOffsetChars - 1);
+                break;
+            case NativeMethods.VK_RIGHT:
+                SetHorizontalOffset(_xOffsetChars + 1);
+                break;
             case NativeMethods.VK_UP:
                 ScrollByLines(-1);
                 break;

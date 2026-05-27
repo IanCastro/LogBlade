@@ -98,7 +98,9 @@ internal static class NativeMethods
     public const int BN_CLICKED = 0;
     public const int BST_UNCHECKED = 0;
     public const int BST_CHECKED = 1;
+    public const int VK_LEFT = 0x25;
     public const int VK_UP = 0x26;
+    public const int VK_RIGHT = 0x27;
     public const int VK_DOWN = 0x28;
     public const int VK_PRIOR = 0x21;
     public const int VK_NEXT = 0x22;
