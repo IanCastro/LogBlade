@@ -6,6 +6,7 @@ using System.Threading;
 internal enum ViewportRequestKind
 {
     LoadAtPercentage,
+    LoadAtRowOrdinal,
     LoadAtOffset,
     ScrollByLines,
     JumpHome,
@@ -13,7 +14,7 @@ internal enum ViewportRequestKind
     RefreshTailIfAtEnd
 }
 
-internal readonly record struct ViewportRequest(long Id, ViewportRequestKind Kind, int DeltaLines, double RequestedPercentage, long RequestedOffset, int VisibleLines);
+internal readonly record struct ViewportRequest(long Id, ViewportRequestKind Kind, int DeltaLines, double RequestedPercentage, long RequestedOffset, long RequestedRowOrdinal, int VisibleLines);
 
 internal sealed class ViewportWorkerResult
 {
@@ -385,7 +386,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
     }
 
-    private long QueueViewportRequest(ViewportRequestKind kind, int deltaLines = 0, double requestedPercentage = 0d, long requestedOffset = 0L, int? visibleLines = null)
+    private long QueueViewportRequest(ViewportRequestKind kind, int deltaLines = 0, double requestedPercentage = 0d, long requestedOffset = 0L, long requestedRowOrdinal = 0L, int? visibleLines = null)
     {
         if (_reader is null || _hwnd == IntPtr.Zero)
         {
@@ -399,6 +400,7 @@ internal sealed class ViewportPaneWindow : IDisposable
             DeltaLines: deltaLines,
             RequestedPercentage: requestedPercentage,
             RequestedOffset: requestedOffset,
+            RequestedRowOrdinal: requestedRowOrdinal,
             VisibleLines: effectiveVisible);
 
         _latestViewportRequestId = request.Id;
@@ -433,6 +435,17 @@ internal sealed class ViewportPaneWindow : IDisposable
                 {
                     case ViewportRequestKind.LoadAtPercentage:
                         workerReader.ReadFromPercentage(request.RequestedPercentage, request.VisibleLines);
+                        break;
+                    case ViewportRequestKind.LoadAtRowOrdinal:
+                        if (workerReader is FilteredVisualRowReader filteredReader)
+                        {
+                            filteredReader.ReadFromRowOrdinal(request.RequestedRowOrdinal, request.VisibleLines);
+                        }
+                        else
+                        {
+                            workerReader.ReadFromPercentage(request.RequestedPercentage, request.VisibleLines);
+                        }
+
                         break;
                     case ViewportRequestKind.LoadAtOffset:
                         if (workerReader is VisualRowReader offsetReader)
@@ -546,10 +559,31 @@ internal sealed class ViewportPaneWindow : IDisposable
             _reader.HasContent &&
             VisibleDataLineCount != previousVisibleDataLineCount)
         {
-            QueueViewportRequest(
-                ViewportRequestKind.LoadAtPercentage,
-                requestedPercentage: _reader.ScrollPercentage,
-                visibleLines: VisibleDataLineCount);
+            if (_reader is FilteredVisualRowReader filteredReader)
+            {
+                if (filteredReader.IsAtEnd)
+                {
+                    QueueViewportRequest(
+                        ViewportRequestKind.LoadAtPercentage,
+                        requestedPercentage: 100d,
+                        visibleLines: VisibleDataLineCount);
+                }
+                else
+                {
+                    QueueViewportRequest(
+                        ViewportRequestKind.LoadAtRowOrdinal,
+                        requestedPercentage: _reader.ScrollPercentage,
+                        requestedRowOrdinal: filteredReader.TopRowOrdinal,
+                        visibleLines: VisibleDataLineCount);
+                }
+            }
+            else
+            {
+                QueueViewportRequest(
+                    ViewportRequestKind.LoadAtPercentage,
+                    requestedPercentage: _reader.ScrollPercentage,
+                    visibleLines: VisibleDataLineCount);
+            }
         }
 
         NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
