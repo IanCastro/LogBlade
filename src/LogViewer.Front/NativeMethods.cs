@@ -34,6 +34,8 @@ internal static class NativeMethods
     public const int WM_COMMAND = 0x0111;
     public const int WM_SIZE = 0x0005;
     public const int WM_PAINT = 0x000F;
+    public const int WM_SETFOCUS = 0x0007;
+    public const int WM_KILLFOCUS = 0x0008;
     public const int WM_SETFONT = 0x0030;
     public const int WM_KEYDOWN = 0x0100;
     public const int WM_TIMER = 0x0113;
@@ -404,6 +406,9 @@ internal static class NativeMethods
 
     [DllImport("gdi32.dll")]
     public static extern bool DeleteObject(IntPtr hObject);
+
+    [DllImport("gdi32.dll")]
+    public static extern IntPtr CreateSolidBrush(int color);
 
     [DllImport("gdi32.dll")]
     public static extern IntPtr GetStockObject(int i);

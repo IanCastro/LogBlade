@@ -42,6 +42,7 @@ internal sealed class ViewportPaneWindow : IDisposable
     private const int DefaultGroupColumnWidthPx = 200;
     private const int GridCellPaddingPx = 4;
     private const int GridDividerThicknessPx = 1;
+    private const int InactiveSelectionColor = 0x00FAF0E8;
     private const string WindowClassName = "LogViewerViewportPaneWindow";
 
     private static readonly object s_registrationSync = new();
@@ -57,11 +58,13 @@ internal sealed class ViewportPaneWindow : IDisposable
     private readonly Action<ViewportPaneWindow, long>? _onRowActivated;
 
     private IntPtr _hwnd;
+    private IntPtr _inactiveSelectionBrush;
     private GCHandle _selfHandle;
     private int _visibleColumnCount = 1;
     private int _visibleLineCount = 1;
     private int _xOffsetChars;
     private bool _isVisible = true;
+    private bool _hasFocus;
     private string _statusText = string.Empty;
     private string _emptyContentText = "(empty file)";
     private IViewportReader? _reader;
@@ -102,6 +105,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         _font = font;
         _lineHeight = Math.Max(1, lineHeight);
         _charWidth = Math.Max(1, charWidth);
+        _inactiveSelectionBrush = NativeMethods.CreateSolidBrush(InactiveSelectionColor);
         _onUsefulPaint = onUsefulPaint;
         _onStale = onStale;
         _onRowActivated = onRowActivated;
@@ -267,6 +271,11 @@ internal sealed class ViewportPaneWindow : IDisposable
         ClearSelection(invalidate: false);
         _reader?.Dispose();
         _reader = null;
+        if (_inactiveSelectionBrush != IntPtr.Zero)
+        {
+            NativeMethods.DeleteObject(_inactiveSelectionBrush);
+            _inactiveSelectionBrush = IntPtr.Zero;
+        }
     }
 
     private static void EnsureWindowClassRegistered(IntPtr hInstance)
@@ -745,6 +754,20 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
     }
 
+    private void OnFocusChanged(bool hasFocus)
+    {
+        if (_hasFocus == hasFocus)
+        {
+            return;
+        }
+
+        _hasFocus = hasFocus;
+        if (HasSelection)
+        {
+            NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
+        }
+    }
+
     private bool OnSetCursor()
     {
         if (_isColumnResizing || _hoverResizeColumnIndex >= 0)
@@ -1034,6 +1057,11 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private bool IsSelectionKeySelected(ViewportRowSelectionKey key) =>
         IsSelectionKeySelected(_selectionSelectAllRows, _selectionRanges, _selectionExcludedRows, key);
+
+    private IntPtr GetInactiveSelectionBrush() =>
+        _inactiveSelectionBrush != IntPtr.Zero
+            ? _inactiveSelectionBrush
+            : NativeMethods.GetSysColorBrush(NativeMethods.COLOR_3DFACE);
 
     private static bool IsSelectionKeySelected(
         bool selectAll,
@@ -1673,8 +1701,16 @@ internal sealed class ViewportPaneWindow : IDisposable
                     right = clientRect.right,
                     bottom = y + _lineHeight
                 };
-                NativeMethods.FillRect(hdc, ref rowRect, NativeMethods.GetSysColorBrush(NativeMethods.COLOR_HIGHLIGHT));
-                NativeMethods.SetTextColor(hdc, NativeMethods.GetSysColor(NativeMethods.COLOR_HIGHLIGHTTEXT));
+                if (_hasFocus)
+                {
+                    NativeMethods.FillRect(hdc, ref rowRect, NativeMethods.GetSysColorBrush(NativeMethods.COLOR_HIGHLIGHT));
+                    NativeMethods.SetTextColor(hdc, NativeMethods.GetSysColor(NativeMethods.COLOR_HIGHLIGHTTEXT));
+                }
+                else
+                {
+                    NativeMethods.FillRect(hdc, ref rowRect, GetInactiveSelectionBrush());
+                    NativeMethods.SetTextColor(hdc, NativeMethods.GetSysColor(NativeMethods.COLOR_WINDOWTEXT));
+                }
             }
             else
             {
@@ -1774,10 +1810,13 @@ internal sealed class ViewportPaneWindow : IDisposable
             return;
         }
 
-        int backgroundColor = isSelected ? NativeMethods.COLOR_HIGHLIGHT : isHeader ? NativeMethods.COLOR_3DFACE : NativeMethods.COLOR_WINDOW;
-        IntPtr backgroundBrush = NativeMethods.GetSysColorBrush(backgroundColor);
+        IntPtr backgroundBrush = isSelected
+            ? (_hasFocus ? NativeMethods.GetSysColorBrush(NativeMethods.COLOR_HIGHLIGHT) : GetInactiveSelectionBrush())
+            : NativeMethods.GetSysColorBrush(isHeader ? NativeMethods.COLOR_3DFACE : NativeMethods.COLOR_WINDOW);
         NativeMethods.FillRect(hdc, ref visibleRect, backgroundBrush);
-        NativeMethods.SetTextColor(hdc, NativeMethods.GetSysColor(isSelected ? NativeMethods.COLOR_HIGHLIGHTTEXT : NativeMethods.COLOR_WINDOWTEXT));
+        NativeMethods.SetTextColor(
+            hdc,
+            NativeMethods.GetSysColor(isSelected && _hasFocus ? NativeMethods.COLOR_HIGHLIGHTTEXT : NativeMethods.COLOR_WINDOWTEXT));
 
         NativeMethods.RECT textRect = cellRect;
         textRect.left += GridCellPaddingPx;
@@ -2369,6 +2408,12 @@ internal sealed class ViewportPaneWindow : IDisposable
 
         switch (msg)
         {
+            case NativeMethods.WM_SETFOCUS:
+                self.OnFocusChanged(hasFocus: true);
+                return IntPtr.Zero;
+            case NativeMethods.WM_KILLFOCUS:
+                self.OnFocusChanged(hasFocus: false);
+                return IntPtr.Zero;
             case NativeMethods.WM_SIZE:
                 self.OnSize();
                 return IntPtr.Zero;
