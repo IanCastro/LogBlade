@@ -14,7 +14,7 @@ internal enum ViewportRequestKind
     RefreshTailIfAtEnd
 }
 
-internal readonly record struct ViewportRequest(long Id, ViewportRequestKind Kind, int DeltaLines, double RequestedPercentage, long RequestedOffset, long RequestedRowOrdinal, int VisibleLines);
+internal readonly record struct ViewportRequest(long Id, ViewportRequestKind Kind, int DeltaLines, double RequestedPercentage, long RequestedOffset, long RequestedRowOrdinal, int VisibleLines, bool SelectRowAfterLoad);
 
 internal sealed class ViewportWorkerResult
 {
@@ -23,6 +23,8 @@ internal sealed class ViewportWorkerResult
     public bool IsStale { get; set; }
     public string? Message { get; set; }
     public IViewportReader? Reader { get; set; }
+    public bool SelectRowAfterLoad { get; set; }
+    public long SelectedOffset { get; set; }
 }
 
 internal sealed class ViewportPaneWindow : IDisposable
@@ -216,7 +218,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
     }
 
-    public void JumpToFileOffset(long offset)
+    public void JumpToFileOffset(long offset, bool selectRowAfterLoad = false)
     {
         if (_reader is null)
         {
@@ -224,7 +226,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         SuspendTailFollow();
-        QueueViewportRequest(ViewportRequestKind.LoadAtOffset, requestedOffset: offset, visibleLines: VisibleDataLineCount);
+        QueueViewportRequest(ViewportRequestKind.LoadAtOffset, requestedOffset: offset, visibleLines: VisibleDataLineCount, selectRowAfterLoad: selectRowAfterLoad);
     }
 
     public void QueueTailRefreshIfAtEnd()
@@ -395,7 +397,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
     }
 
-    private long QueueViewportRequest(ViewportRequestKind kind, int deltaLines = 0, double requestedPercentage = 0d, long requestedOffset = 0L, long requestedRowOrdinal = 0L, int? visibleLines = null)
+    private long QueueViewportRequest(ViewportRequestKind kind, int deltaLines = 0, double requestedPercentage = 0d, long requestedOffset = 0L, long requestedRowOrdinal = 0L, int? visibleLines = null, bool selectRowAfterLoad = false)
     {
         if (_reader is null || _hwnd == IntPtr.Zero)
         {
@@ -410,7 +412,8 @@ internal sealed class ViewportPaneWindow : IDisposable
             RequestedPercentage: requestedPercentage,
             RequestedOffset: requestedOffset,
             RequestedRowOrdinal: requestedRowOrdinal,
-            VisibleLines: effectiveVisible);
+            VisibleLines: effectiveVisible,
+            SelectRowAfterLoad: selectRowAfterLoad);
 
         _latestViewportRequestId = request.Id;
         _pendingViewportRequest = request;
@@ -437,7 +440,12 @@ internal sealed class ViewportPaneWindow : IDisposable
         IntPtr hwnd = _hwnd;
         ThreadPool.QueueUserWorkItem(_ =>
         {
-            var result = new ViewportWorkerResult { RequestId = request.Id };
+            var result = new ViewportWorkerResult
+            {
+                RequestId = request.Id,
+                SelectRowAfterLoad = request.SelectRowAfterLoad,
+                SelectedOffset = request.RequestedOffset
+            };
             try
             {
                 switch (request.Kind)
@@ -532,6 +540,11 @@ internal sealed class ViewportPaneWindow : IDisposable
             _reader = result.Reader;
             ResumeTailFollowIfAtEnd();
             UpdateScrollBar();
+            if (result.SelectRowAfterLoad)
+            {
+                SelectLoadedRowByOffset(result.SelectedOffset);
+            }
+
             ApplyPendingSearchKeyboardSelection(result.RequestId);
             NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
         }
@@ -949,6 +962,47 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
+    }
+
+    private void SelectLoadedRowByOffset(long offset)
+    {
+        if (_reader is not ISelectableViewportReader selectableReader)
+        {
+            ClearSelection(invalidate: false);
+            return;
+        }
+
+        IReadOnlyList<ViewportRowSelectionKey> keys = selectableReader.CurrentRowSelectionKeys;
+        if (keys.Count == 0)
+        {
+            ClearSelection(invalidate: false);
+            return;
+        }
+
+        int selectedIndex = 0;
+        for (int i = 0; i < keys.Count; i++)
+        {
+            if (keys[i].StartOffset <= offset && offset <= Math.Max(keys[i].StartOffset, keys[i].EndOffset))
+            {
+                selectedIndex = i;
+                break;
+            }
+        }
+
+        ViewportRowSelectionKey rowKey = keys[selectedIndex];
+        _selectionSelectAllRows = false;
+        _selectionRanges.Clear();
+        _selectionRanges.Add(new ViewportRowSelectionRange(rowKey, rowKey));
+        _selectionExcludedRows.Clear();
+        _selectionAnchorDataIndex = selectedIndex;
+        _selectionFocusDataIndex = selectedIndex;
+        _selectionAnchorKey = rowKey;
+        _selectionFocusKey = rowKey;
+        _isSelectingRows = false;
+        _selectionDragMoved = false;
+        _selectionDragBaseRanges = null;
+        _selectionDragBaseExcludedRows = null;
+        _selectionDragBaseSelectAllRows = false;
     }
 
     private bool SelectionEqual(bool selectAll, List<ViewportRowSelectionRange> ranges, HashSet<ViewportRowSelectionKey> excluded)

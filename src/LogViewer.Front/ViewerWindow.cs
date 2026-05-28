@@ -1346,7 +1346,7 @@ internal sealed class ViewerWindow
             return;
         }
 
-        _mainPane.JumpToFileOffset(startOffset);
+        _mainPane.JumpToFileOffset(startOffset, selectRowAfterLoad: true);
     }
 
     private CancellationTokenSource BeginSearchCancellation()
