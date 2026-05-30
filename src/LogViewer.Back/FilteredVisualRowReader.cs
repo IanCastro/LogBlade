@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 
-public sealed class FilteredVisualRowReader : IColumnViewportReader, IFileOffsetViewportReader, ISelectableViewportReader
+public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, IFileOffsetViewportReader, ISelectableViewportReader
 {
     private string _filePath;
     private LogEncodingKind _kind;
@@ -22,10 +22,11 @@ public sealed class FilteredVisualRowReader : IColumnViewportReader, IFileOffset
     private long _viewportBytes;
     private int _viewportVisibleLines;
     private int _topDescriptorIndex;
+    private long _totalLineCount;
     private bool _viewportLoaded;
     private bool _disposed;
 
-    internal FilteredVisualRowReader(string filePath, LogEncodingKind kind, Encoding encoding, long dataOffset, long fileSize, IReadOnlyList<FilteredLineDescriptor> descriptors)
+    internal FilteredVisualRowReader(string filePath, LogEncodingKind kind, Encoding encoding, long dataOffset, long fileSize, IReadOnlyList<FilteredLineDescriptor> descriptors, long totalLineCount = 0)
     {
         _filePath = filePath;
         _kind = kind;
@@ -42,16 +43,16 @@ public sealed class FilteredVisualRowReader : IColumnViewportReader, IFileOffset
             _descriptorRowStarts[i] = runningRows;
             runningRows++;
             _captureGroupCount = Math.Max(_captureGroupCount, descriptors[i].CaptureGroups?.Length ?? 0);
+            _totalLineCount = Math.Max(_totalLineCount, descriptors[i].LineNumber);
         }
 
-        if (_captureGroupCount > 0)
+        _totalLineCount = Math.Max(_totalLineCount, totalLineCount);
+        _columnHeaders = new string[_captureGroupCount + 2];
+        _columnHeaders[0] = "#";
+        _columnHeaders[1] = "Text";
+        for (int i = 0; i < _captureGroupCount; i++)
         {
-            _columnHeaders = new string[_captureGroupCount + 1];
-            _columnHeaders[0] = "Text";
-            for (int i = 0; i < _captureGroupCount; i++)
-            {
-                _columnHeaders[i + 1] = i.ToString();
-            }
+            _columnHeaders[i + 2] = i.ToString();
         }
 
         _totalVisualRows = runningRows;
@@ -133,6 +134,8 @@ public sealed class FilteredVisualRowReader : IColumnViewportReader, IFileOffset
             return cells;
         }
     }
+
+    public long MaxLineNumber => _totalLineCount;
 
     public IReadOnlyList<string> CurrentRows
     {
@@ -308,7 +311,7 @@ public sealed class FilteredVisualRowReader : IColumnViewportReader, IFileOffset
     public IViewportReader CloneForWorker()
     {
         ThrowIfDisposed();
-        var clone = new FilteredVisualRowReader(_filePath, _kind, _encoding, _dataOffset, _fileSize, _descriptors)
+        var clone = new FilteredVisualRowReader(_filePath, _kind, _encoding, _dataOffset, _fileSize, _descriptors, _totalLineCount)
         {
             _topRowOrdinal = _topRowOrdinal,
             _viewportBytes = _viewportBytes,
@@ -334,6 +337,7 @@ public sealed class FilteredVisualRowReader : IColumnViewportReader, IFileOffset
 
     internal LogEncodingKind Kind => _kind;
     internal Encoding SourceEncoding => _encoding;
+    internal long TotalLineCount => _totalLineCount;
 
     internal FilteredLineDescriptor[] CopyDescriptorsBefore(long offset)
     {
@@ -364,6 +368,7 @@ public sealed class FilteredVisualRowReader : IColumnViewportReader, IFileOffset
         _columnHeaders = Array.Empty<string>();
         _captureGroupCount = 0;
         _totalVisualRows = 0;
+        _totalLineCount = 0;
         _topRowOrdinal = 0;
         _viewportBytes = 0;
         _viewportVisibleLines = 0;
@@ -411,10 +416,7 @@ public sealed class FilteredVisualRowReader : IColumnViewportReader, IFileOffset
             string text = FilteredLineUtilities.ReadLineText(fs, _encoding, descriptor.StartOffset, descriptor.EndOffset);
             _currentRows.Add(text);
             _currentRowSelectionKeys.Add(new ViewportRowSelectionKey(descriptor.StartOffset, descriptor.EndOffset, 0));
-            if (_captureGroupCount > 0)
-            {
-                _currentCells.Add(CreateCells(text, descriptor, includeCaptureGroups: true));
-            }
+            _currentCells.Add(CreateCells(text, descriptor, includeCaptureGroups: true));
 
             lastEnd = descriptor.EndOffset;
             currentDescriptorIndex++;
@@ -425,9 +427,10 @@ public sealed class FilteredVisualRowReader : IColumnViewportReader, IFileOffset
 
     private string[] CreateCells(string rowText, FilteredLineDescriptor descriptor, bool includeCaptureGroups)
     {
-        string[] cells = new string[_captureGroupCount + 1];
+        string[] cells = new string[_captureGroupCount + 2];
         Array.Fill(cells, string.Empty);
-        cells[0] = rowText;
+        cells[0] = descriptor.LineNumber > 0 ? descriptor.LineNumber.ToString() : string.Empty;
+        cells[1] = rowText;
 
         if (!includeCaptureGroups)
         {
@@ -438,14 +441,19 @@ public sealed class FilteredVisualRowReader : IColumnViewportReader, IFileOffset
         int groupsToCopy = Math.Min(_captureGroupCount, captureGroups?.Length ?? 0);
         for (int i = 0; i < groupsToCopy; i++)
         {
-            cells[i + 1] = captureGroups![i];
+            cells[i + 2] = captureGroups![i];
         }
 
         return cells;
     }
 
-    private string[] CreateSelectedCells(string rowText, FilteredLineDescriptor descriptor) =>
-        _captureGroupCount > 0 ? CreateCells(rowText, descriptor, includeCaptureGroups: true) : new[] { rowText };
+    private string[] CreateSelectedCells(string rowText, FilteredLineDescriptor descriptor)
+    {
+        string[] visibleCells = CreateCells(rowText, descriptor, includeCaptureGroups: true);
+        string[] selectedCells = new string[Math.Max(1, visibleCells.Length - 1)];
+        Array.Copy(visibleCells, 1, selectedCells, 0, selectedCells.Length);
+        return selectedCells;
+    }
 
     private (int DescriptorIndex, int SegmentIndex) MapTopRow(long rowOrdinal)
     {

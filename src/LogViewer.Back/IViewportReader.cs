@@ -48,6 +48,11 @@ public interface IColumnViewportReader : IViewportReader
     IReadOnlyList<IReadOnlyList<string>> CurrentCells { get; }
 }
 
+public interface ILineNumberColumnViewportReader : IColumnViewportReader
+{
+    long MaxLineNumber { get; }
+}
+
 public interface IFileOffsetViewportReader : IViewportReader
 {
     long TopRowOrdinal { get; }

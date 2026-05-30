@@ -84,11 +84,12 @@ internal static class Program
         reader.ReadFromPercentage(0d, 10);
         IColumnViewportReader columns = reader;
 
-        AssertSequence("capture headers", columns.ColumnHeaders, "Text", "0", "1");
+        AssertSequence("capture headers", columns.ColumnHeaders, "#", "Text", "0", "1");
         AssertEqual("capture row count", columns.CurrentCells.Count, 1);
-        AssertEqual("capture text", columns.CurrentCells[0][0], "aaabccc xx aabcc");
-        AssertEqual("first match group 0", columns.CurrentCells[0][1], "aaa");
-        AssertEqual("first match group 1", columns.CurrentCells[0][2], "ccc");
+        AssertEqual("capture line number", columns.CurrentCells[0][0], "1");
+        AssertEqual("capture text", columns.CurrentCells[0][1], "aaabccc xx aabcc");
+        AssertEqual("first match group 0", columns.CurrentCells[0][2], "aaa");
+        AssertEqual("first match group 1", columns.CurrentCells[0][3], "ccc");
     }
 
     private static void RunRegexWithoutGroupsUsesPlainRows(string tempRoot)
@@ -102,7 +103,9 @@ internal static class Program
             new SearchOptions("a+b", UseRegex: true, IgnoreCase: false));
 
         reader.ReadFromPercentage(0d, 10);
-        AssertEqual("regex no-group headers", ((IColumnViewportReader)reader).ColumnHeaders.Count, 0);
+        IColumnViewportReader columns = reader;
+        AssertSequence("regex no-group headers", columns.ColumnHeaders, "#", "Text");
+        AssertSequence("regex no-group cells", columns.CurrentCells[0], "1", "aaabccc");
         AssertSequence("regex no-group rows", reader.CurrentRows, "aaabccc");
     }
 
@@ -117,7 +120,9 @@ internal static class Program
             new SearchOptions(".", UseRegex: false, IgnoreCase: false));
 
         reader.ReadFromPercentage(0d, 10);
-        AssertEqual("literal headers", ((IColumnViewportReader)reader).ColumnHeaders.Count, 0);
+        IColumnViewportReader columns = reader;
+        AssertSequence("literal headers", columns.ColumnHeaders, "#", "Text");
+        AssertSequence("literal cells", columns.CurrentCells[0], "1", "line.with.dot");
         AssertSequence("literal rows", reader.CurrentRows, "line.with.dot");
     }
 
@@ -132,7 +137,10 @@ internal static class Program
             new SearchOptions("alpha", UseRegex: false, IgnoreCase: false, InvertMatch: true));
 
         reader.ReadFromPercentage(0d, 10);
-        AssertEqual("literal invert headers", ((IColumnViewportReader)reader).ColumnHeaders.Count, 0);
+        IColumnViewportReader columns = reader;
+        AssertSequence("literal invert headers", columns.ColumnHeaders, "#", "Text");
+        AssertSequence("literal invert first cells", columns.CurrentCells[0], "2", "plain");
+        AssertSequence("literal invert second cells", columns.CurrentCells[1], "3", "beta");
         AssertSequence("literal invert rows", reader.CurrentRows, "plain", "beta");
     }
 
@@ -147,7 +155,10 @@ internal static class Program
             new SearchOptions("^a", UseRegex: true, IgnoreCase: false, InvertMatch: true));
 
         reader.ReadFromPercentage(0d, 10);
-        AssertEqual("regex invert headers", ((IColumnViewportReader)reader).ColumnHeaders.Count, 0);
+        IColumnViewportReader columns = reader;
+        AssertSequence("regex invert headers", columns.ColumnHeaders, "#", "Text");
+        AssertSequence("regex invert first cells", columns.CurrentCells[0], "2", "plain");
+        AssertSequence("regex invert second cells", columns.CurrentCells[1], "3", "beta");
         AssertSequence("regex invert rows", reader.CurrentRows, "plain", "beta");
     }
 
@@ -162,7 +173,9 @@ internal static class Program
             new SearchOptions("(a+)b(c+)", UseRegex: true, IgnoreCase: false, InvertMatch: true));
 
         reader.ReadFromPercentage(0d, 10);
-        AssertEqual("regex capture invert headers", ((IColumnViewportReader)reader).ColumnHeaders.Count, 0);
+        IColumnViewportReader columns = reader;
+        AssertSequence("regex capture invert headers", columns.ColumnHeaders, "#", "Text");
+        AssertSequence("regex capture invert cells", columns.CurrentCells[0], "2", "plain");
         AssertSequence("regex capture invert rows", reader.CurrentRows, "plain");
     }
 
@@ -180,11 +193,12 @@ internal static class Program
         reader.ReadFromPercentage(0d, 3);
         IColumnViewportReader columns = reader;
 
-        AssertSequence("wrapped headers", columns.ColumnHeaders, "Text", "0", "1");
+        AssertSequence("wrapped headers", columns.ColumnHeaders, "#", "Text", "0", "1");
         AssertEqual("wrapped row count", columns.CurrentCells.Count, 1);
-        AssertEqual("wrapped text", columns.CurrentCells[0][0], longText);
-        AssertEqual("wrapped first group 0", columns.CurrentCells[0][1], "aaa");
-        AssertEqual("wrapped first group 1", columns.CurrentCells[0][2], "ccc");
+        AssertEqual("wrapped line number", columns.CurrentCells[0][0], "1");
+        AssertEqual("wrapped text", columns.CurrentCells[0][1], longText);
+        AssertEqual("wrapped first group 0", columns.CurrentCells[0][2], "aaa");
+        AssertEqual("wrapped first group 1", columns.CurrentCells[0][3], "ccc");
     }
 
     private static void RunFilteredLineStaleWhenStartMoves(string tempRoot)
@@ -531,6 +545,9 @@ internal static class Program
 
         AssertEqual("append match count", appended.MatchedLineCount, 2L);
         AssertSequence("append match rows", appended.CurrentRows, "alpha", "new alpha");
+        IColumnViewportReader columns = appended;
+        AssertSequence("append match first cells", columns.CurrentCells[0], "1", "alpha");
+        AssertSequence("append match second cells", columns.CurrentCells[1], "3", "new alpha");
     }
 
     private static void RunAppendSearchWithoutMatchKeepsCount(string tempRoot)
@@ -567,6 +584,7 @@ internal static class Program
 
         AssertEqual("append partial count", appended.MatchedLineCount, 1L);
         AssertSequence("append partial rows", appended.CurrentRows, "prefix alpha");
+        AssertSequence("append partial cells", ((IColumnViewportReader)appended).CurrentCells[0], "1", "prefix alpha");
     }
 
     private static void RunAppendSearchPreservesRegexCaptureGroups(string tempRoot)
@@ -585,11 +603,12 @@ internal static class Program
         appended.ReadFromPercentage(0d, 10);
         IColumnViewportReader columns = appended;
 
-        AssertSequence("append capture headers", columns.ColumnHeaders, "Text", "0", "1");
+        AssertSequence("append capture headers", columns.ColumnHeaders, "#", "Text", "0", "1");
         AssertEqual("append capture row count", columns.CurrentCells.Count, 2);
-        AssertEqual("append capture text", columns.CurrentCells[1][0], "aaabccc");
-        AssertEqual("append capture group 0", columns.CurrentCells[1][1], "aaa");
-        AssertEqual("append capture group 1", columns.CurrentCells[1][2], "ccc");
+        AssertEqual("append capture line number", columns.CurrentCells[1][0], "3");
+        AssertEqual("append capture text", columns.CurrentCells[1][1], "aaabccc");
+        AssertEqual("append capture group 0", columns.CurrentCells[1][2], "aaa");
+        AssertEqual("append capture group 1", columns.CurrentCells[1][3], "ccc");
     }
 
     private static void RunAppendSearchInvertMatch(string tempRoot)
@@ -609,6 +628,9 @@ internal static class Program
 
         AssertEqual("append invert count", appended.MatchedLineCount, 2L);
         AssertSequence("append invert rows", appended.CurrentRows, "plain", "beta");
+        IColumnViewportReader columns = appended;
+        AssertSequence("append invert first cells", columns.CurrentCells[0], "2", "plain");
+        AssertSequence("append invert second cells", columns.CurrentCells[1], "3", "beta");
     }
 
     private static void RunAppendSearchStalesWhenEarlierLineGrows(string tempRoot)

@@ -33,13 +33,15 @@ public static class LogSearchBuilder
         LogEncodingKind kind = VisualRowReader.InferKind(encoding, dataOffset);
         List<FilteredLineDescriptor> descriptors = new();
         SearchMatcher matcher = SearchMatcher.Create(options);
+        long totalLineCount = 0;
 
         foreach (RealLineData line in SearchRealLineScanner.Enumerate(fullPath, encoding, kind, dataOffset, fileSize))
         {
+            totalLineCount = line.LineNumber;
             AddDescriptorIfIncluded(descriptors, line, matcher, options);
         }
 
-        return new FilteredVisualRowReader(fullPath, kind, encoding, dataOffset, fileSize, descriptors);
+        return new FilteredVisualRowReader(fullPath, kind, encoding, dataOffset, fileSize, descriptors, totalLineCount);
     }
 
     public static void BuildFilteredReaderIncremental(string filePath, Encoding encoding, long dataOffset, string query, int preloadedVisibleLines, Action<SearchProgressUpdate> onProgress)
@@ -66,10 +68,12 @@ public static class LogSearchBuilder
         SearchMatcher matcher = SearchMatcher.Create(options);
 
         long scannedOffset = dataOffset;
+        long totalLineCount = 0;
         foreach (RealLineData line in SearchRealLineScanner.Enumerate(fullPath, encoding, kind, dataOffset, fileSize, cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
             scannedOffset = line.EndOffset;
+            totalLineCount = line.LineNumber;
             AddDescriptorIfIncluded(descriptors, line, matcher, options);
 
             long now = Environment.TickCount64;
@@ -98,7 +102,7 @@ public static class LogSearchBuilder
             bool shouldBuildReader = isFinal || descriptors.Count != lastPublishedDescriptorCount;
             if (shouldBuildReader && (descriptors.Count > 0 || isFinal))
             {
-                reader = new FilteredVisualRowReader(fullPath, kind, encoding, dataOffset, fileSize, descriptors);
+                reader = new FilteredVisualRowReader(fullPath, kind, encoding, dataOffset, fileSize, descriptors, totalLineCount);
                 reader.ReadFromPercentage(0d, Math.Max(1, preloadedVisibleLines));
                 lastPublishedDescriptorCount = descriptors.Count;
             }
@@ -129,7 +133,8 @@ public static class LogSearchBuilder
                 previousReader.SourceEncoding,
                 previousReader.DataOffset,
                 oldFileSize,
-                previousReader.CopyDescriptorsBefore(long.MaxValue));
+                previousReader.CopyDescriptorsBefore(long.MaxValue),
+                previousReader.TotalLineCount);
             unchanged.ReadFromPercentage(0d, Math.Max(1, preloadedVisibleLines));
             onProgress(new SearchProgressUpdate(100d, unchanged.MatchedLineCount, 0, unchanged, IsFinal: true));
             return;
@@ -140,6 +145,10 @@ public static class LogSearchBuilder
         long dataOffset = previousReader.DataOffset;
         long rescanStartOffset = GetAppendRescanStart(fullPath, kind, dataOffset, oldFileSize);
         List<FilteredLineDescriptor> descriptors = new(previousReader.CopyDescriptorsBefore(rescanStartOffset));
+        long firstLineNumber = rescanStartOffset == oldFileSize
+            ? previousReader.TotalLineCount + 1
+            : Math.Max(1, previousReader.TotalLineCount);
+        long totalLineCount = previousReader.TotalLineCount;
         long searchableBytes = Math.Max(1, newFileSize - rescanStartOffset);
         long scannedOffset = rescanStartOffset;
         long lastPublishedTick = Environment.TickCount64;
@@ -147,10 +156,11 @@ public static class LogSearchBuilder
         Stopwatch stopwatch = Stopwatch.StartNew();
         SearchMatcher matcher = SearchMatcher.Create(options);
 
-        foreach (RealLineData line in SearchRealLineScanner.Enumerate(fullPath, encoding, kind, rescanStartOffset, newFileSize, cancellationToken))
+        foreach (RealLineData line in SearchRealLineScanner.Enumerate(fullPath, encoding, kind, rescanStartOffset, newFileSize, cancellationToken, firstLineNumber))
         {
             cancellationToken.ThrowIfCancellationRequested();
             scannedOffset = line.EndOffset;
+            totalLineCount = line.LineNumber;
             AddDescriptorIfIncluded(descriptors, line, matcher, options);
 
             long now = Environment.TickCount64;
@@ -177,7 +187,7 @@ public static class LogSearchBuilder
             bool shouldBuildReader = isFinal || descriptors.Count != lastPublishedDescriptorCount;
             if (shouldBuildReader)
             {
-                reader = new FilteredVisualRowReader(fullPath, kind, encoding, dataOffset, newFileSize, descriptors);
+                reader = new FilteredVisualRowReader(fullPath, kind, encoding, dataOffset, newFileSize, descriptors, totalLineCount);
                 reader.ReadFromPercentage(0d, Math.Max(1, preloadedVisibleLines));
                 lastPublishedDescriptorCount = descriptors.Count;
             }
@@ -225,7 +235,8 @@ public static class LogSearchBuilder
             line.StartOffset,
             line.EndOffset,
             FilteredLineUtilities.CountVisualRows(line.Text),
-            matched && !options.InvertMatch ? captureGroups : null));
+            matched && !options.InvertMatch ? captureGroups : null,
+            line.LineNumber));
     }
 
     private static bool EndsWithLineBreak(FileStream fs, LogEncodingKind kind, long dataOffset, long oldFileSize)
