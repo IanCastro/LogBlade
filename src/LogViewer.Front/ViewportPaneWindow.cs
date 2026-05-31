@@ -36,6 +36,15 @@ internal sealed class ViewportPaneWindow : IDisposable
         LastVisibleRow
     }
 
+    private enum GridAxisSelectionKind
+    {
+        None,
+        Row,
+        Column
+    }
+
+    private readonly record struct GridCellKey(ViewportRowSelectionKey RowKey, int ColumnIndex);
+
     private const int WheelLinesPerNotch = 3;
     private const int ScrollRange = 1_000_000;
     private const int VerticalScrollVirtualRows = 4000;
@@ -95,12 +104,34 @@ internal sealed class ViewportPaneWindow : IDisposable
     private bool _selectionMouseStartedWithShift;
     private PendingSearchKeyboardSelection _pendingSearchKeyboardSelection;
     private long _pendingSearchKeyboardSelectionRequestId;
+    private int _pendingSearchKeyboardSelectionColumn = -1;
     private int _selectionMouseDownX;
     private int _selectionMouseDownY;
     private int _selectionAnchorDataIndex = -1;
     private int _selectionFocusDataIndex = -1;
     private ViewportRowSelectionKey? _selectionAnchorKey;
     private ViewportRowSelectionKey? _selectionFocusKey;
+    private readonly HashSet<int> _cellSelectionColumns = new();
+    private HashSet<int>? _cellSelectionDragBaseColumns;
+    private List<ViewportRowSelectionRange>? _cellSelectionDragBaseRanges;
+    private HashSet<ViewportRowSelectionKey>? _cellSelectionDragBaseExcludedRows;
+    private bool _cellSelectionDragBaseSelectAllRows;
+    private bool _isSelectingCells;
+    private bool _isSelectingGridAxis;
+    private GridAxisSelectionKind _gridAxisSelectionKind;
+    private bool _cellSelectionDragMoved;
+    private bool _cellSelectionDragStartedOnSelected;
+    private bool _gridAxisDragStartedOnSelected;
+    private bool _cellSelectionMouseStartedWithControl;
+    private bool _cellSelectionMouseStartedWithShift;
+    private int _cellSelectionMouseDownX;
+    private int _cellSelectionMouseDownY;
+    private int _cellSelectionAnchorDataIndex = -1;
+    private int _cellSelectionFocusDataIndex = -1;
+    private int _gridAxisAnchorColumn = -1;
+    private int _gridAxisFocusColumn = -1;
+    private GridCellKey? _cellSelectionAnchorKey;
+    private GridCellKey? _cellSelectionFocusKey;
 
     public ViewportPaneWindow(IntPtr font, int lineHeight, int charWidth, Action<ViewportPaneWindow>? onUsefulPaint = null, Action<ViewportPaneWindow>? onStale = null, Action<ViewportPaneWindow, long>? onRowActivated = null)
     {
@@ -711,6 +742,18 @@ internal sealed class ViewportPaneWindow : IDisposable
             return;
         }
 
+        if (_isSelectingCells)
+        {
+            UpdateCellSelection(x, y);
+            return;
+        }
+
+        if (_isSelectingGridAxis)
+        {
+            UpdateGridAxisSelection(x, y);
+            return;
+        }
+
         int nextHover = HitTestColumnResize(x, y);
         if (_hoverResizeColumnIndex != nextHover)
         {
@@ -736,8 +779,23 @@ internal sealed class ViewportPaneWindow : IDisposable
             return;
         }
 
+        if (IsSearchCellSelectionMode && TryHandleGridAxisClick(x, y))
+        {
+            return;
+        }
+
         if (IsFixedLineNumberColumnHit(x))
         {
+            return;
+        }
+
+        if (IsSearchCellSelectionMode)
+        {
+            if (!BeginCellSelection(x, y))
+            {
+                ClearSelection(invalidate: true);
+            }
+
             return;
         }
 
@@ -758,6 +816,18 @@ internal sealed class ViewportPaneWindow : IDisposable
         if (_isSelectingRows)
         {
             EndRowSelection();
+            return;
+        }
+
+        if (_isSelectingCells)
+        {
+            EndCellSelection();
+            return;
+        }
+
+        if (_isSelectingGridAxis)
+        {
+            EndGridAxisSelection();
         }
     }
 
@@ -884,6 +954,147 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
     }
 
+    private bool BeginCellSelection(int x, int y)
+    {
+        if (!TryHitTestGridCell(x, y, out int rowIndex, out int columnIndex) ||
+            !TryGetCurrentRowSelection(rowIndex, out ViewportRowSelectionKey rowKey, out _))
+        {
+            return false;
+        }
+
+        bool control = IsControlKeyDown();
+        bool shift = IsShiftKeyDown();
+        var key = new GridCellKey(rowKey, columnIndex);
+        _isSelectingCells = true;
+        _cellSelectionDragMoved = false;
+        _cellSelectionDragStartedOnSelected = IsGridCellSelected(key);
+        _cellSelectionMouseStartedWithControl = control;
+        _cellSelectionMouseStartedWithShift = shift;
+        _cellSelectionMouseDownX = x;
+        _cellSelectionMouseDownY = y;
+        _cellSelectionDragBaseRanges = new List<ViewportRowSelectionRange>(_selectionRanges);
+        _cellSelectionDragBaseExcludedRows = new HashSet<ViewportRowSelectionKey>(_selectionExcludedRows);
+        _cellSelectionDragBaseSelectAllRows = _selectionSelectAllRows;
+        _cellSelectionDragBaseColumns = new HashSet<int>(_cellSelectionColumns);
+        if (!shift || _cellSelectionAnchorKey is null)
+        {
+            _cellSelectionAnchorDataIndex = rowIndex;
+            _cellSelectionAnchorKey = key;
+        }
+        else
+        {
+            TryFindCurrentRowIndex(_cellSelectionAnchorKey.Value.RowKey, out _cellSelectionAnchorDataIndex);
+        }
+
+        _cellSelectionFocusDataIndex = rowIndex;
+        _cellSelectionFocusKey = key;
+        ApplyMouseCellSelection(key, isDrag: false);
+        NativeMethods.SetCapture(_hwnd);
+        return true;
+    }
+
+    private void UpdateCellSelection(int x, int y)
+    {
+        if (!TryHitTestGridCell(x, y, out int rowIndex, out int columnIndex, clampRow: true) ||
+            !TryGetCurrentRowSelection(rowIndex, out ViewportRowSelectionKey rowKey, out _))
+        {
+            return;
+        }
+
+        if (Math.Abs(x - _cellSelectionMouseDownX) > 2 || Math.Abs(y - _cellSelectionMouseDownY) > 2)
+        {
+            _cellSelectionDragMoved = true;
+        }
+
+        var key = new GridCellKey(rowKey, columnIndex);
+        if (_cellSelectionFocusKey == key)
+        {
+            return;
+        }
+
+        _cellSelectionFocusDataIndex = rowIndex;
+        _cellSelectionFocusKey = key;
+        ApplyMouseCellSelection(key, isDrag: true);
+    }
+
+    private void EndCellSelection()
+    {
+        int activatedRowIndex = _cellSelectionFocusDataIndex;
+        bool shouldActivate = !_cellSelectionDragMoved && activatedRowIndex >= 0;
+
+        _isSelectingCells = false;
+        _cellSelectionDragBaseRanges = null;
+        _cellSelectionDragBaseExcludedRows = null;
+        _cellSelectionDragBaseSelectAllRows = false;
+        _cellSelectionDragBaseColumns = null;
+        _cellSelectionDragStartedOnSelected = false;
+        _cellSelectionMouseStartedWithControl = false;
+        _cellSelectionMouseStartedWithShift = false;
+        NativeMethods.ReleaseCapture();
+
+        if (shouldActivate)
+        {
+            ActivateRowAt(activatedRowIndex);
+        }
+    }
+
+    private void UpdateGridAxisSelection(int x, int y)
+    {
+        if (Math.Abs(x - _cellSelectionMouseDownX) > 2 || Math.Abs(y - _cellSelectionMouseDownY) > 2)
+        {
+            _cellSelectionDragMoved = true;
+        }
+
+        if (_gridAxisSelectionKind == GridAxisSelectionKind.Column)
+        {
+            if (!TryHitTestGridColumn(x, out int columnIndex))
+            {
+                return;
+            }
+
+            if (_gridAxisFocusColumn == columnIndex)
+            {
+                return;
+            }
+
+            _gridAxisFocusColumn = columnIndex;
+            ApplyGridColumnSelection(_gridAxisAnchorColumn > 0 ? _gridAxisAnchorColumn : columnIndex, columnIndex, isDrag: true);
+            return;
+        }
+
+        if (_gridAxisSelectionKind == GridAxisSelectionKind.Row)
+        {
+            int rowIndex = GetDataRowIndexFromY(y, clamp: true);
+            if (rowIndex < 0 || !TryGetCurrentRowSelection(rowIndex, out ViewportRowSelectionKey rowKey, out _))
+            {
+                return;
+            }
+
+            if (_cellSelectionFocusKey is GridCellKey focusKey && focusKey.RowKey == rowKey)
+            {
+                return;
+            }
+
+            _cellSelectionFocusDataIndex = rowIndex;
+            _cellSelectionFocusKey = new GridCellKey(rowKey, _cellSelectionAnchorKey?.ColumnIndex ?? GetFirstSelectedColumnOrDefault());
+            ApplyGridRowSelection(_cellSelectionAnchorKey?.RowKey ?? rowKey, rowKey, isDrag: true);
+        }
+    }
+
+    private void EndGridAxisSelection()
+    {
+        _isSelectingGridAxis = false;
+        _gridAxisSelectionKind = GridAxisSelectionKind.None;
+        _gridAxisDragStartedOnSelected = false;
+        _cellSelectionDragBaseRanges = null;
+        _cellSelectionDragBaseExcludedRows = null;
+        _cellSelectionDragBaseSelectAllRows = false;
+        _cellSelectionDragBaseColumns = null;
+        _cellSelectionMouseStartedWithControl = false;
+        _cellSelectionMouseStartedWithShift = false;
+        NativeMethods.ReleaseCapture();
+    }
+
     private int GetDataRowIndexFromY(int y, bool clamp)
     {
         if (_reader is null || !_reader.HasContent || _reader.CurrentRows.Count == 0)
@@ -905,6 +1116,205 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         return rowIndex >= 0 && rowIndex < _reader.CurrentRows.Count ? rowIndex : -1;
+    }
+
+    private bool TryHitTestGridCell(int x, int y, out int rowIndex, out int columnIndex, bool clampRow = false)
+    {
+        rowIndex = GetDataRowIndexFromY(y, clamp: clampRow);
+        columnIndex = -1;
+        if (rowIndex < 0 || _reader is not IColumnViewportReader columnReader || x < 0)
+        {
+            return false;
+        }
+
+        int[] widths = CalculateColumnWidths(columnReader);
+        if (widths.Length <= 1)
+        {
+            return false;
+        }
+
+        int fixedWidthPx = Math.Max(1, widths[0]) * _charWidth;
+        if (x < fixedWidthPx)
+        {
+            return false;
+        }
+
+        NativeMethods.GetClientRect(_hwnd, out NativeMethods.RECT clientRect);
+        int startChars = 0;
+        for (int i = 1; i < widths.Length; i++)
+        {
+            int widthChars = Math.Max(1, widths[i]);
+            int left = fixedWidthPx + ((startChars - _xOffsetChars) * _charWidth);
+            int right = fixedWidthPx + ((startChars + widthChars - _xOffsetChars) * _charWidth);
+            int visibleLeft = Math.Max(left, fixedWidthPx);
+            int visibleRight = Math.Min(right, clientRect.right);
+            if (x >= visibleLeft && x < visibleRight)
+            {
+                columnIndex = i;
+                return true;
+            }
+
+            startChars += widthChars;
+        }
+
+        return false;
+    }
+
+    private bool TryHitTestGridColumn(int x, out int columnIndex)
+    {
+        columnIndex = -1;
+        if (_reader is not IColumnViewportReader columnReader || x < 0)
+        {
+            return false;
+        }
+
+        int[] widths = CalculateColumnWidths(columnReader);
+        if (widths.Length <= 1)
+        {
+            return false;
+        }
+
+        int fixedWidthPx = Math.Max(1, widths[0]) * _charWidth;
+        if (x < fixedWidthPx)
+        {
+            return false;
+        }
+
+        NativeMethods.GetClientRect(_hwnd, out NativeMethods.RECT clientRect);
+        int startChars = 0;
+        for (int i = 1; i < widths.Length; i++)
+        {
+            int widthChars = Math.Max(1, widths[i]);
+            int left = fixedWidthPx + ((startChars - _xOffsetChars) * _charWidth);
+            int right = fixedWidthPx + ((startChars + widthChars - _xOffsetChars) * _charWidth);
+            int visibleLeft = Math.Max(left, fixedWidthPx);
+            int visibleRight = Math.Min(right, clientRect.right);
+            if (x >= visibleLeft && x < visibleRight)
+            {
+                columnIndex = i;
+                return true;
+            }
+
+            startChars += widthChars;
+        }
+
+        return false;
+    }
+
+    private bool TryHandleGridAxisClick(int x, int y)
+    {
+        if (_reader is not IColumnViewportReader)
+        {
+            return false;
+        }
+
+        if (y >= 0 && y < _lineHeight)
+        {
+            if (IsFixedLineNumberColumnHit(x))
+            {
+                ToggleAllGridCellsFromHeader();
+                return true;
+            }
+
+            if (TryHitTestGridColumn(x, out int columnIndex))
+            {
+                BeginGridColumnSelection(columnIndex, x, y);
+            }
+
+            return columnIndex >= 0;
+        }
+
+        if (!IsFixedLineNumberColumnHit(x))
+        {
+            return false;
+        }
+
+        int rowIndex = GetDataRowIndexFromY(y, clamp: false);
+        if (rowIndex >= 0 && TryGetCurrentRowSelection(rowIndex, out ViewportRowSelectionKey rowKey, out _))
+        {
+            BeginGridRowSelection(rowIndex, rowKey, x, y);
+        }
+
+        return true;
+    }
+
+    private void BeginGridColumnSelection(int columnIndex, int x, int y)
+    {
+        bool control = IsControlKeyDown();
+        bool shift = IsShiftKeyDown();
+        _isSelectingGridAxis = true;
+        _gridAxisSelectionKind = GridAxisSelectionKind.Column;
+        _cellSelectionDragMoved = false;
+        _gridAxisDragStartedOnSelected = _cellSelectionColumns.Contains(columnIndex);
+        _cellSelectionMouseStartedWithControl = control;
+        _cellSelectionMouseStartedWithShift = shift;
+        _cellSelectionMouseDownX = x;
+        _cellSelectionMouseDownY = y;
+        CaptureGridAxisSelectionBase();
+
+        int anchorColumn = columnIndex;
+        if (shift)
+        {
+            if (_gridAxisAnchorColumn > 0)
+            {
+                anchorColumn = _gridAxisAnchorColumn;
+            }
+            else if (_cellSelectionAnchorKey is GridCellKey anchorKey && anchorKey.ColumnIndex > 0)
+            {
+                anchorColumn = anchorKey.ColumnIndex;
+            }
+        }
+        else if (_reader?.CurrentRows.Count > 0 && TryGetCurrentRowSelection(0, out ViewportRowSelectionKey rowKey, out _))
+        {
+            _cellSelectionAnchorDataIndex = 0;
+            _cellSelectionFocusDataIndex = 0;
+            _cellSelectionAnchorKey = new GridCellKey(rowKey, columnIndex);
+            _cellSelectionFocusKey = new GridCellKey(rowKey, columnIndex);
+        }
+
+        _gridAxisAnchorColumn = anchorColumn;
+        _gridAxisFocusColumn = columnIndex;
+        ApplyGridColumnSelection(anchorColumn, columnIndex, isDrag: false);
+        NativeMethods.SetCapture(_hwnd);
+    }
+
+    private void BeginGridRowSelection(int rowIndex, ViewportRowSelectionKey rowKey, int x, int y)
+    {
+        bool control = IsControlKeyDown();
+        bool shift = IsShiftKeyDown();
+        _isSelectingGridAxis = true;
+        _gridAxisSelectionKind = GridAxisSelectionKind.Row;
+        _cellSelectionDragMoved = false;
+        _gridAxisDragStartedOnSelected = IsSelectionKeySelected(rowKey);
+        _cellSelectionMouseStartedWithControl = control;
+        _cellSelectionMouseStartedWithShift = shift;
+        _cellSelectionMouseDownX = x;
+        _cellSelectionMouseDownY = y;
+        CaptureGridAxisSelectionBase();
+
+        if (!shift || _cellSelectionAnchorKey is null)
+        {
+            _cellSelectionAnchorDataIndex = rowIndex;
+            _cellSelectionAnchorKey = new GridCellKey(rowKey, GetFirstSelectedColumnOrDefault());
+        }
+        else
+        {
+            TryFindCurrentRowIndex(_cellSelectionAnchorKey.Value.RowKey, out _cellSelectionAnchorDataIndex);
+        }
+
+        _cellSelectionFocusDataIndex = rowIndex;
+        GridCellKey anchorKey = _cellSelectionAnchorKey ?? new GridCellKey(rowKey, GetFirstSelectedColumnOrDefault());
+        _cellSelectionFocusKey = new GridCellKey(rowKey, anchorKey.ColumnIndex);
+        ApplyGridRowSelection(anchorKey.RowKey, rowKey, isDrag: false);
+        NativeMethods.SetCapture(_hwnd);
+    }
+
+    private void CaptureGridAxisSelectionBase()
+    {
+        _cellSelectionDragBaseRanges = new List<ViewportRowSelectionRange>(_selectionRanges);
+        _cellSelectionDragBaseExcludedRows = new HashSet<ViewportRowSelectionKey>(_selectionExcludedRows);
+        _cellSelectionDragBaseSelectAllRows = _selectionSelectAllRows;
+        _cellSelectionDragBaseColumns = new HashSet<int>(_cellSelectionColumns);
     }
 
     private void ApplyMouseSelection(int rowIndex, bool isDrag)
@@ -954,6 +1364,418 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         ReplaceSelection(nextSelectAll, nextRanges, nextExcluded);
+    }
+
+    private void ApplyMouseCellSelection(GridCellKey key, bool isDrag)
+    {
+        bool nextSelectAllRows = _cellSelectionDragBaseSelectAllRows;
+        List<ViewportRowSelectionRange> nextRanges = _cellSelectionDragBaseRanges is null
+            ? new List<ViewportRowSelectionRange>()
+            : new List<ViewportRowSelectionRange>(_cellSelectionDragBaseRanges);
+        HashSet<ViewportRowSelectionKey> nextExcluded = _cellSelectionDragBaseExcludedRows is null
+            ? new HashSet<ViewportRowSelectionKey>()
+            : new HashSet<ViewportRowSelectionKey>(_cellSelectionDragBaseExcludedRows);
+        HashSet<int> nextColumns = _cellSelectionDragBaseColumns is null
+            ? new HashSet<int>()
+            : new HashSet<int>(_cellSelectionDragBaseColumns);
+        GridCellKey anchorKey = _cellSelectionAnchorKey ?? key;
+
+        if (_cellSelectionMouseStartedWithControl && _cellSelectionMouseStartedWithShift)
+        {
+            AddCellAxisRange(nextRanges, nextExcluded, nextColumns, anchorKey, key);
+        }
+        else if (_cellSelectionMouseStartedWithShift)
+        {
+            nextSelectAllRows = false;
+            nextRanges.Clear();
+            nextExcluded.Clear();
+            nextColumns.Clear();
+            AddCellAxisRange(nextRanges, nextExcluded, nextColumns, anchorKey, key);
+        }
+        else if (_cellSelectionMouseStartedWithControl)
+        {
+            if (isDrag && _cellSelectionDragStartedOnSelected)
+            {
+                RemoveCellAxisRows(nextSelectAllRows, nextRanges, nextExcluded, anchorKey, key);
+            }
+            else if (isDrag)
+            {
+                AddCellAxisRange(nextRanges, nextExcluded, nextColumns, anchorKey, key);
+            }
+            else
+            {
+                ToggleCellAxisSelection(ref nextSelectAllRows, nextRanges, nextExcluded, nextColumns, key);
+            }
+        }
+        else
+        {
+            nextSelectAllRows = false;
+            nextRanges.Clear();
+            nextExcluded.Clear();
+            nextColumns.Clear();
+            AddCellAxisRange(nextRanges, nextExcluded, nextColumns, anchorKey, key);
+        }
+
+        ReplaceCellSelection(nextSelectAllRows, nextRanges, nextExcluded, nextColumns);
+    }
+
+    private void ReplaceCellSelection(bool selectAllRows, List<ViewportRowSelectionRange> ranges, HashSet<ViewportRowSelectionKey> excluded, HashSet<int> columns)
+    {
+        if (CellSelectionEqual(selectAllRows, ranges, excluded, columns))
+        {
+            return;
+        }
+
+        _selectionSelectAllRows = selectAllRows;
+        _selectionRanges.Clear();
+        _selectionRanges.AddRange(ranges);
+        _selectionExcludedRows.Clear();
+        foreach (ViewportRowSelectionKey key in excluded)
+        {
+            _selectionExcludedRows.Add(key);
+        }
+
+        _selectionAnchorDataIndex = -1;
+        _selectionFocusDataIndex = -1;
+        _selectionAnchorKey = null;
+        _selectionFocusKey = null;
+        _cellSelectionColumns.Clear();
+        foreach (int column in columns)
+        {
+            if (column > 0)
+            {
+                _cellSelectionColumns.Add(column);
+            }
+        }
+
+        NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
+    }
+
+    private bool CellSelectionEqual(bool selectAllRows, List<ViewportRowSelectionRange> ranges, HashSet<ViewportRowSelectionKey> excluded, HashSet<int> columns)
+    {
+        if (_selectionSelectAllRows != selectAllRows ||
+            _selectionRanges.Count != ranges.Count ||
+            _selectionExcludedRows.Count != excluded.Count ||
+            _cellSelectionColumns.Count != columns.Count)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < ranges.Count; i++)
+        {
+            if (!_selectionRanges[i].Equals(ranges[i]))
+            {
+                return false;
+            }
+        }
+
+        foreach (ViewportRowSelectionKey key in excluded)
+        {
+            if (!_selectionExcludedRows.Contains(key))
+            {
+                return false;
+            }
+        }
+
+        foreach (int column in columns)
+        {
+            if (!_cellSelectionColumns.Contains(column))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static void AddCellAxisRange(List<ViewportRowSelectionRange> ranges, HashSet<ViewportRowSelectionKey> excluded, HashSet<int> columns, GridCellKey first, GridCellKey last)
+    {
+        AddRangeSelection(ranges, excluded, first.RowKey, last.RowKey);
+        int startColumn = Math.Min(first.ColumnIndex, last.ColumnIndex);
+        int endColumn = Math.Max(first.ColumnIndex, last.ColumnIndex);
+        for (int column = startColumn; column <= endColumn; column++)
+        {
+            if (column > 0)
+            {
+                columns.Add(column);
+            }
+        }
+    }
+
+    private static void ToggleCellAxisSelection(ref bool selectAllRows, List<ViewportRowSelectionRange> ranges, HashSet<ViewportRowSelectionKey> excluded, HashSet<int> columns, GridCellKey key)
+    {
+        if (IsSelectionKeySelected(selectAllRows, ranges, excluded, key.RowKey) && columns.Contains(key.ColumnIndex))
+        {
+            excluded.Add(key.RowKey);
+            return;
+        }
+
+        excluded.Remove(key.RowKey);
+        ranges.Add(new ViewportRowSelectionRange(key.RowKey, key.RowKey));
+        if (key.ColumnIndex > 0)
+        {
+            columns.Add(key.ColumnIndex);
+        }
+    }
+
+    private void ToggleGridRowSelection(int rowIndex, ViewportRowSelectionKey rowKey, bool preserveExisting)
+    {
+        bool nextSelectAllRows = preserveExisting && _selectionSelectAllRows;
+        List<ViewportRowSelectionRange> nextRanges = preserveExisting
+            ? new List<ViewportRowSelectionRange>(_selectionRanges)
+            : new List<ViewportRowSelectionRange>();
+        HashSet<ViewportRowSelectionKey> nextExcluded = preserveExisting
+            ? new HashSet<ViewportRowSelectionKey>(_selectionExcludedRows)
+            : new HashSet<ViewportRowSelectionKey>();
+        HashSet<int> nextColumns = preserveExisting
+            ? new HashSet<int>(_cellSelectionColumns)
+            : new HashSet<int>();
+
+        if (preserveExisting && IsSelectionKeySelected(nextSelectAllRows, nextRanges, nextExcluded, rowKey))
+        {
+            nextExcluded.Add(rowKey);
+        }
+        else
+        {
+            nextExcluded.Remove(rowKey);
+            nextRanges.Add(new ViewportRowSelectionRange(rowKey, rowKey));
+            if (nextColumns.Count == 0 && _reader is IColumnViewportReader columnReader)
+            {
+                AddAllCopyableColumns(nextColumns, columnReader);
+            }
+        }
+
+        int focusColumn = nextColumns.Count > 0 ? GetFirstSelectedColumn(nextColumns) : 1;
+        _cellSelectionAnchorDataIndex = rowIndex;
+        _cellSelectionFocusDataIndex = rowIndex;
+        _cellSelectionAnchorKey = new GridCellKey(rowKey, focusColumn);
+        _cellSelectionFocusKey = new GridCellKey(rowKey, focusColumn);
+        ReplaceCellSelection(nextSelectAllRows, nextRanges, nextExcluded, nextColumns);
+    }
+
+    private void ToggleGridColumnSelection(int columnIndex, bool preserveExisting)
+    {
+        if (_reader is not IColumnViewportReader columnReader)
+        {
+            return;
+        }
+
+        int columnCount = GetGridColumnCount(columnReader);
+        if (columnIndex <= 0 || columnIndex >= columnCount)
+        {
+            return;
+        }
+
+        bool nextSelectAllRows = preserveExisting && _selectionSelectAllRows;
+        List<ViewportRowSelectionRange> nextRanges = preserveExisting
+            ? new List<ViewportRowSelectionRange>(_selectionRanges)
+            : new List<ViewportRowSelectionRange>();
+        HashSet<ViewportRowSelectionKey> nextExcluded = preserveExisting
+            ? new HashSet<ViewportRowSelectionKey>(_selectionExcludedRows)
+            : new HashSet<ViewportRowSelectionKey>();
+        HashSet<int> nextColumns = preserveExisting
+            ? new HashSet<int>(_cellSelectionColumns)
+            : new HashSet<int>();
+
+        if (preserveExisting && nextColumns.Contains(columnIndex))
+        {
+            nextColumns.Remove(columnIndex);
+        }
+        else
+        {
+            nextColumns.Add(columnIndex);
+            if (!HasAnySelectedRows(nextSelectAllRows, nextRanges))
+            {
+                nextSelectAllRows = true;
+                nextRanges.Clear();
+                nextExcluded.Clear();
+            }
+        }
+
+        if (_reader.CurrentRows.Count > 0 && TryGetCurrentRowSelection(0, out ViewportRowSelectionKey rowKey, out _))
+        {
+            _cellSelectionAnchorDataIndex = 0;
+            _cellSelectionFocusDataIndex = 0;
+            _cellSelectionAnchorKey = new GridCellKey(rowKey, columnIndex);
+            _cellSelectionFocusKey = new GridCellKey(rowKey, columnIndex);
+        }
+
+        ReplaceCellSelection(nextSelectAllRows, nextRanges, nextExcluded, nextColumns);
+    }
+
+    private void ApplyGridColumnSelection(int anchorColumn, int focusColumn, bool isDrag)
+    {
+        if (_reader is not IColumnViewportReader columnReader)
+        {
+            return;
+        }
+
+        int columnCount = GetGridColumnCount(columnReader);
+        int startColumn = Math.Clamp(Math.Min(anchorColumn, focusColumn), 1, Math.Max(1, columnCount - 1));
+        int endColumn = Math.Clamp(Math.Max(anchorColumn, focusColumn), 1, Math.Max(1, columnCount - 1));
+        bool nextSelectAllRows = _cellSelectionDragBaseSelectAllRows;
+        List<ViewportRowSelectionRange> nextRanges = _cellSelectionDragBaseRanges is null
+            ? new List<ViewportRowSelectionRange>()
+            : new List<ViewportRowSelectionRange>(_cellSelectionDragBaseRanges);
+        HashSet<ViewportRowSelectionKey> nextExcluded = _cellSelectionDragBaseExcludedRows is null
+            ? new HashSet<ViewportRowSelectionKey>()
+            : new HashSet<ViewportRowSelectionKey>(_cellSelectionDragBaseExcludedRows);
+        HashSet<int> nextColumns = _cellSelectionDragBaseColumns is null
+            ? new HashSet<int>()
+            : new HashSet<int>(_cellSelectionDragBaseColumns);
+
+        if (_cellSelectionMouseStartedWithControl && _gridAxisDragStartedOnSelected)
+        {
+            for (int column = startColumn; column <= endColumn; column++)
+            {
+                nextColumns.Remove(column);
+            }
+        }
+        else if (_cellSelectionMouseStartedWithControl)
+        {
+            for (int column = startColumn; column <= endColumn; column++)
+            {
+                nextColumns.Add(column);
+            }
+        }
+        else if (_cellSelectionMouseStartedWithShift)
+        {
+            nextColumns.Clear();
+            for (int column = startColumn; column <= endColumn; column++)
+            {
+                nextColumns.Add(column);
+            }
+        }
+        else
+        {
+            nextSelectAllRows = true;
+            nextRanges.Clear();
+            nextExcluded.Clear();
+            nextColumns.Clear();
+            for (int column = startColumn; column <= endColumn; column++)
+            {
+                nextColumns.Add(column);
+            }
+        }
+
+        if (nextColumns.Count > 0 && !HasAnySelectedRows(nextSelectAllRows, nextRanges))
+        {
+            nextSelectAllRows = true;
+            nextRanges.Clear();
+            nextExcluded.Clear();
+        }
+
+        ReplaceCellSelection(nextSelectAllRows, nextRanges, nextExcluded, nextColumns);
+    }
+
+    private void ApplyGridRowSelection(ViewportRowSelectionKey anchorRow, ViewportRowSelectionKey focusRow, bool isDrag)
+    {
+        bool nextSelectAllRows = _cellSelectionDragBaseSelectAllRows;
+        List<ViewportRowSelectionRange> nextRanges = _cellSelectionDragBaseRanges is null
+            ? new List<ViewportRowSelectionRange>()
+            : new List<ViewportRowSelectionRange>(_cellSelectionDragBaseRanges);
+        HashSet<ViewportRowSelectionKey> nextExcluded = _cellSelectionDragBaseExcludedRows is null
+            ? new HashSet<ViewportRowSelectionKey>()
+            : new HashSet<ViewportRowSelectionKey>(_cellSelectionDragBaseExcludedRows);
+        HashSet<int> nextColumns = _cellSelectionDragBaseColumns is null
+            ? new HashSet<int>()
+            : new HashSet<int>(_cellSelectionDragBaseColumns);
+
+        if (_cellSelectionMouseStartedWithControl && _gridAxisDragStartedOnSelected)
+        {
+            RemoveCellAxisRows(nextSelectAllRows, nextRanges, nextExcluded, new GridCellKey(anchorRow, 1), new GridCellKey(focusRow, 1));
+        }
+        else if (_cellSelectionMouseStartedWithControl)
+        {
+            AddRangeSelection(nextRanges, nextExcluded, anchorRow, focusRow);
+        }
+        else if (_cellSelectionMouseStartedWithShift)
+        {
+            nextSelectAllRows = false;
+            nextRanges.Clear();
+            nextExcluded.Clear();
+            AddRangeSelection(nextRanges, nextExcluded, anchorRow, focusRow);
+        }
+        else
+        {
+            nextSelectAllRows = false;
+            nextRanges.Clear();
+            nextExcluded.Clear();
+            nextColumns.Clear();
+            AddRangeSelection(nextRanges, nextExcluded, anchorRow, focusRow);
+        }
+
+        if (nextColumns.Count == 0 && _reader is IColumnViewportReader columnReader)
+        {
+            AddAllCopyableColumns(nextColumns, columnReader);
+        }
+
+        ReplaceCellSelection(nextSelectAllRows, nextRanges, nextExcluded, nextColumns);
+    }
+
+    private void ToggleAllGridCellsFromHeader()
+    {
+        if (IsControlKeyDown() && IsAllGridCellsSelected())
+        {
+            ClearSelection(invalidate: true);
+            return;
+        }
+
+        SelectAllGridCells();
+    }
+
+    private void RemoveCellAxisRows(bool selectAllRows, List<ViewportRowSelectionRange> ranges, HashSet<ViewportRowSelectionKey> excluded, GridCellKey first, GridCellKey last)
+    {
+        if (_reader is not ISelectableViewportReader selectableReader)
+        {
+            excluded.Add(last.RowKey);
+            return;
+        }
+
+        ViewportRowSelectionRange removeRange = new(first.RowKey, last.RowKey);
+        IReadOnlyList<ViewportRowSelectionKey> keys = selectableReader.CurrentRowSelectionKeys;
+        bool removedAny = false;
+        for (int i = 0; i < keys.Count; i++)
+        {
+            if (removeRange.Contains(keys[i]) && IsSelectionKeySelected(selectAllRows, ranges, excluded, keys[i]))
+            {
+                excluded.Add(keys[i]);
+                removedAny = true;
+            }
+        }
+
+        if (!removedAny)
+        {
+            excluded.Add(last.RowKey);
+        }
+    }
+
+    private static bool HasAnySelectedRows(bool selectAllRows, List<ViewportRowSelectionRange> ranges) =>
+        selectAllRows || ranges.Count > 0;
+
+    private static int GetFirstSelectedColumn(HashSet<int> columns)
+    {
+        int firstColumn = int.MaxValue;
+        foreach (int column in columns)
+        {
+            if (column > 0 && column < firstColumn)
+            {
+                firstColumn = column;
+            }
+        }
+
+        return firstColumn == int.MaxValue ? 1 : firstColumn;
+    }
+
+    private int GetFirstSelectedColumnOrDefault() => GetFirstSelectedColumn(_cellSelectionColumns);
+
+    private static void AddAllCopyableColumns(HashSet<int> columns, IColumnViewportReader columnReader)
+    {
+        int columnCount = GetGridColumnCount(columnReader);
+        for (int column = 1; column < columnCount; column++)
+        {
+            columns.Add(column);
+        }
     }
 
     private void ReplaceSelection(bool selectAll, List<ViewportRowSelectionRange> ranges, HashSet<ViewportRowSelectionKey> excluded)
@@ -1087,28 +1909,59 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private void ClearSelection(bool invalidate)
     {
-        bool hadSelection = _isSelectingRows || HasSelection;
+        bool hadSelection = _isSelectingRows || _isSelectingCells || _isSelectingGridAxis || HasSelection;
         if (_isSelectingRows)
         {
             NativeMethods.ReleaseCapture();
         }
 
+        if (_isSelectingCells)
+        {
+            NativeMethods.ReleaseCapture();
+        }
+
+        if (_isSelectingGridAxis)
+        {
+            NativeMethods.ReleaseCapture();
+        }
+
         _isSelectingRows = false;
+        _isSelectingCells = false;
+        _isSelectingGridAxis = false;
+        _gridAxisSelectionKind = GridAxisSelectionKind.None;
         _selectionDragMoved = false;
+        _cellSelectionDragMoved = false;
+        _cellSelectionDragStartedOnSelected = false;
+        _gridAxisDragStartedOnSelected = false;
         _selectionMouseStartedWithControl = false;
         _selectionMouseStartedWithShift = false;
+        _cellSelectionMouseStartedWithControl = false;
+        _cellSelectionMouseStartedWithShift = false;
         _selectionDragBaseRanges = null;
         _selectionDragBaseExcludedRows = null;
         _selectionDragBaseSelectAllRows = false;
+        _cellSelectionDragBaseRanges = null;
+        _cellSelectionDragBaseExcludedRows = null;
+        _cellSelectionDragBaseSelectAllRows = false;
+        _cellSelectionDragBaseColumns = null;
         _selectionMouseDownX = 0;
         _selectionMouseDownY = 0;
+        _cellSelectionMouseDownX = 0;
+        _cellSelectionMouseDownY = 0;
         _selectionAnchorDataIndex = -1;
         _selectionFocusDataIndex = -1;
+        _cellSelectionAnchorDataIndex = -1;
+        _cellSelectionFocusDataIndex = -1;
+        _gridAxisAnchorColumn = -1;
+        _gridAxisFocusColumn = -1;
         _selectionAnchorKey = null;
         _selectionFocusKey = null;
+        _cellSelectionAnchorKey = null;
+        _cellSelectionFocusKey = null;
         _selectionSelectAllRows = false;
         _selectionRanges.Clear();
         _selectionExcludedRows.Clear();
+        _cellSelectionColumns.Clear();
 
         if (hadSelection && invalidate && _hwnd != IntPtr.Zero)
         {
@@ -1117,6 +1970,7 @@ internal sealed class ViewportPaneWindow : IDisposable
     }
 
     private bool IsDataRowSelected(int dataRowIndex) =>
+        !IsSearchCellSelectionMode &&
         TryGetCurrentRowSelection(dataRowIndex, out ViewportRowSelectionKey key, out _) &&
         IsSelectionKeySelected(key);
 
@@ -1155,7 +2009,68 @@ internal sealed class ViewportPaneWindow : IDisposable
         return false;
     }
 
-    private bool HasSelection => _selectionSelectAllRows || _selectionRanges.Count > 0;
+    private bool HasSelection => _selectionSelectAllRows || _selectionRanges.Count > 0 || _cellSelectionColumns.Count > 0;
+
+    private bool IsSearchCellSelectionMode => _onRowActivated is not null && _reader is IColumnViewportReader;
+
+    private bool IsGridCellSelected(int dataRowIndex, int columnIndex)
+    {
+        if (!IsSearchCellSelectionMode ||
+            columnIndex <= 0 ||
+            !TryGetCurrentRowSelection(dataRowIndex, out ViewportRowSelectionKey rowKey, out _))
+        {
+            return false;
+        }
+
+        return IsGridCellSelected(new GridCellKey(rowKey, columnIndex));
+    }
+
+    private bool IsGridCellSelected(GridCellKey key)
+    {
+        if (key.ColumnIndex <= 0)
+        {
+            return false;
+        }
+
+        return _cellSelectionColumns.Contains(key.ColumnIndex) && IsSelectionKeySelected(key.RowKey);
+    }
+
+    private bool IsSearchColumnAxisSelected(int columnIndex) =>
+        IsSearchCellSelectionMode &&
+        columnIndex > 0 &&
+        _cellSelectionColumns.Contains(columnIndex);
+
+    private bool IsSearchRowAxisSelected(int dataRowIndex) =>
+        IsSearchCellSelectionMode &&
+        dataRowIndex >= 0 &&
+        TryGetCurrentRowSelection(dataRowIndex, out ViewportRowSelectionKey rowKey, out _) &&
+        IsSelectionKeySelected(rowKey);
+
+    private bool IsAllGridCellsSelected()
+    {
+        if (_reader is not IColumnViewportReader columnReader ||
+            !_selectionSelectAllRows ||
+            _selectionExcludedRows.Count > 0)
+        {
+            return false;
+        }
+
+        int columnCount = GetGridColumnCount(columnReader);
+        if (columnCount <= 1)
+        {
+            return false;
+        }
+
+        for (int column = 1; column < columnCount; column++)
+        {
+            if (!_cellSelectionColumns.Contains(column))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
 
     private bool TryGetCurrentRowSelection(int rowIndex, out ViewportRowSelectionKey key, out string text)
     {
@@ -1232,7 +2147,15 @@ internal sealed class ViewportPaneWindow : IDisposable
     {
         if (key == NativeMethods.VK_A && IsControlKeyDown())
         {
-            SelectAllRows();
+            if (IsSearchCellSelectionMode)
+            {
+                SelectAllGridCells();
+            }
+            else
+            {
+                SelectAllRows();
+            }
+
             return;
         }
 
@@ -1242,9 +2165,18 @@ internal sealed class ViewportPaneWindow : IDisposable
             return;
         }
 
-        if (IsShiftKeyDown() && TryHandleShiftSelectionKey(key))
+        if (IsShiftKeyDown())
         {
-            return;
+            if (IsSearchCellSelectionMode)
+            {
+                TryHandleShiftCellSelectionKey(key);
+                return;
+            }
+
+            if (TryHandleShiftSelectionKey(key))
+            {
+                return;
+            }
         }
 
         if (TryHandleSearchResultKeyboardNavigation(key))
@@ -1305,6 +2237,11 @@ internal sealed class ViewportPaneWindow : IDisposable
             return false;
         }
 
+        if (IsSearchCellSelectionMode)
+        {
+            return TryHandleSearchCellKeyboardNavigation(key);
+        }
+
         if (control)
         {
             return key switch
@@ -1361,6 +2298,79 @@ internal sealed class ViewportPaneWindow : IDisposable
         return QueueSearchKeyboardSelectionScroll(direction);
     }
 
+    private bool TryHandleSearchCellKeyboardNavigation(int key)
+    {
+        if (_reader is not IColumnViewportReader columnReader)
+        {
+            return false;
+        }
+
+        int columnCount = GetGridColumnCount(columnReader);
+        if (columnCount <= 1)
+        {
+            return false;
+        }
+
+        bool control = IsControlKeyDown();
+        int currentRow = ResolveKeyboardCellSelectionFocusRow();
+        int currentColumn = ResolveKeyboardCellSelectionFocusColumn(columnCount);
+        if (control)
+        {
+            return key switch
+            {
+                NativeMethods.VK_HOME => QueueSearchKeyboardSelectionRequest(
+                    ViewportRequestKind.JumpHome,
+                    PendingSearchKeyboardSelection.FirstVisibleRow,
+                    selectedColumn: currentColumn),
+                NativeMethods.VK_END => QueueSearchKeyboardSelectionRequest(
+                    ViewportRequestKind.JumpEnd,
+                    PendingSearchKeyboardSelection.LastVisibleRow,
+                    selectedColumn: currentColumn),
+                _ => false
+            };
+        }
+
+        if (key == NativeMethods.VK_PRIOR)
+        {
+            return QueueSearchKeyboardSelectionRequest(
+                ViewportRequestKind.ScrollByLines,
+                PendingSearchKeyboardSelection.FirstVisibleRow,
+                deltaLines: -VisibleDataLineCount,
+                selectedColumn: currentColumn);
+        }
+
+        if (key == NativeMethods.VK_NEXT)
+        {
+            return QueueSearchKeyboardSelectionRequest(
+                ViewportRequestKind.ScrollByLines,
+                PendingSearchKeyboardSelection.LastVisibleRow,
+                deltaLines: VisibleDataLineCount,
+                selectedColumn: currentColumn);
+        }
+
+        if (key == NativeMethods.VK_LEFT || key == NativeMethods.VK_RIGHT)
+        {
+            int nextColumn = key == NativeMethods.VK_LEFT
+                ? Math.Max(1, currentColumn - 1)
+                : Math.Min(columnCount - 1, currentColumn + 1);
+            return SelectSingleGridCell(currentRow, nextColumn, activate: false);
+        }
+
+        if (key != NativeMethods.VK_UP && key != NativeMethods.VK_DOWN)
+        {
+            return false;
+        }
+
+        int direction = key == NativeMethods.VK_UP ? -1 : 1;
+        int target = FindAdjacentSelectionRowIndex(currentRow, direction);
+        if (target != currentRow)
+        {
+            return SelectSingleGridCell(target, currentColumn, activate: true);
+        }
+
+        return QueueSearchKeyboardSelectionScroll(direction, currentColumn);
+    }
+
     private bool SelectSingleCurrentRow(int rowIndex, bool activate)
     {
         if (!TryGetCurrentRowSelection(rowIndex, out ViewportRowSelectionKey rowKey, out _))
@@ -1383,7 +2393,35 @@ internal sealed class ViewportPaneWindow : IDisposable
         return true;
     }
 
-    private bool QueueSearchKeyboardSelectionScroll(int direction)
+    private bool SelectSingleGridCell(int rowIndex, int columnIndex, bool activate)
+    {
+        if (_reader is not IColumnViewportReader columnReader ||
+            !TryGetCurrentRowSelection(rowIndex, out ViewportRowSelectionKey rowKey, out _))
+        {
+            return false;
+        }
+
+        int maxColumn = Math.Max(1, GetGridColumnCount(columnReader) - 1);
+        columnIndex = Math.Clamp(columnIndex, 1, maxColumn);
+        var key = new GridCellKey(rowKey, columnIndex);
+        _cellSelectionAnchorDataIndex = rowIndex;
+        _cellSelectionFocusDataIndex = rowIndex;
+        _cellSelectionAnchorKey = key;
+        _cellSelectionFocusKey = key;
+        ReplaceCellSelection(
+            selectAllRows: false,
+            new List<ViewportRowSelectionRange> { new(rowKey, rowKey) },
+            new HashSet<ViewportRowSelectionKey>(),
+            new HashSet<int> { columnIndex });
+        if (activate)
+        {
+            ActivateRowAt(rowIndex);
+        }
+
+        return true;
+    }
+
+    private bool QueueSearchKeyboardSelectionScroll(int direction, int selectedColumn = -1)
     {
         PendingSearchKeyboardSelection pendingSelection = direction < 0
             ? PendingSearchKeyboardSelection.FirstVisibleRow
@@ -1391,10 +2429,11 @@ internal sealed class ViewportPaneWindow : IDisposable
         return QueueSearchKeyboardSelectionRequest(
             ViewportRequestKind.ScrollByLines,
             pendingSelection,
-            deltaLines: direction);
+            deltaLines: direction,
+            selectedColumn: selectedColumn);
     }
 
-    private bool QueueSearchKeyboardSelectionRequest(ViewportRequestKind kind, PendingSearchKeyboardSelection pendingSelection, int deltaLines = 0)
+    private bool QueueSearchKeyboardSelectionRequest(ViewportRequestKind kind, PendingSearchKeyboardSelection pendingSelection, int deltaLines = 0, int selectedColumn = -1)
     {
         ClearPendingSearchKeyboardSelection();
         long requestId = QueueViewportRequest(
@@ -1408,6 +2447,7 @@ internal sealed class ViewportPaneWindow : IDisposable
 
         _pendingSearchKeyboardSelection = pendingSelection;
         _pendingSearchKeyboardSelectionRequestId = requestId;
+        _pendingSearchKeyboardSelectionColumn = selectedColumn;
         return true;
     }
 
@@ -1420,6 +2460,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         PendingSearchKeyboardSelection pendingSelection = _pendingSearchKeyboardSelection;
+        int pendingColumn = _pendingSearchKeyboardSelectionColumn;
         ClearPendingSearchKeyboardSelection();
         if (_reader is null || _reader.CurrentRows.Count == 0)
         {
@@ -1429,6 +2470,15 @@ internal sealed class ViewportPaneWindow : IDisposable
         int rowIndex = pendingSelection == PendingSearchKeyboardSelection.FirstVisibleRow
             ? 0
             : _reader.CurrentRows.Count - 1;
+        if (IsSearchCellSelectionMode && _reader is IColumnViewportReader columnReader)
+        {
+            int column = pendingColumn > 0
+                ? Math.Clamp(pendingColumn, 1, Math.Max(1, GetGridColumnCount(columnReader) - 1))
+                : ResolveKeyboardCellSelectionFocusColumn(GetGridColumnCount(columnReader));
+            SelectSingleGridCell(rowIndex, column, activate: true);
+            return;
+        }
+
         SelectSingleCurrentRow(rowIndex, activate: true);
     }
 
@@ -1436,6 +2486,7 @@ internal sealed class ViewportPaneWindow : IDisposable
     {
         _pendingSearchKeyboardSelection = PendingSearchKeyboardSelection.None;
         _pendingSearchKeyboardSelectionRequestId = 0L;
+        _pendingSearchKeyboardSelectionColumn = -1;
     }
 
     private bool TryHandleShiftSelectionKey(int key)
@@ -1493,6 +2544,89 @@ internal sealed class ViewportPaneWindow : IDisposable
         return true;
     }
 
+    private bool TryHandleShiftCellSelectionKey(int key)
+    {
+        if (_reader is null ||
+            !_reader.HasContent ||
+            _reader.CurrentRows.Count == 0 ||
+            _reader is not IColumnViewportReader columnReader ||
+            _reader is not ISelectableViewportReader)
+        {
+            return false;
+        }
+
+        int columnCount = GetGridColumnCount(columnReader);
+        if (columnCount <= 1)
+        {
+            return false;
+        }
+
+        int currentRow = ResolveKeyboardCellSelectionFocusRow();
+        int currentColumn = ResolveKeyboardCellSelectionFocusColumn(columnCount);
+        int targetRow = currentRow;
+        int targetColumn = currentColumn;
+        switch (key)
+        {
+            case NativeMethods.VK_LEFT:
+                targetColumn = Math.Max(1, currentColumn - 1);
+                break;
+            case NativeMethods.VK_RIGHT:
+                targetColumn = Math.Min(columnCount - 1, currentColumn + 1);
+                break;
+            case NativeMethods.VK_UP:
+                targetRow = FindAdjacentSelectionRowIndex(currentRow, -1);
+                break;
+            case NativeMethods.VK_DOWN:
+                targetRow = FindAdjacentSelectionRowIndex(currentRow, 1);
+                break;
+            default:
+                return false;
+        }
+
+        if (!TryGetCurrentRowSelection(targetRow, out ViewportRowSelectionKey targetRowKey, out _))
+        {
+            return false;
+        }
+
+        if (_cellSelectionAnchorKey is null)
+        {
+            if (!TryGetCurrentRowSelection(currentRow, out ViewportRowSelectionKey currentRowKey, out _))
+            {
+                return false;
+            }
+
+            _cellSelectionAnchorDataIndex = currentRow;
+            _cellSelectionAnchorKey = new GridCellKey(currentRowKey, currentColumn);
+        }
+        else
+        {
+            TryFindCurrentRowIndex(_cellSelectionAnchorKey.Value.RowKey, out _cellSelectionAnchorDataIndex);
+        }
+
+        var targetKey = new GridCellKey(targetRowKey, targetColumn);
+        _cellSelectionFocusDataIndex = targetRow;
+        _cellSelectionFocusKey = targetKey;
+        bool control = IsControlKeyDown();
+        bool nextSelectAllRows = control && _selectionSelectAllRows;
+        List<ViewportRowSelectionRange> nextRanges = control
+            ? new List<ViewportRowSelectionRange>(_selectionRanges)
+            : new List<ViewportRowSelectionRange>();
+        HashSet<ViewportRowSelectionKey> nextExcluded = control
+            ? new HashSet<ViewportRowSelectionKey>(_selectionExcludedRows)
+            : new HashSet<ViewportRowSelectionKey>();
+        HashSet<int> nextColumns = control
+            ? new HashSet<int>(_cellSelectionColumns)
+            : new HashSet<int>();
+        AddCellAxisRange(nextRanges, nextExcluded, nextColumns, _cellSelectionAnchorKey.Value, targetKey);
+        ReplaceCellSelection(nextSelectAllRows, nextRanges, nextExcluded, nextColumns);
+        if (targetRow != currentRow)
+        {
+            ActivateRowAt(targetRow);
+        }
+
+        return true;
+    }
+
     private int ResolveKeyboardSelectionFocusIndex()
     {
         if (_reader is null || _reader.CurrentRows.Count == 0)
@@ -1533,6 +2667,61 @@ internal sealed class ViewportPaneWindow : IDisposable
         return _selectionFocusDataIndex >= 0
             ? Math.Clamp(_selectionFocusDataIndex, 0, _reader.CurrentRows.Count - 1)
             : 0;
+    }
+
+    private int ResolveKeyboardCellSelectionFocusRow()
+    {
+        if (_reader is null || _reader.CurrentRows.Count == 0)
+        {
+            return 0;
+        }
+
+        if (_cellSelectionFocusKey is GridCellKey focusKey)
+        {
+            if (_cellSelectionFocusDataIndex >= 0 &&
+                _cellSelectionFocusDataIndex < _reader.CurrentRows.Count &&
+                GetCurrentRowSelectionKey(_cellSelectionFocusDataIndex) == focusKey.RowKey)
+            {
+                return _cellSelectionFocusDataIndex;
+            }
+
+            if (TryFindCurrentRowIndex(focusKey.RowKey, out int currentFocusIndex))
+            {
+                return currentFocusIndex;
+            }
+
+            if (_reader is ISelectableViewportReader selectableReader)
+            {
+                IReadOnlyList<ViewportRowSelectionKey> keys = selectableReader.CurrentRowSelectionKeys;
+                if (keys.Count > 0)
+                {
+                    if (focusKey.RowKey.CompareTo(keys[0]) < 0)
+                    {
+                        return 0;
+                    }
+
+                    if (focusKey.RowKey.CompareTo(keys[keys.Count - 1]) > 0)
+                    {
+                        return keys.Count - 1;
+                    }
+                }
+            }
+        }
+
+        return _cellSelectionFocusDataIndex >= 0
+            ? Math.Clamp(_cellSelectionFocusDataIndex, 0, _reader.CurrentRows.Count - 1)
+            : 0;
+    }
+
+    private int ResolveKeyboardCellSelectionFocusColumn(int columnCount)
+    {
+        int maxColumn = Math.Max(1, columnCount - 1);
+        if (_cellSelectionFocusKey is GridCellKey focusKey)
+        {
+            return Math.Clamp(focusKey.ColumnIndex, 1, maxColumn);
+        }
+
+        return 1;
     }
 
     private int FindAdjacentSelectionRowIndex(int current, int direction)
@@ -1585,8 +2774,53 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
     }
 
+    private void SelectAllGridCells()
+    {
+        if (_reader is not IColumnViewportReader columnReader ||
+            _reader is not ISelectableViewportReader ||
+            !_reader.HasContent ||
+            GetGridColumnCount(columnReader) <= 1)
+        {
+            return;
+        }
+
+        _selectionSelectAllRows = true;
+        _selectionRanges.Clear();
+        _selectionExcludedRows.Clear();
+        _selectionAnchorDataIndex = -1;
+        _selectionFocusDataIndex = -1;
+        _selectionAnchorKey = null;
+        _selectionFocusKey = null;
+        _cellSelectionColumns.Clear();
+        int columnCount = GetGridColumnCount(columnReader);
+        for (int column = 1; column < columnCount; column++)
+        {
+            _cellSelectionColumns.Add(column);
+        }
+
+        if (_reader.CurrentRows.Count > 0 && TryGetCurrentRowSelection(0, out ViewportRowSelectionKey rowKey, out _))
+        {
+            _cellSelectionAnchorDataIndex = 0;
+            _cellSelectionFocusDataIndex = _reader.CurrentRows.Count - 1;
+            _cellSelectionAnchorKey = new GridCellKey(rowKey, 1);
+            ViewportRowSelectionKey focusRowKey = GetCurrentRowSelectionKey(_cellSelectionFocusDataIndex) ?? rowKey;
+            _cellSelectionFocusKey = new GridCellKey(focusRowKey, columnCount - 1);
+        }
+
+        if (_hwnd != IntPtr.Zero)
+        {
+            NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
+        }
+    }
+
     private void CopySelectionToClipboard()
     {
+        if (IsSearchCellSelectionMode)
+        {
+            CopyCellSelectionToClipboard();
+            return;
+        }
+
         if (_reader is not ISelectableViewportReader selectableReader || !HasSelection)
         {
             return;
@@ -1617,6 +2851,148 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         SetClipboardText(string.Join("\r\n", selectedRows));
+    }
+
+    private void CopyCellSelectionToClipboard()
+    {
+        if (_reader is not IColumnViewportReader columnReader ||
+            _reader is not ISelectableViewportReader selectableReader ||
+            (!_selectionSelectAllRows && _selectionRanges.Count == 0) ||
+            _cellSelectionColumns.Count == 0)
+        {
+            return;
+        }
+
+        int columnCount = GetGridColumnCount(columnReader);
+        if (columnCount <= 1)
+        {
+            return;
+        }
+
+        List<int> selectedColumns = new();
+        foreach (int column in _cellSelectionColumns)
+        {
+            if (column > 0 && column < columnCount)
+            {
+                selectedColumns.Add(column);
+            }
+        }
+
+        if (selectedColumns.Count == 0)
+        {
+            return;
+        }
+
+        selectedColumns.Sort();
+        ViewportRowSelectionKey[] excluded = new ViewportRowSelectionKey[_selectionExcludedRows.Count];
+        _selectionExcludedRows.CopyTo(excluded);
+        IReadOnlyList<ViewportSelectedRow> selected;
+        try
+        {
+            selected = selectableReader.ReadSelectedRows(_selectionSelectAllRows, _selectionRanges, excluded);
+        }
+        catch (FilteredLineStaleException)
+        {
+            _onStale?.Invoke(this);
+            return;
+        }
+
+        List<string[]> selectedCells = new(selected.Count);
+        for (int rowIndex = 0; rowIndex < selected.Count; rowIndex++)
+        {
+            ViewportSelectedRow row = selected[rowIndex];
+            string[] cells = new string[selectedColumns.Count];
+            for (int i = 0; i < selectedColumns.Count; i++)
+            {
+                int column = selectedColumns[i];
+                string value = string.Empty;
+                if (IsGridCellSelectedForClipboard(row.Key, column))
+                {
+                    int copyColumn = column - 1;
+                    if (row.Cells is not null && copyColumn >= 0 && copyColumn < row.Cells.Count)
+                    {
+                        value = row.Cells[copyColumn];
+                    }
+                    else if (column == 1)
+                    {
+                        value = row.Text;
+                    }
+                }
+
+                cells[i] = NormalizeClipboardCell(value);
+            }
+
+            selectedCells.Add(cells);
+        }
+
+        string? clipboardText = BuildTrimmedTsv(selectedCells);
+        if (clipboardText is null)
+        {
+            return;
+        }
+
+        SetClipboardText(clipboardText);
+    }
+
+    private static string? BuildTrimmedTsv(IReadOnlyList<string[]> rows)
+    {
+        List<int> rowIndexes = new();
+        List<int> columnIndexes = new();
+        for (int rowIndex = 0; rowIndex < rows.Count; rowIndex++)
+        {
+            string[] row = rows[rowIndex];
+            bool rowHasValue = false;
+            for (int columnIndex = 0; columnIndex < row.Length; columnIndex++)
+            {
+                if (row[columnIndex].Length == 0)
+                {
+                    continue;
+                }
+
+                rowHasValue = true;
+                if (!columnIndexes.Contains(columnIndex))
+                {
+                    columnIndexes.Add(columnIndex);
+                }
+            }
+
+            if (rowHasValue)
+            {
+                rowIndexes.Add(rowIndex);
+            }
+        }
+
+        if (rowIndexes.Count == 0 || columnIndexes.Count == 0)
+        {
+            return null;
+        }
+
+        columnIndexes.Sort();
+        List<string> lines = new(rowIndexes.Count);
+        for (int row = 0; row < rowIndexes.Count; row++)
+        {
+            string[] source = rows[rowIndexes[row]];
+            string[] cells = new string[columnIndexes.Count];
+            for (int column = 0; column < columnIndexes.Count; column++)
+            {
+                int columnIndex = columnIndexes[column];
+                cells[column] = columnIndex < source.Length ? source[columnIndex] : string.Empty;
+            }
+
+            lines.Add(string.Join("\t", cells));
+        }
+
+        return string.Join("\r\n", lines);
+    }
+
+    private bool IsGridCellSelectedForClipboard(ViewportRowSelectionKey rowKey, int columnIndex)
+    {
+        if (columnIndex <= 0)
+        {
+            return false;
+        }
+
+        return IsGridCellSelected(new GridCellKey(rowKey, columnIndex));
     }
 
     private string CreateClipboardRow(ViewportSelectedRow row)
@@ -1805,7 +3181,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         IReadOnlyList<string> headers = GetGridHeaders(reader);
         int[] widths = CalculateColumnWidths(reader);
 
-        PaintGridRow(hdc, clientRect, headers, widths, y: 0, isHeader: true, isSelected: false);
+        PaintGridRow(hdc, clientRect, headers, widths, y: 0, isHeader: true, isRowSelected: false, dataRowIndex: -1);
 
         int y = _lineHeight;
         int visibleNonEmptyLines = 0;
@@ -1814,7 +3190,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         {
             foreach (IReadOnlyList<string> row in reader.CurrentCells)
             {
-                PaintGridRow(hdc, clientRect, row, widths, y, isHeader: false, IsDataRowSelected(dataRowIndex));
+                PaintGridRow(hdc, clientRect, row, widths, y, isHeader: false, IsDataRowSelected(dataRowIndex), dataRowIndex);
                 visibleNonEmptyLines++;
                 dataRowIndex++;
 
@@ -1829,7 +3205,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         {
             foreach (string row in reader.CurrentRows)
             {
-                PaintGridRow(hdc, clientRect, new[] { row }, widths, y, isHeader: false, IsDataRowSelected(dataRowIndex));
+                PaintGridRow(hdc, clientRect, new[] { row }, widths, y, isHeader: false, IsDataRowSelected(dataRowIndex), dataRowIndex);
                 visibleNonEmptyLines++;
                 dataRowIndex++;
 
@@ -1844,7 +3220,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         return visibleNonEmptyLines;
     }
 
-    private void PaintGridRow(IntPtr hdc, NativeMethods.RECT clientRect, IReadOnlyList<string> cells, IReadOnlyList<int> widths, int y, bool isHeader, bool isSelected)
+    private void PaintGridRow(IntPtr hdc, NativeMethods.RECT clientRect, IReadOnlyList<string> cells, IReadOnlyList<int> widths, int y, bool isHeader, bool isRowSelected, int dataRowIndex)
     {
         if (widths.Count == 0)
         {
@@ -1863,7 +3239,10 @@ internal sealed class ViewportPaneWindow : IDisposable
         if (Intersects(firstCellRect, clientRect))
         {
             string value = cells.Count > 0 ? cells[0] : string.Empty;
-            PaintGridCell(hdc, firstCellRect, Intersect(firstCellRect, clientRect), value, firstWidthChars, isHeader: true, isSelected: false);
+            bool isFirstCellSelected = isHeader
+                ? IsAllGridCellsSelected()
+                : IsSearchRowAxisSelected(dataRowIndex);
+            PaintGridCell(hdc, firstCellRect, Intersect(firstCellRect, clientRect), value, firstWidthChars, isHeader: true, isSelected: isFirstCellSelected);
         }
 
         NativeMethods.RECT scrollRect = clientRect;
@@ -1883,7 +3262,9 @@ internal sealed class ViewportPaneWindow : IDisposable
             if (Intersects(cellRect, scrollRect))
             {
                 string value = i < cells.Count ? cells[i] : string.Empty;
-                PaintGridCell(hdc, cellRect, Intersect(cellRect, scrollRect), value, widthChars, isHeader, isSelected);
+                bool isCellSelected = isRowSelected ||
+                    (isHeader ? IsSearchColumnAxisSelected(i) : IsGridCellSelected(dataRowIndex, i));
+                PaintGridCell(hdc, cellRect, Intersect(cellRect, scrollRect), value, widthChars, isHeader, isCellSelected);
             }
 
             startChars += widthChars;
