@@ -911,7 +911,16 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         ClearSelection(invalidate: false);
-        StartTextSelection(rowIndex, rowKey, GetTextCharIndexFromX(x, text), captureMouse: true);
+        int charIndex = GetTextCharIndexFromX(x, text);
+        if (TryGetWordSelection(text, charIndex, out int wordStart, out int wordEnd))
+        {
+            StartTextSelection(rowIndex, rowKey, wordStart, wordEnd, captureMouse: true);
+        }
+        else
+        {
+            StartTextSelection(rowIndex, rowKey, charIndex, captureMouse: true);
+        }
+
         NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
         return true;
     }
@@ -945,6 +954,46 @@ internal sealed class ViewportPaneWindow : IDisposable
         {
             NativeMethods.SetCapture(_hwnd);
         }
+    }
+
+    private void StartTextSelection(int rowIndex, ViewportRowSelectionKey rowKey, int anchorChar, int focusChar, bool captureMouse)
+    {
+        _isSelectingText = true;
+        _textSelectionDataIndex = rowIndex;
+        _textSelectionRowKey = rowKey;
+        _textSelectionAnchorChar = anchorChar;
+        _textSelectionFocusChar = focusChar;
+        if (captureMouse)
+        {
+            NativeMethods.SetCapture(_hwnd);
+        }
+    }
+
+    private static bool TryGetWordSelection(string text, int charIndex, out int start, out int end)
+    {
+        start = 0;
+        end = 0;
+        if (string.IsNullOrEmpty(text) ||
+            charIndex < 0 ||
+            charIndex >= text.Length ||
+            char.IsWhiteSpace(text[charIndex]))
+        {
+            return false;
+        }
+
+        start = charIndex;
+        while (start > 0 && !char.IsWhiteSpace(text[start - 1]))
+        {
+            start--;
+        }
+
+        end = charIndex + 1;
+        while (end < text.Length && !char.IsWhiteSpace(text[end]))
+        {
+            end++;
+        }
+
+        return end > start;
     }
 
     private void UpdateTextSelection(int x)
@@ -4167,11 +4216,16 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private void PaintTextSelection(IntPtr hdc, int rowIndex, string row, int y, NativeMethods.RECT clientRect)
     {
-        if (!HasTextSelectionRange ||
-            _textSelectionRowKey is null ||
+        if (_textSelectionRowKey is null ||
             IsSearchCellSelectionMode ||
             !TryGetCurrentRowSelection(rowIndex, out ViewportRowSelectionKey rowKey, out _) ||
             rowKey != _textSelectionRowKey.Value)
+        {
+            return;
+        }
+
+        PaintTextSelectionModeIndicator(hdc, y, clientRect);
+        if (!HasTextSelectionRange)
         {
             return;
         }
@@ -4215,6 +4269,27 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         NativeMethods.SetTextColor(hdc, NativeMethods.RGB(0, 0, 0));
+    }
+
+    private void PaintTextSelectionModeIndicator(IntPtr hdc, int y, NativeMethods.RECT clientRect)
+    {
+        NativeMethods.RECT indicatorRect = new()
+        {
+            left = clientRect.left,
+            top = Math.Max(y, y + _lineHeight - 2),
+            right = clientRect.right,
+            bottom = y + _lineHeight
+        };
+        indicatorRect = Intersect(indicatorRect, clientRect);
+        if (indicatorRect.right <= indicatorRect.left || indicatorRect.bottom <= indicatorRect.top)
+        {
+            return;
+        }
+
+        IntPtr brush = _hasFocus
+            ? NativeMethods.GetSysColorBrush(NativeMethods.COLOR_HIGHLIGHT)
+            : NativeMethods.GetSysColorBrush(NativeMethods.COLOR_BTNSHADOW);
+        NativeMethods.FillRect(hdc, ref indicatorRect, brush);
     }
 
     private string SliceVisibleText(string text)
