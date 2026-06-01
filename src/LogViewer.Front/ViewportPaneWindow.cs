@@ -2353,7 +2353,13 @@ internal sealed class ViewportPaneWindow : IDisposable
             int nextColumn = key == NativeMethods.VK_LEFT
                 ? Math.Max(1, currentColumn - 1)
                 : Math.Min(columnCount - 1, currentColumn + 1);
-            return SelectSingleGridCell(currentRow, nextColumn, activate: false);
+            bool selected = SelectSingleGridCell(currentRow, nextColumn, activate: false);
+            if (selected)
+            {
+                EnsureGridColumnVisible(nextColumn);
+            }
+
+            return selected;
         }
 
         if (key != NativeMethods.VK_UP && key != NativeMethods.VK_DOWN)
@@ -2419,6 +2425,39 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         return true;
+    }
+
+    private void EnsureGridColumnVisible(int columnIndex)
+    {
+        if (_reader is not IColumnViewportReader columnReader || columnIndex <= 0)
+        {
+            return;
+        }
+
+        int[] widths = CalculateColumnWidths(columnReader);
+        if (columnIndex >= widths.Length)
+        {
+            return;
+        }
+
+        int columnStart = 0;
+        for (int i = 1; i < columnIndex; i++)
+        {
+            columnStart += Math.Max(1, widths[i]);
+        }
+
+        int columnEnd = columnStart + Math.Max(1, widths[columnIndex]);
+        int visibleColumns = GetHorizontalVisibleColumnCount();
+        int visibleStart = _xOffsetChars;
+        int visibleEnd = visibleStart + visibleColumns;
+        if (columnStart < visibleStart)
+        {
+            SetHorizontalOffset(columnStart);
+        }
+        else if (columnEnd > visibleEnd)
+        {
+            SetHorizontalOffset(columnEnd - visibleColumns);
+        }
     }
 
     private bool QueueSearchKeyboardSelectionScroll(int direction, int selectedColumn = -1)
@@ -2619,6 +2658,11 @@ internal sealed class ViewportPaneWindow : IDisposable
             : new HashSet<int>();
         AddCellAxisRange(nextRanges, nextExcluded, nextColumns, _cellSelectionAnchorKey.Value, targetKey);
         ReplaceCellSelection(nextSelectAllRows, nextRanges, nextExcluded, nextColumns);
+        if (targetColumn != currentColumn)
+        {
+            EnsureGridColumnVisible(targetColumn);
+        }
+
         if (targetRow != currentRow)
         {
             ActivateRowAt(targetRow);
