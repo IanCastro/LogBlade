@@ -41,6 +41,11 @@ internal static class Program
             RunFilteredSelectionCopiesCaptureCells(tempRoot);
             RunFilteredSelectionCopiesLiteralTextCell(tempRoot);
             RunInvalidRegexValidation();
+            RunCascadedLiteralSearchFiltersPrevious(tempRoot);
+            RunCascadedInvertMatch(tempRoot);
+            RunCascadedInvalidRegexValidation();
+            RunCascadedCaptureGroupsUseLastCapturingRegex(tempRoot);
+            RunAppendSearchCascadeAddsMatches(tempRoot);
             RunAppendSearchAddsMatches(tempRoot);
             RunAppendSearchWithoutMatchKeepsCount(tempRoot);
             RunAppendSearchRescansPartialLastLine(tempRoot);
@@ -551,6 +556,105 @@ internal static class Program
         throw new InvalidOperationException("Invalid regex did not fail validation.");
     }
 
+    private static void RunCascadedLiteralSearchFiltersPrevious(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "cascade-literal.log", "alpha\r\nalpha beta\r\nbeta\r\nALPHA beta\r\n");
+        SearchOptions[] options =
+        {
+            new("alpha", UseRegex: false, IgnoreCase: false),
+            new("beta", UseRegex: false, IgnoreCase: false)
+        };
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(path, Encoding.UTF8, dataOffset: 0, options);
+        reader.ReadFromPercentage(0d, 10);
+
+        AssertEqual("cascade literal count", reader.MatchedLineCount, 1L);
+        AssertSequence("cascade literal rows", reader.CurrentRows, "alpha beta");
+        AssertSequence("cascade literal cells", ((IColumnViewportReader)reader).CurrentCells[0], "2", "alpha beta");
+    }
+
+    private static void RunCascadedInvertMatch(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "cascade-invert.log", "alpha keep\r\nalpha drop\r\nplain keep\r\n");
+        SearchOptions[] options =
+        {
+            new("alpha", UseRegex: false, IgnoreCase: false),
+            new("drop", UseRegex: false, IgnoreCase: false, InvertMatch: true)
+        };
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(path, Encoding.UTF8, dataOffset: 0, options);
+        reader.ReadFromPercentage(0d, 10);
+
+        AssertEqual("cascade invert count", reader.MatchedLineCount, 1L);
+        AssertSequence("cascade invert rows", reader.CurrentRows, "alpha keep");
+        AssertSequence("cascade invert cells", ((IColumnViewportReader)reader).CurrentCells[0], "1", "alpha keep");
+    }
+
+    private static void RunCascadedInvalidRegexValidation()
+    {
+        SearchOptions[] options =
+        {
+            new("alpha", UseRegex: false, IgnoreCase: false),
+            new("[", UseRegex: true, IgnoreCase: false)
+        };
+
+        try
+        {
+            LogSearchBuilder.ValidateOptions(options);
+        }
+        catch (ArgumentException)
+        {
+            return;
+        }
+
+        throw new InvalidOperationException("Invalid cascaded regex did not fail validation.");
+    }
+
+    private static void RunCascadedCaptureGroupsUseLastCapturingRegex(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "cascade-captures.log", "aaabccc code-42\r\naabcc code-7\r\nplain code-9\r\n");
+        SearchOptions[] options =
+        {
+            new("(a+)b(c+)", UseRegex: true, IgnoreCase: false),
+            new("code-(\\d+)", UseRegex: true, IgnoreCase: false)
+        };
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(path, Encoding.UTF8, dataOffset: 0, options);
+        reader.ReadFromPercentage(0d, 10);
+        IColumnViewportReader columns = reader;
+
+        AssertSequence("cascade capture headers", columns.ColumnHeaders, "#", "Text", "0");
+        AssertEqual("cascade capture row count", columns.CurrentCells.Count, 2);
+        AssertSequence("cascade capture first cells", columns.CurrentCells[0], "1", "aaabccc code-42", "42");
+        AssertSequence("cascade capture second cells", columns.CurrentCells[1], "2", "aabcc code-7", "7");
+    }
+
+    private static void RunAppendSearchCascadeAddsMatches(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "append-search-cascade.log", "alpha beta\r\nalpha plain\r\n");
+        SearchOptions[] options =
+        {
+            new("alpha", UseRegex: false, IgnoreCase: false),
+            new("beta", UseRegex: false, IgnoreCase: false)
+        };
+
+        using FilteredVisualRowReader initial = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            options);
+
+        File.AppendAllText(path, "new alpha\r\nnew alpha beta\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        using FilteredVisualRowReader appended = BuildAppendedReader(initial, options);
+        appended.ReadFromPercentage(0d, 10);
+
+        AssertEqual("append cascade count", appended.MatchedLineCount, 2L);
+        AssertSequence("append cascade rows", appended.CurrentRows, "alpha beta", "new alpha beta");
+        IColumnViewportReader columns = appended;
+        AssertSequence("append cascade first cells", columns.CurrentCells[0], "1", "alpha beta");
+        AssertSequence("append cascade second cells", columns.CurrentCells[1], "4", "new alpha beta");
+    }
+
     private static void RunAppendSearchAddsMatches(string tempRoot)
     {
         string path = WriteLog(tempRoot, "append-search-match.log", "alpha\r\nplain\r\n");
@@ -675,6 +779,11 @@ internal static class Program
     }
 
     private static FilteredVisualRowReader BuildAppendedReader(FilteredVisualRowReader initial, SearchOptions options)
+    {
+        return BuildAppendedReader(initial, new[] { options });
+    }
+
+    private static FilteredVisualRowReader BuildAppendedReader(FilteredVisualRowReader initial, IReadOnlyList<SearchOptions> options)
     {
         FilteredVisualRowReader? latest = null;
         LogSearchBuilder.BuildAppendedFilteredReaderIncremental(

@@ -26,19 +26,30 @@ public static class LogSearchBuilder
         }
     }
 
+    public static void ValidateOptions(IReadOnlyList<SearchOptions> options)
+    {
+        foreach (SearchOptions option in options)
+        {
+            ValidateOptions(option);
+        }
+    }
+
     public static FilteredVisualRowReader BuildFilteredReader(string filePath, Encoding encoding, long dataOffset, SearchOptions options)
+        => BuildFilteredReader(filePath, encoding, dataOffset, new[] { options });
+
+    public static FilteredVisualRowReader BuildFilteredReader(string filePath, Encoding encoding, long dataOffset, IReadOnlyList<SearchOptions> options)
     {
         string fullPath = Path.GetFullPath(filePath);
         long fileSize = new FileInfo(fullPath).Length;
         LogEncodingKind kind = VisualRowReader.InferKind(encoding, dataOffset);
         List<FilteredLineDescriptor> descriptors = new();
-        SearchMatcher matcher = SearchMatcher.Create(options);
+        SearchMatcherCascade matcher = SearchMatcherCascade.Create(options);
         long totalLineCount = 0;
 
         foreach (RealLineData line in SearchRealLineScanner.Enumerate(fullPath, encoding, kind, dataOffset, fileSize))
         {
             totalLineCount = line.LineNumber;
-            AddDescriptorIfIncluded(descriptors, line, matcher, options);
+            AddDescriptorIfIncluded(descriptors, line, matcher);
         }
 
         return new FilteredVisualRowReader(fullPath, kind, encoding, dataOffset, fileSize, descriptors, totalLineCount);
@@ -54,6 +65,12 @@ public static class LogSearchBuilder
         => BuildFilteredReaderIncremental(filePath, encoding, dataOffset, options, preloadedVisibleLines, onProgress, CancellationToken.None);
 
     public static void BuildFilteredReaderIncremental(string filePath, Encoding encoding, long dataOffset, SearchOptions options, int preloadedVisibleLines, Action<SearchProgressUpdate> onProgress, CancellationToken cancellationToken)
+        => BuildFilteredReaderIncremental(filePath, encoding, dataOffset, new[] { options }, preloadedVisibleLines, onProgress, cancellationToken);
+
+    public static void BuildFilteredReaderIncremental(string filePath, Encoding encoding, long dataOffset, IReadOnlyList<SearchOptions> options, int preloadedVisibleLines, Action<SearchProgressUpdate> onProgress)
+        => BuildFilteredReaderIncremental(filePath, encoding, dataOffset, options, preloadedVisibleLines, onProgress, CancellationToken.None);
+
+    public static void BuildFilteredReaderIncremental(string filePath, Encoding encoding, long dataOffset, IReadOnlyList<SearchOptions> options, int preloadedVisibleLines, Action<SearchProgressUpdate> onProgress, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         string fullPath = Path.GetFullPath(filePath);
@@ -65,7 +82,7 @@ public static class LogSearchBuilder
         int lastPublishedDescriptorCount = -1;
         bool partialPublished = false;
         Stopwatch stopwatch = Stopwatch.StartNew();
-        SearchMatcher matcher = SearchMatcher.Create(options);
+        SearchMatcherCascade matcher = SearchMatcherCascade.Create(options);
 
         long scannedOffset = dataOffset;
         long totalLineCount = 0;
@@ -74,7 +91,7 @@ public static class LogSearchBuilder
             cancellationToken.ThrowIfCancellationRequested();
             scannedOffset = line.EndOffset;
             totalLineCount = line.LineNumber;
-            AddDescriptorIfIncluded(descriptors, line, matcher, options);
+            AddDescriptorIfIncluded(descriptors, line, matcher);
 
             long now = Environment.TickCount64;
             bool firstPartialWithMatches = !partialPublished && descriptors.Count > 0;
@@ -121,6 +138,15 @@ public static class LogSearchBuilder
         int preloadedVisibleLines,
         Action<SearchProgressUpdate> onProgress,
         CancellationToken cancellationToken)
+        => BuildAppendedFilteredReaderIncremental(previousReader, new[] { options }, newFileSize, preloadedVisibleLines, onProgress, cancellationToken);
+
+    public static void BuildAppendedFilteredReaderIncremental(
+        FilteredVisualRowReader previousReader,
+        IReadOnlyList<SearchOptions> options,
+        long newFileSize,
+        int preloadedVisibleLines,
+        Action<SearchProgressUpdate> onProgress,
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         string fullPath = previousReader.FilePath;
@@ -154,14 +180,14 @@ public static class LogSearchBuilder
         long lastPublishedTick = Environment.TickCount64;
         int lastPublishedDescriptorCount = descriptors.Count;
         Stopwatch stopwatch = Stopwatch.StartNew();
-        SearchMatcher matcher = SearchMatcher.Create(options);
+        SearchMatcherCascade matcher = SearchMatcherCascade.Create(options);
 
         foreach (RealLineData line in SearchRealLineScanner.Enumerate(fullPath, encoding, kind, rescanStartOffset, newFileSize, cancellationToken, firstLineNumber))
         {
             cancellationToken.ThrowIfCancellationRequested();
             scannedOffset = line.EndOffset;
             totalLineCount = line.LineNumber;
-            AddDescriptorIfIncluded(descriptors, line, matcher, options);
+            AddDescriptorIfIncluded(descriptors, line, matcher);
 
             long now = Environment.TickCount64;
             if (now - lastPublishedTick >= ProgressPublishIntervalMs)
@@ -222,11 +248,9 @@ public static class LogSearchBuilder
     private static void AddDescriptorIfIncluded(
         List<FilteredLineDescriptor> descriptors,
         RealLineData line,
-        SearchMatcher matcher,
-        SearchOptions options)
+        SearchMatcherCascade matcher)
     {
-        bool matched = matcher.TryMatch(line.Text, out string[]? captureGroups);
-        if (matched == options.InvertMatch)
+        if (!matcher.TryMatch(line.Text, out string[]? captureGroups))
         {
             return;
         }
@@ -235,7 +259,7 @@ public static class LogSearchBuilder
             line.StartOffset,
             line.EndOffset,
             FilteredLineUtilities.CountVisualRows(line.Text),
-            matched && !options.InvertMatch ? captureGroups : null,
+            captureGroups,
             line.LineNumber));
     }
 
@@ -334,6 +358,52 @@ public static class LogSearchBuilder
         }
 
         return new Regex(options.Query, regexOptions);
+    }
+
+    private readonly struct SearchMatcherCascade
+    {
+        private readonly SearchOptions[] _options;
+        private readonly SearchMatcher[] _matchers;
+
+        private SearchMatcherCascade(SearchOptions[] options, SearchMatcher[] matchers)
+        {
+            _options = options;
+            _matchers = matchers;
+        }
+
+        public static SearchMatcherCascade Create(IReadOnlyList<SearchOptions> options)
+        {
+            SearchOptions[] optionCopy = new SearchOptions[options.Count];
+            SearchMatcher[] matchers = new SearchMatcher[options.Count];
+            for (int i = 0; i < options.Count; i++)
+            {
+                optionCopy[i] = options[i];
+                matchers[i] = SearchMatcher.Create(options[i]);
+            }
+
+            return new SearchMatcherCascade(optionCopy, matchers);
+        }
+
+        public bool TryMatch(string text, out string[]? captureGroups)
+        {
+            captureGroups = null;
+            for (int i = 0; i < _matchers.Length; i++)
+            {
+                bool matched = _matchers[i].TryMatch(text, out string[]? currentCaptureGroups);
+                SearchOptions options = _options[i];
+                if (matched == options.InvertMatch)
+                {
+                    return false;
+                }
+
+                if (matched && !options.InvertMatch && currentCaptureGroups is not null)
+                {
+                    captureGroups = currentCaptureGroups;
+                }
+            }
+
+            return true;
+        }
     }
 
     private readonly struct SearchMatcher
