@@ -33,7 +33,8 @@ internal sealed class ViewportPaneWindow : IDisposable
     {
         None,
         FirstVisibleRow,
-        LastVisibleRow
+        LastVisibleRow,
+        SpecificRowOrdinal
     }
 
     private enum GridAxisSelectionKind
@@ -105,6 +106,9 @@ internal sealed class ViewportPaneWindow : IDisposable
     private PendingSearchKeyboardSelection _pendingSearchKeyboardSelection;
     private long _pendingSearchKeyboardSelectionRequestId;
     private int _pendingSearchKeyboardSelectionColumn = -1;
+    private long _pendingSearchKeyboardSelectionRowOrdinal = -1;
+    private bool _pendingSearchKeyboardSelectionExtend;
+    private bool _pendingSearchKeyboardSelectionActivate = true;
     private int _selectionMouseDownX;
     private int _selectionMouseDownY;
     private int _selectionAnchorDataIndex = -1;
@@ -2312,7 +2316,6 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         bool control = IsControlKeyDown();
-        int currentRow = ResolveKeyboardCellSelectionFocusRow();
         int currentColumn = ResolveKeyboardCellSelectionFocusColumn(columnCount);
         if (control)
         {
@@ -2332,6 +2335,15 @@ internal sealed class ViewportPaneWindow : IDisposable
 
         if (key == NativeMethods.VK_PRIOR)
         {
+            if (TryGetOffscreenGridCellFocusOrdinal(out long rowOrdinal))
+            {
+                return QueueSearchKeyboardSelectionAtRowOrdinal(
+                    Math.Max(0, rowOrdinal - VisibleDataLineCount),
+                    currentColumn,
+                    extendSelection: false,
+                    activate: true);
+            }
+
             return QueueSearchKeyboardSelectionRequest(
                 ViewportRequestKind.ScrollByLines,
                 PendingSearchKeyboardSelection.FirstVisibleRow,
@@ -2341,6 +2353,15 @@ internal sealed class ViewportPaneWindow : IDisposable
 
         if (key == NativeMethods.VK_NEXT)
         {
+            if (TryGetOffscreenGridCellFocusOrdinal(out long rowOrdinal))
+            {
+                return QueueSearchKeyboardSelectionAtRowOrdinal(
+                    rowOrdinal + VisibleDataLineCount,
+                    currentColumn,
+                    extendSelection: false,
+                    activate: true);
+            }
+
             return QueueSearchKeyboardSelectionRequest(
                 ViewportRequestKind.ScrollByLines,
                 PendingSearchKeyboardSelection.LastVisibleRow,
@@ -2353,13 +2374,17 @@ internal sealed class ViewportPaneWindow : IDisposable
             int nextColumn = key == NativeMethods.VK_LEFT
                 ? Math.Max(1, currentColumn - 1)
                 : Math.Min(columnCount - 1, currentColumn + 1);
-            bool selected = SelectSingleGridCell(currentRow, nextColumn, activate: false);
-            if (selected)
+            if (TryGetOffscreenGridCellFocusOrdinal(out long rowOrdinal))
             {
-                EnsureGridColumnVisible(nextColumn);
+                return QueueSearchKeyboardSelectionAtRowOrdinal(
+                    rowOrdinal,
+                    nextColumn,
+                    extendSelection: false,
+                    activate: false);
             }
 
-            return selected;
+            int visibleCurrentRow = ResolveKeyboardCellSelectionFocusRow();
+            return SelectSingleGridCell(visibleCurrentRow, nextColumn, activate: false);
         }
 
         if (key != NativeMethods.VK_UP && key != NativeMethods.VK_DOWN)
@@ -2367,6 +2392,17 @@ internal sealed class ViewportPaneWindow : IDisposable
             return false;
         }
 
+        if (TryGetOffscreenGridCellFocusOrdinal(out long currentRowOrdinal))
+        {
+            int offscreenDirection = key == NativeMethods.VK_UP ? -1 : 1;
+            return QueueSearchKeyboardSelectionAtRowOrdinal(
+                Math.Max(0, currentRowOrdinal + offscreenDirection),
+                currentColumn,
+                extendSelection: false,
+                activate: true);
+        }
+
+        int currentRow = ResolveKeyboardCellSelectionFocusRow();
         int direction = key == NativeMethods.VK_UP ? -1 : 1;
         int target = FindAdjacentSelectionRowIndex(currentRow, direction);
         if (target != currentRow)
@@ -2419,6 +2455,7 @@ internal sealed class ViewportPaneWindow : IDisposable
             new List<ViewportRowSelectionRange> { new(rowKey, rowKey) },
             new HashSet<ViewportRowSelectionKey>(),
             new HashSet<int> { columnIndex });
+        EnsureGridColumnVisible(columnIndex);
         if (activate)
         {
             ActivateRowAt(rowIndex);
@@ -2460,6 +2497,19 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
     }
 
+    private bool TryGetOffscreenGridCellFocusOrdinal(out long rowOrdinal)
+    {
+        rowOrdinal = 0;
+        if (_cellSelectionFocusKey is not GridCellKey focusKey ||
+            TryFindCurrentRowIndex(focusKey.RowKey, out _) ||
+            _reader is not IRowOrdinalViewportReader ordinalReader)
+        {
+            return false;
+        }
+
+        return ordinalReader.TryGetRowOrdinal(focusKey.RowKey, out rowOrdinal);
+    }
+
     private bool QueueSearchKeyboardSelectionScroll(int direction, int selectedColumn = -1)
     {
         PendingSearchKeyboardSelection pendingSelection = direction < 0
@@ -2470,6 +2520,27 @@ internal sealed class ViewportPaneWindow : IDisposable
             pendingSelection,
             deltaLines: direction,
             selectedColumn: selectedColumn);
+    }
+
+    private bool QueueSearchKeyboardSelectionAtRowOrdinal(long rowOrdinal, int selectedColumn, bool extendSelection, bool activate)
+    {
+        ClearPendingSearchKeyboardSelection();
+        long requestId = QueueViewportRequest(
+            ViewportRequestKind.LoadAtRowOrdinal,
+            requestedRowOrdinal: rowOrdinal,
+            visibleLines: VisibleDataLineCount);
+        if (requestId == 0L)
+        {
+            return false;
+        }
+
+        _pendingSearchKeyboardSelection = PendingSearchKeyboardSelection.SpecificRowOrdinal;
+        _pendingSearchKeyboardSelectionRequestId = requestId;
+        _pendingSearchKeyboardSelectionColumn = selectedColumn;
+        _pendingSearchKeyboardSelectionRowOrdinal = rowOrdinal;
+        _pendingSearchKeyboardSelectionExtend = extendSelection;
+        _pendingSearchKeyboardSelectionActivate = activate;
+        return true;
     }
 
     private bool QueueSearchKeyboardSelectionRequest(ViewportRequestKind kind, PendingSearchKeyboardSelection pendingSelection, int deltaLines = 0, int selectedColumn = -1)
@@ -2500,21 +2571,46 @@ internal sealed class ViewportPaneWindow : IDisposable
 
         PendingSearchKeyboardSelection pendingSelection = _pendingSearchKeyboardSelection;
         int pendingColumn = _pendingSearchKeyboardSelectionColumn;
+        long pendingRowOrdinal = _pendingSearchKeyboardSelectionRowOrdinal;
+        bool extendSelection = _pendingSearchKeyboardSelectionExtend;
+        bool activate = _pendingSearchKeyboardSelectionActivate;
         ClearPendingSearchKeyboardSelection();
         if (_reader is null || _reader.CurrentRows.Count == 0)
         {
             return;
         }
 
-        int rowIndex = pendingSelection == PendingSearchKeyboardSelection.FirstVisibleRow
-            ? 0
-            : _reader.CurrentRows.Count - 1;
+        int rowIndex;
+        if (pendingSelection == PendingSearchKeyboardSelection.SpecificRowOrdinal)
+        {
+            rowIndex = 0;
+            if (_reader is IFileOffsetViewportReader offsetReader)
+            {
+                long relativeRow = pendingRowOrdinal - offsetReader.TopRowOrdinal;
+                rowIndex = (int)Math.Clamp(relativeRow, 0, _reader.CurrentRows.Count - 1);
+            }
+        }
+        else
+        {
+            rowIndex = pendingSelection == PendingSearchKeyboardSelection.FirstVisibleRow
+                ? 0
+                : _reader.CurrentRows.Count - 1;
+        }
+
         if (IsSearchCellSelectionMode && _reader is IColumnViewportReader columnReader)
         {
             int column = pendingColumn > 0
                 ? Math.Clamp(pendingColumn, 1, Math.Max(1, GetGridColumnCount(columnReader) - 1))
                 : ResolveKeyboardCellSelectionFocusColumn(GetGridColumnCount(columnReader));
-            SelectSingleGridCell(rowIndex, column, activate: true);
+            if (extendSelection)
+            {
+                ExtendGridCellSelectionTo(rowIndex, column, activate);
+            }
+            else
+            {
+                SelectSingleGridCell(rowIndex, column, activate);
+            }
+
             return;
         }
 
@@ -2526,6 +2622,9 @@ internal sealed class ViewportPaneWindow : IDisposable
         _pendingSearchKeyboardSelection = PendingSearchKeyboardSelection.None;
         _pendingSearchKeyboardSelectionRequestId = 0L;
         _pendingSearchKeyboardSelectionColumn = -1;
+        _pendingSearchKeyboardSelectionRowOrdinal = -1;
+        _pendingSearchKeyboardSelectionExtend = false;
+        _pendingSearchKeyboardSelectionActivate = true;
     }
 
     private bool TryHandleShiftSelectionKey(int key)
@@ -2600,8 +2699,40 @@ internal sealed class ViewportPaneWindow : IDisposable
             return false;
         }
 
-        int currentRow = ResolveKeyboardCellSelectionFocusRow();
         int currentColumn = ResolveKeyboardCellSelectionFocusColumn(columnCount);
+        if (TryGetOffscreenGridCellFocusOrdinal(out long currentRowOrdinal))
+        {
+            long targetRowOrdinal = currentRowOrdinal;
+            int offscreenTargetColumn = currentColumn;
+            bool activate = false;
+            switch (key)
+            {
+                case NativeMethods.VK_LEFT:
+                    offscreenTargetColumn = Math.Max(1, currentColumn - 1);
+                    break;
+                case NativeMethods.VK_RIGHT:
+                    offscreenTargetColumn = Math.Min(columnCount - 1, currentColumn + 1);
+                    break;
+                case NativeMethods.VK_UP:
+                    targetRowOrdinal = Math.Max(0, currentRowOrdinal - 1);
+                    activate = true;
+                    break;
+                case NativeMethods.VK_DOWN:
+                    targetRowOrdinal = currentRowOrdinal + 1;
+                    activate = true;
+                    break;
+                default:
+                    return false;
+            }
+
+            return QueueSearchKeyboardSelectionAtRowOrdinal(
+                targetRowOrdinal,
+                offscreenTargetColumn,
+                extendSelection: true,
+                activate: activate);
+        }
+
+        int currentRow = ResolveKeyboardCellSelectionFocusRow();
         int targetRow = currentRow;
         int targetColumn = currentColumn;
         switch (key)
@@ -2642,6 +2773,56 @@ internal sealed class ViewportPaneWindow : IDisposable
             TryFindCurrentRowIndex(_cellSelectionAnchorKey.Value.RowKey, out _cellSelectionAnchorDataIndex);
         }
 
+        return ExtendGridCellSelectionTo(targetRow, targetColumn, activate: targetRow != currentRow);
+    }
+
+    private bool ExtendGridCellSelectionTo(int targetRow, int targetColumn, bool activate)
+    {
+        if (_reader is null ||
+            !_reader.HasContent ||
+            _reader.CurrentRows.Count == 0 ||
+            _reader is not IColumnViewportReader columnReader ||
+            _reader is not ISelectableViewportReader ||
+            !TryGetCurrentRowSelection(targetRow, out ViewportRowSelectionKey targetRowKey, out _))
+        {
+            return false;
+        }
+
+        int columnCount = GetGridColumnCount(columnReader);
+        if (columnCount <= 1)
+        {
+            return false;
+        }
+
+        int currentColumn = ResolveKeyboardCellSelectionFocusColumn(columnCount);
+        targetColumn = Math.Clamp(targetColumn, 1, columnCount - 1);
+        if (_cellSelectionAnchorKey is null)
+        {
+            if (_cellSelectionFocusKey is GridCellKey focusKey)
+            {
+                _cellSelectionAnchorKey = focusKey;
+                TryFindCurrentRowIndex(focusKey.RowKey, out _cellSelectionAnchorDataIndex);
+            }
+            else
+            {
+                int currentRow = ResolveKeyboardCellSelectionFocusRow();
+                if (TryGetCurrentRowSelection(currentRow, out ViewportRowSelectionKey currentRowKey, out _))
+                {
+                    _cellSelectionAnchorDataIndex = currentRow;
+                    _cellSelectionAnchorKey = new GridCellKey(currentRowKey, currentColumn);
+                }
+                else
+                {
+                    _cellSelectionAnchorDataIndex = targetRow;
+                    _cellSelectionAnchorKey = new GridCellKey(targetRowKey, targetColumn);
+                }
+            }
+        }
+        else
+        {
+            TryFindCurrentRowIndex(_cellSelectionAnchorKey.Value.RowKey, out _cellSelectionAnchorDataIndex);
+        }
+
         var targetKey = new GridCellKey(targetRowKey, targetColumn);
         _cellSelectionFocusDataIndex = targetRow;
         _cellSelectionFocusKey = targetKey;
@@ -2658,12 +2839,9 @@ internal sealed class ViewportPaneWindow : IDisposable
             : new HashSet<int>();
         AddCellAxisRange(nextRanges, nextExcluded, nextColumns, _cellSelectionAnchorKey.Value, targetKey);
         ReplaceCellSelection(nextSelectAllRows, nextRanges, nextExcluded, nextColumns);
-        if (targetColumn != currentColumn)
-        {
-            EnsureGridColumnVisible(targetColumn);
-        }
+        EnsureGridColumnVisible(targetColumn);
 
-        if (targetRow != currentRow)
+        if (activate)
         {
             ActivateRowAt(targetRow);
         }

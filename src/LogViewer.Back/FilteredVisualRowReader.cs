@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 
-public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, IFileOffsetViewportReader, ISelectableViewportReader
+public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, IFileOffsetViewportReader, IRowOrdinalViewportReader, ISelectableViewportReader
 {
     private string _filePath;
     private LogEncodingKind _kind;
@@ -306,6 +306,46 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
         FilteredLineUtilities.ValidateLineRange(fs, _encoding, descriptor.StartOffset, descriptor.EndOffset);
         startOffset = descriptor.StartOffset;
         return true;
+    }
+
+    public bool TryGetRowOrdinal(ViewportRowSelectionKey key, out long rowOrdinal)
+    {
+        ThrowIfDisposed();
+        rowOrdinal = 0;
+        if (key.SegmentIndex != 0 || _descriptors.Length == 0)
+        {
+            return false;
+        }
+
+        int low = 0;
+        int high = _descriptors.Length - 1;
+        while (low <= high)
+        {
+            int mid = low + ((high - low) / 2);
+            long startOffset = _descriptors[mid].StartOffset;
+            if (startOffset < key.StartOffset)
+            {
+                low = mid + 1;
+                continue;
+            }
+
+            if (startOffset > key.StartOffset)
+            {
+                high = mid - 1;
+                continue;
+            }
+
+            FilteredLineDescriptor descriptor = _descriptors[mid];
+            if (descriptor.EndOffset != key.EndOffset)
+            {
+                return false;
+            }
+
+            rowOrdinal = _descriptorRowStarts[mid];
+            return true;
+        }
+
+        return false;
     }
 
     public IViewportReader CloneForWorker()

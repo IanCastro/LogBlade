@@ -59,6 +59,11 @@ public interface IFileOffsetViewportReader : IViewportReader
     bool TryGetRowStartOffset(long rowOrdinal, out long startOffset);
 }
 
+public interface IRowOrdinalViewportReader : IViewportReader
+{
+    bool TryGetRowOrdinal(ViewportRowSelectionKey key, out long rowOrdinal);
+}
+
 public interface ISelectableViewportReader : IViewportReader
 {
     IReadOnlyList<ViewportRowSelectionKey> CurrentRowSelectionKeys { get; }

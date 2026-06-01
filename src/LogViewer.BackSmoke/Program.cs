@@ -29,6 +29,7 @@ internal static class Program
             RunFilteredLineValidationAcceptsEmptyLine(tempRoot);
             RunSearchRowOffsetSyncsMainReader(tempRoot);
             RunSearchRowOffsetDetectsStaleLine(tempRoot);
+            RunSearchRowOrdinalLookup(tempRoot);
             RunVisualSelectionRangeAcrossViewport(tempRoot);
             RunVisualSelectionSelectsAllRows(tempRoot);
             RunVisualSelectionWrappedRowCopiesOriginalLine(tempRoot);
@@ -333,6 +334,27 @@ internal static class Program
         AssertThrows<FilteredLineStaleException>(
             "search row offset stale",
             () => ((IFileOffsetViewportReader)filtered).TryGetRowStartOffset(0, out _));
+    }
+
+    private static void RunSearchRowOrdinalLookup(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "search-row-ordinal.log", "alpha-0\r\nskip\r\nalpha-1\r\nalpha-2\r\n");
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
+
+        reader.ReadFromPercentage(0d, 2);
+        ViewportRowSelectionKey secondMatch = ((ISelectableViewportReader)reader).CurrentRowSelectionKeys[1];
+        reader.ReadFromPercentage(100d, 2);
+
+        AssertEqual("search row ordinal available", ((IRowOrdinalViewportReader)reader).TryGetRowOrdinal(secondMatch, out long rowOrdinal), true);
+        AssertEqual("search row ordinal value", rowOrdinal, 1L);
+
+        reader.ReadFromRowOrdinal(rowOrdinal, 2);
+        AssertSequence("search row ordinal rows", reader.CurrentRows, "alpha-1", "alpha-2");
     }
 
     private static void RunVisualSelectionRangeAcrossViewport(string tempRoot)
