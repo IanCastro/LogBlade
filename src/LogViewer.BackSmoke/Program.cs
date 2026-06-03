@@ -45,6 +45,9 @@ internal static class Program
             RunCascadedInvertMatch(tempRoot);
             RunCascadedInvalidRegexValidation();
             RunCascadedCaptureGroupsUseLastCapturingRegex(tempRoot);
+            RunStagedLiteralSearchKeepsIntermediateResults(tempRoot);
+            RunStagedCaptureGroupsUsePerStageCaptures(tempRoot);
+            RunAppendStagedSearchKeepsIntermediateResults(tempRoot);
             RunAppendSearchCascadeAddsMatches(tempRoot);
             RunAppendSearchAddsMatches(tempRoot);
             RunAppendSearchWithoutMatchKeepsCount(tempRoot);
@@ -629,6 +632,105 @@ internal static class Program
         AssertSequence("cascade capture second cells", columns.CurrentCells[1], "2", "aabcc code-7", "7");
     }
 
+    private static void RunStagedLiteralSearchKeepsIntermediateResults(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "staged-literal.log", "alpha\r\nalpha beta\r\nbeta\r\nalpha beta gamma\r\n");
+        SearchOptions[] options =
+        {
+            new("alpha", UseRegex: false, IgnoreCase: false),
+            new("beta", UseRegex: false, IgnoreCase: false)
+        };
+
+        FilteredVisualRowReader[] readers = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, options);
+        try
+        {
+            AssertEqual("staged literal reader count", readers.Length, 2);
+            readers[0].ReadFromPercentage(0d, 10);
+            readers[1].ReadFromPercentage(0d, 10);
+
+            AssertEqual("staged literal first count", readers[0].MatchedLineCount, 3L);
+            AssertSequence("staged literal first rows", readers[0].CurrentRows, "alpha", "alpha beta", "alpha beta gamma");
+            AssertSequence("staged literal first cells", ((IColumnViewportReader)readers[0]).CurrentCells[1], "2", "alpha beta");
+
+            AssertEqual("staged literal second count", readers[1].MatchedLineCount, 2L);
+            AssertSequence("staged literal second rows", readers[1].CurrentRows, "alpha beta", "alpha beta gamma");
+            AssertSequence("staged literal second cells", ((IColumnViewportReader)readers[1]).CurrentCells[0], "2", "alpha beta");
+        }
+        finally
+        {
+            DisposeReaders(readers);
+        }
+    }
+
+    private static void RunStagedCaptureGroupsUsePerStageCaptures(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "staged-captures.log", "aaabccc code-42\r\naabcc code-7\r\nplain code-9\r\n");
+        SearchOptions[] options =
+        {
+            new("(a+)b(c+)", UseRegex: true, IgnoreCase: false),
+            new("code-(\\d+)", UseRegex: true, IgnoreCase: false)
+        };
+
+        FilteredVisualRowReader[] readers = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, options);
+        try
+        {
+            AssertEqual("staged capture reader count", readers.Length, 2);
+            readers[0].ReadFromPercentage(0d, 10);
+            readers[1].ReadFromPercentage(0d, 10);
+
+            IColumnViewportReader firstColumns = readers[0];
+            AssertSequence("staged capture first headers", firstColumns.ColumnHeaders, "#", "Text", "0", "1");
+            AssertSequence("staged capture first cells", firstColumns.CurrentCells[0], "1", "aaabccc code-42", "aaa", "ccc");
+
+            IColumnViewportReader secondColumns = readers[1];
+            AssertSequence("staged capture second headers", secondColumns.ColumnHeaders, "#", "Text", "0");
+            AssertSequence("staged capture second first cells", secondColumns.CurrentCells[0], "1", "aaabccc code-42", "42");
+            AssertSequence("staged capture second second cells", secondColumns.CurrentCells[1], "2", "aabcc code-7", "7");
+        }
+        finally
+        {
+            DisposeReaders(readers);
+        }
+    }
+
+    private static void RunAppendStagedSearchKeepsIntermediateResults(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "append-staged-search.log", "alpha beta\r\nalpha plain\r\n");
+        SearchOptions[] options =
+        {
+            new("alpha", UseRegex: false, IgnoreCase: false),
+            new("beta", UseRegex: false, IgnoreCase: false)
+        };
+
+        FilteredVisualRowReader[] initial = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, options);
+        try
+        {
+            File.AppendAllText(path, "new alpha\r\nnew alpha beta\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            FilteredVisualRowReader[] appended = BuildAppendedStagedReaders(initial, options);
+            try
+            {
+                appended[0].ReadFromPercentage(0d, 10);
+                appended[1].ReadFromPercentage(0d, 10);
+
+                AssertEqual("append staged first count", appended[0].MatchedLineCount, 4L);
+                AssertSequence("append staged first rows", appended[0].CurrentRows, "alpha beta", "alpha plain", "new alpha", "new alpha beta");
+                AssertSequence("append staged first final cells", ((IColumnViewportReader)appended[0]).CurrentCells[3], "4", "new alpha beta");
+
+                AssertEqual("append staged second count", appended[1].MatchedLineCount, 2L);
+                AssertSequence("append staged second rows", appended[1].CurrentRows, "alpha beta", "new alpha beta");
+                AssertSequence("append staged second final cells", ((IColumnViewportReader)appended[1]).CurrentCells[1], "4", "new alpha beta");
+            }
+            finally
+            {
+                DisposeReaders(appended);
+            }
+        }
+        finally
+        {
+            DisposeReaders(initial);
+        }
+    }
+
     private static void RunAppendSearchCascadeAddsMatches(string tempRoot)
     {
         string path = WriteLog(tempRoot, "append-search-cascade.log", "alpha beta\r\nalpha plain\r\n");
@@ -804,6 +906,36 @@ internal static class Program
         return latest ?? throw new InvalidOperationException("Append search did not publish a reader.");
     }
 
+    private static FilteredVisualRowReader[] BuildAppendedStagedReaders(IReadOnlyList<FilteredVisualRowReader> initial, IReadOnlyList<SearchOptions> options)
+    {
+        FilteredVisualRowReader?[] latest = new FilteredVisualRowReader?[initial.Count];
+        LogSearchBuilder.BuildAppendedStagedFilteredReadersIncremental(
+            initial,
+            options,
+            new FileInfo(initial[0].FilePath).Length,
+            CreateFilledArray(initial.Count, 10),
+            update =>
+            {
+                for (int i = 0; i < update.Readers.Length; i++)
+                {
+                    if (update.Readers[i] is not null)
+                    {
+                        latest[i]?.Dispose();
+                        latest[i] = update.Readers[i];
+                    }
+                }
+            },
+            CancellationToken.None);
+
+        FilteredVisualRowReader[] readers = new FilteredVisualRowReader[latest.Length];
+        for (int i = 0; i < latest.Length; i++)
+        {
+            readers[i] = latest[i] ?? throw new InvalidOperationException("Append staged search did not publish every reader.");
+        }
+
+        return readers;
+    }
+
     private static void RunPageUpNearStartClampsToTop(string tempRoot)
     {
         string path = WriteLog(tempRoot, "page-up-near-start.log", "line-0\r\nline-1\r\nline-2\r\nline-3\r\nline-4\r\n");
@@ -926,6 +1058,21 @@ internal static class Program
         reader.ReadFromPercentage(100d, 2);
 
         AssertSequence("tail truncate append rows", reader.CurrentRows, "after-0", "after-1");
+    }
+
+    private static int[] CreateFilledArray(int count, int value)
+    {
+        int[] values = new int[count];
+        Array.Fill(values, value);
+        return values;
+    }
+
+    private static void DisposeReaders(IReadOnlyList<FilteredVisualRowReader> readers)
+    {
+        foreach (FilteredVisualRowReader reader in readers)
+        {
+            reader.Dispose();
+        }
     }
 
     private static string WriteLog(string tempRoot, string name, string content)

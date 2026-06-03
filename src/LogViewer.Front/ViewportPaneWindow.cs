@@ -68,6 +68,8 @@ internal sealed class ViewportPaneWindow : IDisposable
     private readonly Action<ViewportPaneWindow>? _onUsefulPaint;
     private readonly Action<ViewportPaneWindow>? _onStale;
     private readonly Action<ViewportPaneWindow, long>? _onRowActivated;
+    private readonly Func<ViewportPaneWindow, int, bool>? _onHostVerticalResizeHit;
+    private readonly Func<ViewportPaneWindow, int, bool>? _onHostVerticalResizeBegin;
 
     private IntPtr _hwnd;
     private IntPtr _inactiveSelectionBrush;
@@ -143,7 +145,15 @@ internal sealed class ViewportPaneWindow : IDisposable
     private GridCellKey? _cellSelectionAnchorKey;
     private GridCellKey? _cellSelectionFocusKey;
 
-    public ViewportPaneWindow(IntPtr font, int lineHeight, int charWidth, Action<ViewportPaneWindow>? onUsefulPaint = null, Action<ViewportPaneWindow>? onStale = null, Action<ViewportPaneWindow, long>? onRowActivated = null)
+    public ViewportPaneWindow(
+        IntPtr font,
+        int lineHeight,
+        int charWidth,
+        Action<ViewportPaneWindow>? onUsefulPaint = null,
+        Action<ViewportPaneWindow>? onStale = null,
+        Action<ViewportPaneWindow, long>? onRowActivated = null,
+        Func<ViewportPaneWindow, int, bool>? onHostVerticalResizeHit = null,
+        Func<ViewportPaneWindow, int, bool>? onHostVerticalResizeBegin = null)
     {
         _font = font;
         _lineHeight = Math.Max(1, lineHeight);
@@ -152,6 +162,8 @@ internal sealed class ViewportPaneWindow : IDisposable
         _onUsefulPaint = onUsefulPaint;
         _onStale = onStale;
         _onRowActivated = onRowActivated;
+        _onHostVerticalResizeHit = onHostVerticalResizeHit;
+        _onHostVerticalResizeBegin = onHostVerticalResizeBegin;
     }
 
     public IntPtr Hwnd => _hwnd;
@@ -771,6 +783,13 @@ internal sealed class ViewportPaneWindow : IDisposable
             return;
         }
 
+        if (IsHostVerticalResizeHit(y))
+        {
+            _hoverResizeColumnIndex = -1;
+            SetVerticalResizeCursor();
+            return;
+        }
+
         int nextHover = HitTestColumnResize(x, y);
         if (_hoverResizeColumnIndex != nextHover)
         {
@@ -785,10 +804,15 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private void OnLButtonDown(IntPtr lParam)
     {
-        Focus();
-        ClearPendingSearchKeyboardSelection();
         int x = NativeMethods.LowWord(lParam);
         int y = NativeMethods.HighWord(lParam);
+        if (TryBeginHostVerticalResize(y))
+        {
+            return;
+        }
+
+        Focus();
+        ClearPendingSearchKeyboardSelection();
         if (TryBeginArmedTextSelection(x, y))
         {
             return;
@@ -895,6 +919,12 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private bool OnSetCursor()
     {
+        if (TryGetClientCursorY(out int y) && IsHostVerticalResizeHit(y))
+        {
+            SetVerticalResizeCursor();
+            return true;
+        }
+
         if (_isColumnResizing || _hoverResizeColumnIndex >= 0)
         {
             SetResizeCursor();
@@ -902,6 +932,34 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         return false;
+    }
+
+    private bool IsHostVerticalResizeHit(int y) =>
+        !_isColumnResizing &&
+        !_isSelectingText &&
+        !_isSelectingRows &&
+        !_isSelectingCells &&
+        !_isSelectingGridAxis &&
+        (_onHostVerticalResizeHit?.Invoke(this, y) ?? false);
+
+    private bool TryBeginHostVerticalResize(int y) =>
+        _onHostVerticalResizeBegin?.Invoke(this, y) ?? false;
+
+    private bool TryGetClientCursorY(out int y)
+    {
+        y = int.MinValue;
+        if (!NativeMethods.GetCursorPos(out NativeMethods.POINT point))
+        {
+            return false;
+        }
+
+        if (!NativeMethods.ScreenToClient(_hwnd, ref point))
+        {
+            return false;
+        }
+
+        y = point.y;
+        return true;
     }
 
     private bool BeginTextSelectionFromDoubleClick(int x, int y)
@@ -4427,6 +4485,11 @@ internal sealed class ViewportPaneWindow : IDisposable
     private void SetResizeCursor()
     {
         NativeMethods.SetCursor(NativeMethods.LoadCursorW(IntPtr.Zero, NativeMethods.IDC_SIZEWE));
+    }
+
+    private void SetVerticalResizeCursor()
+    {
+        NativeMethods.SetCursor(NativeMethods.LoadCursorW(IntPtr.Zero, NativeMethods.IDC_SIZENS));
     }
 
     private void PaintGridTextSelection(

@@ -25,10 +25,11 @@ internal sealed class SearchWorkerResult
     public bool InvertMatch { get; set; }
     public bool Success { get; set; }
     public string? Message { get; set; }
-    public IViewportReader? Reader { get; set; }
-    public int PreloadedVisibleLines { get; set; }
+    public IViewportReader?[]? Readers { get; set; }
+    public int[]? PreloadedVisibleLines { get; set; }
     public double ProgressPercentage { get; set; }
     public long MatchedLineCount { get; set; }
+    public long[]? StageMatchedLineCounts { get; set; }
     public long ElapsedMilliseconds { get; set; }
     public bool IsFinal { get; set; }
     public bool IsAppendUpdate { get; set; }
@@ -45,6 +46,9 @@ internal sealed class ViewerWindow
     private const int SearchLevelRowGap = 4;
     private const int SearchProgressGap = 4;
     private const int SearchToggleGap = 8;
+    private const double DefaultSearchAreaRatio = 0.35d;
+    private const int MinimumMainViewerHeight = 96;
+    private const int MinimumSearchResultHeight = 48;
     private const int RegexToggleWidth = 72;
     private const int IgnoreCaseToggleWidth = 112;
     private const int InvertMatchToggleWidth = 120;
@@ -62,11 +66,11 @@ internal sealed class ViewerWindow
     private int _charWidth = 8;
     private bool _firstRenderLogged;
     private bool _closing;
+    private bool _updatingSearchControls;
     private readonly List<SearchLevelState> _searchLevels = new();
     private int _activeSearchLevelCount;
     private DetectedEncodingInfo? _detectedEncoding;
     private ViewportPaneWindow? _mainPane;
-    private ViewportPaneWindow? _filteredPane;
     private WindowLayout _layout;
     private readonly object _searchCancellationSync = new();
     private long _nextSearchRequestId;
@@ -81,8 +85,16 @@ internal sealed class ViewerWindow
     private bool _appendSearchPending;
     private bool _appendSearchInProgress;
     private bool _searchStale;
-    private double? _customSearchResultsRatio;
+    private double? _customSearchAreaRatio;
+    private bool _isSearchAreaResizing;
+    private int _searchAreaResizeStartY;
+    private int _searchAreaResizeStartHeight;
     private bool _isSearchResultsResizing;
+    private int _resizingSearchResultIndex = -1;
+    private int _searchResultResizeStartY;
+    private int _searchResultResizeAvailableHeight;
+    private double _searchResultResizeStartRatio;
+    private double[]? _searchResultResizeStartRatios;
 
     private static readonly NativeMethods.WindowProc s_wndProc = WindowProc;
     private static readonly NativeMethods.WindowProc s_searchEditProc = SearchEditProc;
@@ -96,23 +108,27 @@ internal sealed class ViewerWindow
         public IntPtr IgnoreCaseCheckbox;
         public IntPtr InvertMatchCheckbox;
         public IntPtr OriginalSearchEditProc;
+        public ViewportPaneWindow? ResultsPane;
         public string Query = string.Empty;
         public bool UseRegex = true;
         public bool IgnoreCase;
         public bool InvertMatch;
+        public double? CustomResultRatio;
     }
+
+    private readonly record struct SearchLevelSnapshot(string Query, bool UseRegex, bool IgnoreCase, bool InvertMatch);
 
     private readonly record struct SearchLevelLayout(
         NativeMethods.RECT SearchEditRect,
         NativeMethods.RECT SearchRegexToggleRect,
         NativeMethods.RECT SearchIgnoreCaseToggleRect,
-        NativeMethods.RECT SearchInvertMatchToggleRect);
+        NativeMethods.RECT SearchInvertMatchToggleRect,
+        NativeMethods.RECT SearchResultsRect);
 
     private readonly record struct WindowLayout(
         NativeMethods.RECT ClientRect,
         NativeMethods.RECT ViewerRect,
         NativeMethods.RECT SearchAreaRect,
-        NativeMethods.RECT SearchResultsRect,
         SearchLevelLayout[] SearchLevelLayouts,
         NativeMethods.RECT SearchProgressRect);
 
@@ -395,14 +411,15 @@ internal sealed class ViewerWindow
         MeasureFont();
 
         IntPtr hInstance = NativeMethods.GetModuleHandleW(null);
-        _mainPane = new ViewportPaneWindow(_font, _lineHeight, _charWidth, OnMainPaneUsefulPaint);
+        _mainPane = new ViewportPaneWindow(
+            _font,
+            _lineHeight,
+            _charWidth,
+            onUsefulPaint: OnMainPaneUsefulPaint,
+            onHostVerticalResizeHit: OnMainPaneResizeHit,
+            onHostVerticalResizeBegin: OnMainPaneResizeBegin);
         _mainPane.Create(_hwnd, hInstance);
         _mainPane.SetStatus("Loading file...");
-
-        _filteredPane = new ViewportPaneWindow(_font, _lineHeight, _charWidth, onStale: OnFilteredPaneStale, onRowActivated: OnFilteredRowActivated);
-        _filteredPane.Create(_hwnd, hInstance);
-        _filteredPane.SetEmptyContentText("(no matches)");
-        _filteredPane.SetStatus(string.Empty);
 
         CreateSearchLevel(hInstance);
         CreateSearchResizeGrip(hInstance);
@@ -502,6 +519,17 @@ internal sealed class ViewerWindow
         NativeMethods.SendMessageW(level.RegexCheckbox, NativeMethods.BM_SETCHECK, new IntPtr(NativeMethods.BST_CHECKED), IntPtr.Zero);
         NativeMethods.SendMessageW(level.IgnoreCaseCheckbox, NativeMethods.BM_SETCHECK, new IntPtr(NativeMethods.BST_UNCHECKED), IntPtr.Zero);
         NativeMethods.SendMessageW(level.InvertMatchCheckbox, NativeMethods.BM_SETCHECK, new IntPtr(NativeMethods.BST_UNCHECKED), IntPtr.Zero);
+        level.ResultsPane = new ViewportPaneWindow(
+            _font,
+            _lineHeight,
+            _charWidth,
+            onStale: OnFilteredPaneStale,
+            onRowActivated: OnFilteredRowActivated,
+            onHostVerticalResizeHit: OnResultsPaneResizeHit,
+            onHostVerticalResizeBegin: OnResultsPaneResizeBegin);
+        level.ResultsPane.Create(_hwnd, hInstance);
+        level.ResultsPane.SetEmptyContentText("(no matches)");
+        level.ResultsPane.SetStatus(string.Empty);
         _searchLevels.Add(level);
         return level;
     }
@@ -577,7 +605,7 @@ internal sealed class ViewerWindow
         _appendSearchPending = false;
         _appendSearchInProgress = false;
         _mainPane.SetStatus("Loading file...");
-        _filteredPane?.SetStatus(string.Empty);
+        SetActiveSearchResultStatus(string.Empty);
         InvalidateHost();
 
         if (!File.Exists(_path))
@@ -769,7 +797,7 @@ internal sealed class ViewerWindow
 
     private bool OnSetCursor()
     {
-        if (_isSearchResultsResizing || IsSearchResizeHit(GetClientCursorY()))
+        if (_isSearchAreaResizing || _isSearchResultsResizing || IsSearchResizeHit(GetClientCursorY()))
         {
             NativeMethods.SetCursor(NativeMethods.LoadCursorW(IntPtr.Zero, NativeMethods.IDC_SIZENS));
             return true;
@@ -781,27 +809,82 @@ internal sealed class ViewerWindow
     private bool OnLButtonDown(IntPtr lParam)
     {
         int y = NativeMethods.HighWord(lParam);
-        if (!IsSearchResizeHit(y))
+        if (!TryGetSearchResizeHit(y, out bool resizeSearchArea, out int index))
         {
             return false;
         }
 
-        _isSearchResultsResizing = true;
-        NativeMethods.SetCapture(_hwnd);
-        NativeMethods.SetCursor(NativeMethods.LoadCursorW(IntPtr.Zero, NativeMethods.IDC_SIZENS));
+        BeginSearchResize(resizeSearchArea, index, y, _hwnd);
         return true;
     }
 
     private void BeginSearchResultsResizeFromGrip(IntPtr lParam)
     {
-        _isSearchResultsResizing = true;
-        NativeMethods.SetCapture(_searchResizeGrip);
+        int y = GetGripMouseYInHost(lParam);
+        if (TryGetSearchResizeHit(y, out bool resizeSearchArea, out int index))
+        {
+            BeginSearchResize(resizeSearchArea, index, y, _searchResizeGrip);
+        }
+    }
+
+    private void BeginSearchResize(bool resizeSearchArea, int index, int y, IntPtr captureHwnd)
+    {
+        if (resizeSearchArea)
+        {
+            BeginSearchAreaResize(y, captureHwnd);
+            return;
+        }
+
+        BeginSearchResultsResize(index, y, captureHwnd);
+    }
+
+    private void BeginSearchAreaResize(int y, IntPtr captureHwnd)
+    {
+        if (!HasActiveSearch)
+        {
+            return;
+        }
+
+        _isSearchAreaResizing = true;
+        _searchAreaResizeStartY = y;
+        _searchAreaResizeStartHeight = GetRectHeight(_layout.SearchAreaRect);
+        NativeMethods.SetCapture(captureHwnd);
         NativeMethods.SetCursor(NativeMethods.LoadCursorW(IntPtr.Zero, NativeMethods.IDC_SIZENS));
-        ResizeSearchResults(GetGripMouseYInHost(lParam));
+    }
+
+    private void BeginSearchResultsResize(int index, int y, IntPtr captureHwnd)
+    {
+        if (GetActiveSearchResultCount() <= 1)
+        {
+            BeginSearchAreaResize(y, captureHwnd);
+            return;
+        }
+
+        if (index < 0 || index >= _activeSearchLevelCount || index >= _searchLevels.Count)
+        {
+            return;
+        }
+
+        _isSearchResultsResizing = true;
+        _resizingSearchResultIndex = index;
+        _searchResultResizeStartY = y;
+        _searchResultResizeAvailableHeight = GetAvailableSearchResultHeight(GetRectHeight(_layout.SearchAreaRect));
+        _searchResultResizeStartRatios = GetNormalizedSearchResultRatios();
+        _searchResultResizeStartRatio = index < _searchResultResizeStartRatios.Length
+            ? _searchResultResizeStartRatios[index]
+            : 0d;
+        NativeMethods.SetCapture(captureHwnd);
+        NativeMethods.SetCursor(NativeMethods.LoadCursorW(IntPtr.Zero, NativeMethods.IDC_SIZENS));
     }
 
     private void OnMouseMove(IntPtr lParam)
     {
+        if (_isSearchAreaResizing)
+        {
+            ResizeSearchArea(NativeMethods.HighWord(lParam));
+            return;
+        }
+
         if (!_isSearchResultsResizing)
         {
             return;
@@ -812,6 +895,12 @@ internal sealed class ViewerWindow
 
     private void UpdateSearchResultsResizeFromGrip(IntPtr lParam)
     {
+        if (_isSearchAreaResizing)
+        {
+            ResizeSearchArea(GetGripMouseYInHost(lParam));
+            return;
+        }
+
         if (!_isSearchResultsResizing)
         {
             return;
@@ -820,16 +909,47 @@ internal sealed class ViewerWindow
         ResizeSearchResults(GetGripMouseYInHost(lParam));
     }
 
-    private void ResizeSearchResults(int y)
+    private void ResizeSearchArea(int y)
     {
+        if (!HasActiveSearch)
+        {
+            return;
+        }
+
         NativeMethods.GetClientRect(_hwnd, out NativeMethods.RECT clientRect);
         int clientHeight = GetRectHeight(clientRect);
-        int searchAreaHeight = Math.Min(GetPreferredSearchAreaHeight(), clientHeight);
-        int availableHeight = Math.Max(0, clientHeight - searchAreaHeight);
-        int requestedHeight = Math.Max(0, clientRect.bottom - searchAreaHeight - y);
-        _customSearchResultsRatio = availableHeight > 0
-            ? Math.Clamp(requestedHeight / (double)availableHeight, 0d, 1d)
+        int requestedHeight = _searchAreaResizeStartHeight + (_searchAreaResizeStartY - y);
+        int searchAreaHeight = ClampSearchAreaHeight(requestedHeight, clientHeight);
+        _customSearchAreaRatio = clientHeight > 0
+            ? Math.Clamp(searchAreaHeight / (double)clientHeight, 0d, 1d)
+            : DefaultSearchAreaRatio;
+        RecalculateLayout();
+        ApplyLayout();
+        InvalidateHost();
+    }
+
+    private void ResizeSearchResults(int y)
+    {
+        if (_resizingSearchResultIndex < 0 ||
+            _resizingSearchResultIndex >= _activeSearchLevelCount ||
+            _resizingSearchResultIndex >= _searchLevels.Count)
+        {
+            return;
+        }
+
+        if (_searchResultResizeStartRatios is null)
+        {
+            return;
+        }
+
+        double deltaRatio = _searchResultResizeAvailableHeight > 0
+            ? (_searchResultResizeStartY - y) / (double)_searchResultResizeAvailableHeight
             : 0d;
+        ApplySearchResultRatioResize(
+            _resizingSearchResultIndex,
+            _searchResultResizeStartRatio + deltaRatio,
+            _searchResultResizeStartRatios,
+            _searchResultResizeAvailableHeight);
         RecalculateLayout();
         ApplyLayout();
         InvalidateHost();
@@ -842,12 +962,19 @@ internal sealed class ViewerWindow
 
     private void EndSearchResultsResize()
     {
-        if (!_isSearchResultsResizing)
+        if (!_isSearchAreaResizing && !_isSearchResultsResizing)
         {
             return;
         }
 
+        _isSearchAreaResizing = false;
+        _searchAreaResizeStartY = 0;
+        _searchAreaResizeStartHeight = 0;
         _isSearchResultsResizing = false;
+        _resizingSearchResultIndex = -1;
+        _searchResultResizeAvailableHeight = 0;
+        _searchResultResizeStartRatio = 0d;
+        _searchResultResizeStartRatios = null;
         NativeMethods.ReleaseCapture();
     }
 
@@ -858,6 +985,28 @@ internal sealed class ViewerWindow
         Math.Max(_layout.ClientRect.top, _layout.SearchAreaRect.top - SearchResizeHitSlopPx);
 
     private bool IsSearchResizeHit(int y)
+        => TryGetSearchResizeHit(y, out _, out _);
+
+    private bool TryGetSearchResizeHit(int y, out bool resizeSearchArea, out int index)
+    {
+        resizeSearchArea = false;
+        index = -1;
+        if (TryGetSearchAreaResizeHit(y))
+        {
+            resizeSearchArea = true;
+            return true;
+        }
+
+        if (!TryGetSearchResultResizeHit(y, out index))
+        {
+            return false;
+        }
+
+        resizeSearchArea = GetActiveSearchResultCount() <= 1;
+        return true;
+    }
+
+    private bool TryGetSearchAreaResizeHit(int y)
     {
         if (!HasActiveSearch || IsZeroRect(_layout.SearchAreaRect))
         {
@@ -865,6 +1014,28 @@ internal sealed class ViewerWindow
         }
 
         return Math.Abs(y - _layout.SearchAreaRect.top) <= SearchResizeHitSlopPx;
+    }
+
+    private bool TryGetSearchResultResizeHit(int y, out int index)
+    {
+        index = -1;
+        if (!HasActiveSearch || _layout.SearchLevelLayouts is null)
+        {
+            return false;
+        }
+
+        int count = Math.Min(_activeSearchLevelCount, _layout.SearchLevelLayouts.Length);
+        for (int i = 0; i < count; i++)
+        {
+            NativeMethods.RECT rect = _layout.SearchLevelLayouts[i].SearchResultsRect;
+            if (!IsZeroRect(rect) && Math.Abs(y - rect.top) <= SearchResizeHitSlopPx)
+            {
+                index = i;
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private int GetClientCursorY()
@@ -878,6 +1049,9 @@ internal sealed class ViewerWindow
     }
 
     private bool HasActiveSearch => _activeSearchLevelCount > 0;
+
+    private int GetActiveSearchResultCount() =>
+        Math.Min(_activeSearchLevelCount, _searchLevels.Count);
 
     private SearchLevelState? FindSearchLevelByEdit(IntPtr hwnd)
     {
@@ -907,6 +1081,93 @@ internal sealed class ViewerWindow
         return null;
     }
 
+    private SearchLevelState? FindSearchLevelByResultsPane(ViewportPaneWindow pane)
+    {
+        int index = FindSearchLevelIndexByResultsPane(pane);
+        return index >= 0 ? _searchLevels[index] : null;
+    }
+
+    private int FindSearchLevelIndexByResultsPane(ViewportPaneWindow pane)
+    {
+        for (int i = 0; i < _searchLevels.Count; i++)
+        {
+            if (ReferenceEquals(_searchLevels[i].ResultsPane, pane))
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    private bool OnMainPaneResizeHit(ViewportPaneWindow pane, int paneY)
+        => TryGetMainPaneResizeHit(pane, paneY, out _);
+
+    private bool OnMainPaneResizeBegin(ViewportPaneWindow pane, int paneY)
+    {
+        if (!TryGetMainPaneResizeHit(pane, paneY, out int hostY))
+        {
+            return false;
+        }
+
+        BeginSearchAreaResize(hostY, _hwnd);
+        return true;
+    }
+
+    private bool TryGetMainPaneResizeHit(ViewportPaneWindow pane, int paneY, out int hostY)
+    {
+        hostY = int.MinValue;
+        if (!ReferenceEquals(_mainPane, pane) || !HasActiveSearch || IsZeroRect(_layout.ViewerRect))
+        {
+            return false;
+        }
+
+        hostY = _layout.ViewerRect.top + paneY;
+        return TryGetSearchAreaResizeHit(hostY);
+    }
+
+    private bool OnResultsPaneResizeHit(ViewportPaneWindow pane, int paneY)
+        => TryGetResultsPaneResizeHit(pane, paneY, out _, out _, out _);
+
+    private bool OnResultsPaneResizeBegin(ViewportPaneWindow pane, int paneY)
+    {
+        if (!TryGetResultsPaneResizeHit(pane, paneY, out bool resizeSearchArea, out int index, out int hostY))
+        {
+            return false;
+        }
+
+        BeginSearchResize(resizeSearchArea, index, hostY, _hwnd);
+        return true;
+    }
+
+    private bool TryGetResultsPaneResizeHit(ViewportPaneWindow pane, int paneY, out bool resizeSearchArea, out int index, out int hostY)
+    {
+        resizeSearchArea = false;
+        index = FindSearchLevelIndexByResultsPane(pane);
+        hostY = int.MinValue;
+        if (index < 0 ||
+            index >= _activeSearchLevelCount ||
+            index >= _layout.SearchLevelLayouts.Length)
+        {
+            return false;
+        }
+
+        NativeMethods.RECT rect = _layout.SearchLevelLayouts[index].SearchResultsRect;
+        if (IsZeroRect(rect))
+        {
+            return false;
+        }
+
+        hostY = rect.top + paneY;
+        if (Math.Abs(hostY - rect.top) > SearchResizeHitSlopPx)
+        {
+            return false;
+        }
+
+        resizeSearchArea = GetActiveSearchResultCount() <= 1;
+        return true;
+    }
+
     private void ReadSearchLevelFromControls(SearchLevelState level)
     {
         level.Query = ReadWindowText(level.SearchEdit);
@@ -926,30 +1187,75 @@ internal sealed class ViewerWindow
     private void NormalizeSearchLevelsFromControls()
     {
         ReadAllSearchLevelsFromControls();
-        int firstEmpty = -1;
+        List<SearchLevelSnapshot> activeLevels = new();
         for (int i = 0; i < _searchLevels.Count; i++)
         {
-            if (string.IsNullOrEmpty(_searchLevels[i].Query))
+            SearchLevelState level = _searchLevels[i];
+            if (!string.IsNullOrEmpty(level.Query))
             {
-                firstEmpty = i;
-                break;
+                activeLevels.Add(new SearchLevelSnapshot(level.Query, level.UseRegex, level.IgnoreCase, level.InvertMatch));
             }
         }
 
-        if (firstEmpty >= 0)
+        bool structureChanged = activeLevels.Count != _activeSearchLevelCount || _searchLevels.Count != activeLevels.Count + 1;
+        IntPtr hInstance = NativeMethods.GetModuleHandleW(null);
+        while (_searchLevels.Count < activeLevels.Count + 1)
         {
-            for (int i = _searchLevels.Count - 1; i > firstEmpty; i--)
-            {
-                DestroySearchLevel(_searchLevels[i]);
-                _searchLevels.RemoveAt(i);
-            }
-
-            _activeSearchLevelCount = firstEmpty;
-            return;
+            CreateSearchLevel(hInstance);
+            structureChanged = true;
         }
 
-        _activeSearchLevelCount = _searchLevels.Count;
-        CreateSearchLevel(NativeMethods.GetModuleHandleW(null));
+        for (int i = _searchLevels.Count - 1; i >= activeLevels.Count + 1; i--)
+        {
+            DestroySearchLevel(_searchLevels[i]);
+            _searchLevels.RemoveAt(i);
+            structureChanged = true;
+        }
+
+        _updatingSearchControls = true;
+        try
+        {
+            for (int i = 0; i < activeLevels.Count; i++)
+            {
+                SetSearchLevelControls(_searchLevels[i], activeLevels[i]);
+            }
+
+            SetSearchLevelControls(_searchLevels[activeLevels.Count], new SearchLevelSnapshot(string.Empty, UseRegex: true, IgnoreCase: false, InvertMatch: false));
+        }
+        finally
+        {
+            _updatingSearchControls = false;
+        }
+
+        _activeSearchLevelCount = activeLevels.Count;
+        if (structureChanged)
+        {
+            ResetSearchResultHeights();
+        }
+    }
+
+    private void SetSearchLevelControls(SearchLevelState level, SearchLevelSnapshot snapshot)
+    {
+        if (level.Query != snapshot.Query)
+        {
+            NativeMethods.SetWindowTextW(level.SearchEdit, snapshot.Query);
+        }
+
+        level.Query = snapshot.Query;
+        level.UseRegex = snapshot.UseRegex;
+        level.IgnoreCase = snapshot.IgnoreCase;
+        level.InvertMatch = snapshot.InvertMatch;
+        SetButtonChecked(level.RegexCheckbox, snapshot.UseRegex);
+        SetButtonChecked(level.IgnoreCaseCheckbox, snapshot.IgnoreCase);
+        SetButtonChecked(level.InvertMatchCheckbox, snapshot.InvertMatch);
+    }
+
+    private void ResetSearchResultHeights()
+    {
+        foreach (SearchLevelState level in _searchLevels)
+        {
+            level.CustomResultRatio = null;
+        }
     }
 
     private SearchOptions[] GetActiveSearchOptions()
@@ -962,6 +1268,79 @@ internal sealed class ViewerWindow
         }
 
         return options;
+    }
+
+    private int[] GetActiveSearchVisibleLineCounts()
+    {
+        int[] visibleLines = new int[_activeSearchLevelCount];
+        for (int i = 0; i < visibleLines.Length; i++)
+        {
+            visibleLines[i] = _searchLevels[i].ResultsPane?.VisibleDataLineCount ?? 1;
+        }
+
+        return visibleLines;
+    }
+
+    private FilteredVisualRowReader[]? GetActiveFilteredReaders()
+    {
+        if (_activeSearchLevelCount == 0)
+        {
+            return Array.Empty<FilteredVisualRowReader>();
+        }
+
+        FilteredVisualRowReader[] readers = new FilteredVisualRowReader[_activeSearchLevelCount];
+        for (int i = 0; i < readers.Length; i++)
+        {
+            if (_searchLevels[i].ResultsPane?.Reader is not FilteredVisualRowReader reader)
+            {
+                return null;
+            }
+
+            readers[i] = reader;
+        }
+
+        return readers;
+    }
+
+    private void SetActiveSearchResultStatus(string status, bool disposeReader = true, bool preserveColumnWidths = false)
+    {
+        for (int i = 0; i < _searchLevels.Count; i++)
+        {
+            if (i < _activeSearchLevelCount)
+            {
+                _searchLevels[i].ResultsPane?.SetStatus(status, disposeReader, preserveColumnWidths);
+            }
+            else
+            {
+                _searchLevels[i].ResultsPane?.SetStatus(string.Empty);
+            }
+        }
+    }
+
+    private void SetActiveSearchEmptyContentText(string text)
+    {
+        for (int i = 0; i < _activeSearchLevelCount && i < _searchLevels.Count; i++)
+        {
+            _searchLevels[i].ResultsPane?.SetEmptyContentText(text);
+        }
+    }
+
+    private static long GetFinalMatchedLineCount(IReadOnlyList<long>? counts)
+    {
+        return counts is null || counts.Count == 0 ? 0 : counts[counts.Count - 1];
+    }
+
+    private static void DisposeReaders(IReadOnlyList<IViewportReader?>? readers)
+    {
+        if (readers is null)
+        {
+            return;
+        }
+
+        foreach (IViewportReader? reader in readers)
+        {
+            reader?.Dispose();
+        }
     }
 
     private static SearchOptions[] CopySearchOptions(IReadOnlyList<SearchOptions> options)
@@ -1066,10 +1445,18 @@ internal sealed class ViewerWindow
             NativeMethods.DestroyWindow(level.InvertMatchCheckbox);
             level.InvertMatchCheckbox = IntPtr.Zero;
         }
+
+        level.ResultsPane?.Dispose();
+        level.ResultsPane = null;
     }
 
     private void OnCommand(IntPtr wParam, IntPtr lParam)
     {
+        if (_updatingSearchControls)
+        {
+            return;
+        }
+
         int notification = NativeMethods.HighWord(wParam);
         if (FindSearchLevelByEdit(lParam) is not null && notification == NativeMethods.EN_CHANGE)
         {
@@ -1102,7 +1489,7 @@ internal sealed class ViewerWindow
             _searchProgressPercentage = 0d;
             _searchMatchedLineCount = 0;
             _searchErrorText = string.Empty;
-            _filteredPane?.SetStatus(string.Empty);
+            SetActiveSearchResultStatus(string.Empty);
             RecalculateLayout();
             ApplyLayout();
             InvalidateHost();
@@ -1120,8 +1507,8 @@ internal sealed class ViewerWindow
         _searchProgressPercentage = 0d;
         _searchMatchedLineCount = 0;
         _searchErrorText = string.Empty;
-        _filteredPane?.SetEmptyContentText("(no matches)");
-        _filteredPane?.SetStatus("Searching...", preserveColumnWidths: true);
+        SetActiveSearchEmptyContentText("(no matches)");
+        SetActiveSearchResultStatus("Searching...", preserveColumnWidths: true);
         RecalculateLayout();
         ApplyLayout();
         InvalidateHost();
@@ -1143,7 +1530,7 @@ internal sealed class ViewerWindow
                 _searchInProgress = false;
                 _searchDisplayActive = true;
                 _searchErrorText = "Regex error";
-                _filteredPane?.SetStatus(string.Empty, disposeReader: false, preserveColumnWidths: true);
+                SetActiveSearchResultStatus(string.Empty, disposeReader: false, preserveColumnWidths: true);
                 RecalculateLayout();
                 ApplyLayout();
                 InvalidateHost();
@@ -1180,12 +1567,12 @@ internal sealed class ViewerWindow
 
     private void DispatchSearch(long requestId, SearchOptions[] options)
     {
-        if (_closing || options.Length == 0 || _detectedEncoding is not DetectedEncodingInfo detected || _filteredPane is null)
+        if (_closing || options.Length == 0 || _detectedEncoding is not DetectedEncodingInfo detected)
         {
             return;
         }
 
-        int visibleLines = _filteredPane.VisibleDataLineCount;
+        int[] visibleLines = GetActiveSearchVisibleLineCounts();
         string workerPath = _path;
         IntPtr hwnd = _hwnd;
         SearchOptions[] workerOptions = CopySearchOptions(options);
@@ -1200,6 +1587,12 @@ internal sealed class ViewerWindow
             Stopwatch workerStopwatch = Stopwatch.StartNew();
             long lastMatchedLineCount = 0;
             double lastProgressPercentage = 0d;
+            int totalVisibleLines = 0;
+            foreach (int visibleLineCount in visibleLines)
+            {
+                totalVisibleLines += visibleLineCount;
+            }
+
             AppLog.Instance.Info(
                 "search.begin",
                 "begin",
@@ -1210,15 +1603,15 @@ internal sealed class ViewerWindow
                 new LogField("useRegex", useRegex.ToString()),
                 new LogField("ignoreCase", ignoreCase.ToString()),
                 new LogField("invertMatch", invertMatch.ToString()),
-                new LogField("visibleLines", visibleLines.ToString()));
+                new LogField("visibleLines", totalVisibleLines.ToString()));
 
             try
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                LogSearchBuilder.BuildFilteredReaderIncremental(workerPath, detected.Encoding, detected.DataOffset, workerOptions, visibleLines, update =>
+                LogSearchBuilder.BuildStagedFilteredReadersIncremental(workerPath, detected.Encoding, detected.DataOffset, workerOptions, visibleLines, update =>
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    lastMatchedLineCount = update.MatchedLineCount;
+                    lastMatchedLineCount = GetFinalMatchedLineCount(update.MatchedLineCounts);
                     lastProgressPercentage = update.ProgressPercentage;
                     PostSearchWorkerResult(new SearchWorkerResult
                     {
@@ -1229,10 +1622,11 @@ internal sealed class ViewerWindow
                         IgnoreCase = ignoreCase,
                         InvertMatch = invertMatch,
                         Success = true,
-                        Reader = update.Reader,
+                        Readers = update.Readers,
                         PreloadedVisibleLines = visibleLines,
                         ProgressPercentage = update.ProgressPercentage,
-                        MatchedLineCount = update.MatchedLineCount,
+                        MatchedLineCount = lastMatchedLineCount,
+                        StageMatchedLineCounts = update.MatchedLineCounts,
                         ElapsedMilliseconds = update.ElapsedMilliseconds,
                         IsFinal = update.IsFinal,
                         IsAppendUpdate = false
@@ -1304,7 +1698,7 @@ internal sealed class ViewerWindow
                 GCHandle handle = GCHandle.Alloc(result);
                 if (!NativeMethods.PostMessageW(hwnd, NativeMethods.WM_APP_SEARCH_COMPLETE, IntPtr.Zero, GCHandle.ToIntPtr(handle)))
                 {
-                    result.Reader?.Dispose();
+                    DisposeReaders(result.Readers);
                     handle.Free();
                 }
             }
@@ -1313,7 +1707,7 @@ internal sealed class ViewerWindow
 
     private void QueueAppendSearchIfNeeded()
     {
-        if (_closing || !HasActiveSearch || _filteredPane is null)
+        if (_closing || !HasActiveSearch)
         {
             _appendSearchPending = false;
             return;
@@ -1324,10 +1718,10 @@ internal sealed class ViewerWindow
             return;
         }
 
-        FilteredVisualRowReader? currentReader = _filteredPane.Reader as FilteredVisualRowReader;
-        long knownSearchFileSize = currentReader?.FileSize
-            ?? (_mainPane?.Reader as VisualRowReader)?.FileSize
-            ?? currentFileSize;
+        FilteredVisualRowReader[]? currentReaders = GetActiveFilteredReaders();
+        long knownSearchFileSize = currentReaders is { Length: > 0 }
+            ? currentReaders[0].FileSize
+            : ((_mainPane?.Reader as VisualRowReader)?.FileSize ?? currentFileSize);
         if (currentFileSize < knownSearchFileSize)
         {
             MarkSearchStale();
@@ -1345,7 +1739,7 @@ internal sealed class ViewerWindow
             return;
         }
 
-        if (currentReader is null)
+        if (currentReaders is null || currentReaders.Length == 0)
         {
             return;
         }
@@ -1356,12 +1750,12 @@ internal sealed class ViewerWindow
             return;
         }
 
-        if (currentFileSize <= currentReader.FileSize)
+        if (currentFileSize <= currentReaders[0].FileSize)
         {
             return;
         }
 
-        DispatchAppendSearch(currentReader, currentFileSize, options);
+        DispatchAppendSearch(currentReaders, currentFileSize, options);
     }
 
     private bool TryGetCurrentFileSize(out long currentFileSize)
@@ -1400,17 +1794,17 @@ internal sealed class ViewerWindow
         return true;
     }
 
-    private void DispatchAppendSearch(FilteredVisualRowReader currentReader, long newFileSize, SearchOptions[] options)
+    private void DispatchAppendSearch(FilteredVisualRowReader[] currentReaders, long newFileSize, SearchOptions[] options)
     {
-        if (_filteredPane is null)
+        long requestId = _latestSearchRequestId;
+        int[] visibleLines = GetActiveSearchVisibleLineCounts();
+        FilteredVisualRowReader[] readerSnapshots = new FilteredVisualRowReader[currentReaders.Length];
+        for (int i = 0; i < currentReaders.Length; i++)
         {
-            return;
+            readerSnapshots[i] = (FilteredVisualRowReader)currentReaders[i].CloneForWorker();
         }
 
-        long requestId = _latestSearchRequestId;
-        int visibleLines = _filteredPane.VisibleDataLineCount;
-        var readerSnapshot = (FilteredVisualRowReader)currentReader.CloneForWorker();
-        long initialMatchedLineCount = readerSnapshot.MatchedLineCount;
+        long initialMatchedLineCount = readerSnapshots.Length == 0 ? 0 : readerSnapshots[^1].MatchedLineCount;
         IntPtr hwnd = _hwnd;
         SearchOptions[] workerOptions = CopySearchOptions(options);
         string query = FormatSearchQuerySummary(workerOptions);
@@ -1442,16 +1836,16 @@ internal sealed class ViewerWindow
                 new LogField("useRegex", useRegex.ToString()),
                 new LogField("ignoreCase", ignoreCase.ToString()),
                 new LogField("invertMatch", invertMatch.ToString()),
-                new LogField("oldFileSize", readerSnapshot.FileSize.ToString()),
+                new LogField("oldFileSize", readerSnapshots[0].FileSize.ToString()),
                 new LogField("newFileSize", newFileSize.ToString()));
 
             try
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                LogSearchBuilder.BuildAppendedFilteredReaderIncremental(readerSnapshot, workerOptions, newFileSize, visibleLines, update =>
+                LogSearchBuilder.BuildAppendedStagedFilteredReadersIncremental(readerSnapshots, workerOptions, newFileSize, visibleLines, update =>
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    lastMatchedLineCount = update.MatchedLineCount;
+                    lastMatchedLineCount = GetFinalMatchedLineCount(update.MatchedLineCounts);
                     lastProgressPercentage = update.ProgressPercentage;
                     PostSearchWorkerResult(new SearchWorkerResult
                     {
@@ -1462,10 +1856,11 @@ internal sealed class ViewerWindow
                         IgnoreCase = ignoreCase,
                         InvertMatch = invertMatch,
                         Success = true,
-                        Reader = update.Reader,
+                        Readers = update.Readers,
                         PreloadedVisibleLines = visibleLines,
                         ProgressPercentage = update.ProgressPercentage,
-                        MatchedLineCount = update.MatchedLineCount,
+                        MatchedLineCount = lastMatchedLineCount,
+                        StageMatchedLineCounts = update.MatchedLineCounts,
                         ElapsedMilliseconds = update.ElapsedMilliseconds,
                         IsFinal = update.IsFinal,
                         IsAppendUpdate = true
@@ -1529,7 +1924,11 @@ internal sealed class ViewerWindow
             }
             finally
             {
-                readerSnapshot.Dispose();
+                foreach (FilteredVisualRowReader readerSnapshot in readerSnapshots)
+                {
+                    readerSnapshot.Dispose();
+                }
+
                 DisposeSearchCancellation(searchCancellation);
             }
 
@@ -1538,7 +1937,7 @@ internal sealed class ViewerWindow
                 GCHandle handle = GCHandle.Alloc(result);
                 if (!NativeMethods.PostMessageW(hwnd, NativeMethods.WM_APP_SEARCH_COMPLETE, IntPtr.Zero, GCHandle.ToIntPtr(handle)))
                 {
-                    result.Reader?.Dispose();
+                    DisposeReaders(result.Readers);
                     handle.Free();
                 }
             }
@@ -1557,8 +1956,8 @@ internal sealed class ViewerWindow
         _searchProgressPercentage = 0d;
         _searchMatchedLineCount = 0;
         _searchErrorText = "Search stale";
-        _filteredPane?.SetEmptyContentText(string.Empty);
-        _filteredPane?.SetStatus(string.Empty);
+        SetActiveSearchEmptyContentText(string.Empty);
+        SetActiveSearchResultStatus(string.Empty);
         RecalculateLayout();
         ApplyLayout();
         InvalidateSearchBar();
@@ -1572,7 +1971,7 @@ internal sealed class ViewerWindow
 
     private void OnFilteredPaneStale(ViewportPaneWindow pane)
     {
-        if (!ReferenceEquals(pane, _filteredPane) || _closing)
+        if (FindSearchLevelByResultsPane(pane) is null || _closing)
         {
             return;
         }
@@ -1582,7 +1981,7 @@ internal sealed class ViewerWindow
 
     private void OnFilteredRowActivated(ViewportPaneWindow pane, long startOffset)
     {
-        if (!ReferenceEquals(pane, _filteredPane) || _closing || _mainPane is null)
+        if (FindSearchLevelByResultsPane(pane) is null || _closing || _mainPane is null)
         {
             return;
         }
@@ -1659,7 +2058,7 @@ internal sealed class ViewerWindow
                 _appendSearchInProgress = false;
             }
 
-            result.Reader?.Dispose();
+            DisposeReaders(result.Readers);
             return;
         }
 
@@ -1675,7 +2074,7 @@ internal sealed class ViewerWindow
                 LogSearchDiscarded(result);
             }
 
-            result.Reader?.Dispose();
+            DisposeReaders(result.Readers);
             return;
         }
 
@@ -1684,12 +2083,6 @@ internal sealed class ViewerWindow
         _searchInProgress = !result.IsFinal;
         _searchDisplayActive = true;
         _searchErrorText = string.Empty;
-
-        if (_filteredPane is null)
-        {
-            result.Reader?.Dispose();
-            return;
-        }
 
         if (!result.Success)
         {
@@ -1700,7 +2093,7 @@ internal sealed class ViewerWindow
 
             if (result.IsStale || IsFilteredLineStaleMessage(result.Message))
             {
-                result.Reader?.Dispose();
+                DisposeReaders(result.Readers);
                 MarkSearchStale();
                 return;
             }
@@ -1708,8 +2101,8 @@ internal sealed class ViewerWindow
             _searchInProgress = false;
             _searchDisplayActive = true;
             _searchErrorText = result.UseRegex ? "Regex error" : "Search error";
-            result.Reader?.Dispose();
-            _filteredPane.SetStatus(string.Empty, disposeReader: false, preserveColumnWidths: true);
+            DisposeReaders(result.Readers);
+            SetActiveSearchResultStatus(string.Empty, disposeReader: false, preserveColumnWidths: true);
             InvalidateSearchBar();
             AppLog.Instance.Error(
                 "search.failed",
@@ -1726,42 +2119,77 @@ internal sealed class ViewerWindow
             return;
         }
 
-        if (result.Reader is not null)
+        if (result.Readers is not null)
         {
             try
             {
-                if (result.Reader is FilteredVisualRowReader nextFilteredReader)
+                for (int i = 0; i < result.Readers.Length; i++)
                 {
-                    long desiredTopRow = 0;
-                    bool shouldKeepAtEnd = false;
-                    if (_filteredPane.Reader is FilteredVisualRowReader currentFilteredReader)
+                    IViewportReader? nextReader = result.Readers[i];
+                    if (nextReader is null)
                     {
-                        desiredTopRow = currentFilteredReader.TopRowOrdinal;
-                        shouldKeepAtEnd = result.IsAppendUpdate && currentFilteredReader.IsAtEnd;
+                        continue;
                     }
 
-                    if (shouldKeepAtEnd)
+                    if (i >= _activeSearchLevelCount || i >= _searchLevels.Count || _searchLevels[i].ResultsPane is not ViewportPaneWindow pane)
                     {
-                        nextFilteredReader.ReadFromPercentage(100d, _filteredPane.VisibleDataLineCount);
+                        nextReader.Dispose();
+                        result.Readers[i] = null;
+                        continue;
                     }
-                    else
+
+                    if (nextReader is FilteredVisualRowReader nextFilteredReader)
                     {
-                        nextFilteredReader.ReadFromRowOrdinal(desiredTopRow, _filteredPane.VisibleDataLineCount);
+                        long desiredTopRow = 0;
+                        bool shouldKeepAtEnd = false;
+                        if (pane.Reader is FilteredVisualRowReader currentFilteredReader)
+                        {
+                            desiredTopRow = currentFilteredReader.TopRowOrdinal;
+                            shouldKeepAtEnd = result.IsAppendUpdate && currentFilteredReader.IsAtEnd;
+                        }
+
+                        if (shouldKeepAtEnd)
+                        {
+                            nextFilteredReader.ReadFromPercentage(100d, pane.VisibleDataLineCount);
+                        }
+                        else
+                        {
+                            nextFilteredReader.ReadFromRowOrdinal(desiredTopRow, pane.VisibleDataLineCount);
+                        }
                     }
+
+                    pane.SetEmptyContentText("(no matches)");
+                    pane.SetReader(
+                        nextReader,
+                        result.PreloadedVisibleLines is not null && i < result.PreloadedVisibleLines.Length
+                            ? result.PreloadedVisibleLines[i]
+                            : pane.VisibleDataLineCount,
+                        preserveColumnWidths: true,
+                        preserveSelection: true);
+                    result.Readers[i] = null;
                 }
-
-                _filteredPane.SetEmptyContentText("(no matches)");
-                _filteredPane.SetReader(
-                    result.Reader,
-                    _filteredPane.VisibleDataLineCount,
-                    preserveColumnWidths: true,
-                    preserveSelection: true);
             }
             catch (FilteredLineStaleException)
             {
-                result.Reader.Dispose();
+                DisposeReaders(result.Readers);
                 MarkSearchStale();
                 return;
+            }
+            catch
+            {
+                DisposeReaders(result.Readers);
+                throw;
+            }
+        }
+
+        if (result.StageMatchedLineCounts is not null)
+        {
+            for (int i = 0; i < _activeSearchLevelCount && i < _searchLevels.Count; i++)
+            {
+                if (i < result.StageMatchedLineCounts.Length && result.StageMatchedLineCounts[i] == 0)
+                {
+                    _searchLevels[i].ResultsPane?.SetEmptyContentText("(no matches)");
+                }
             }
         }
 
@@ -1868,29 +2296,237 @@ internal sealed class ViewerWindow
         NativeMethods.ReleaseDC(_hwnd, hdc);
     }
 
-    private int GetPreferredSearchAreaHeight()
+    private int GetPreferredSearchAreaHeight(int clientHeight)
+    {
+        if (clientHeight <= 0)
+        {
+            return 0;
+        }
+
+        int fixedHeight = GetSearchFixedAreaHeight();
+        if (GetActiveSearchResultCount() == 0)
+        {
+            return Math.Min(clientHeight, fixedHeight);
+        }
+
+        int requestedHeight = (int)Math.Round(clientHeight * GetSearchAreaRatio());
+        return ClampSearchAreaHeight(requestedHeight, clientHeight);
+    }
+
+    private double GetSearchAreaRatio()
+    {
+        double ratio = _customSearchAreaRatio ?? DefaultSearchAreaRatio;
+        return double.IsFinite(ratio)
+            ? Math.Clamp(ratio, 0d, 1d)
+            : DefaultSearchAreaRatio;
+    }
+
+    private int ClampSearchAreaHeight(int requestedHeight, int clientHeight)
+    {
+        if (clientHeight <= 0)
+        {
+            return 0;
+        }
+
+        int activeCount = GetActiveSearchResultCount();
+        int fixedHeight = GetSearchFixedAreaHeight();
+        int minimumSearchAreaHeight = activeCount > 0
+            ? fixedHeight + (activeCount * MinimumSearchResultHeight)
+            : fixedHeight;
+        minimumSearchAreaHeight = Math.Min(minimumSearchAreaHeight, clientHeight);
+
+        int maximumSearchAreaHeight = clientHeight > MinimumMainViewerHeight
+            ? clientHeight - MinimumMainViewerHeight
+            : clientHeight;
+        maximumSearchAreaHeight = Math.Clamp(maximumSearchAreaHeight, 0, clientHeight);
+        if (maximumSearchAreaHeight < minimumSearchAreaHeight)
+        {
+            return maximumSearchAreaHeight;
+        }
+
+        return Math.Clamp(requestedHeight, minimumSearchAreaHeight, maximumSearchAreaHeight);
+    }
+
+    private int GetSearchFixedAreaHeight()
     {
         int levelCount = Math.Max(1, _searchLevels.Count);
-        int levelRowsHeight = (levelCount * SearchInputRowHeight) + ((levelCount - 1) * SearchLevelRowGap);
-        return (SearchInnerPadding * 2) + levelRowsHeight + SearchProgressGap + SearchProgressRowHeight;
+        int activeCount = Math.Min(_activeSearchLevelCount, levelCount);
+        return (SearchInnerPadding * 2) +
+            (levelCount * SearchInputRowHeight) +
+            (Math.Max(0, levelCount - 1) * SearchLevelRowGap) +
+            (activeCount * SearchLevelRowGap) +
+            SearchProgressGap +
+            SearchProgressRowHeight;
+    }
+
+    private int GetAvailableSearchResultHeight(int searchAreaHeight)
+        => Math.Max(0, searchAreaHeight - GetSearchFixedAreaHeight());
+
+    private double[] GetNormalizedSearchResultRatios()
+    {
+        int activeCount = GetActiveSearchResultCount();
+        double[] ratios = new double[activeCount];
+        if (activeCount == 0)
+        {
+            return ratios;
+        }
+
+        double defaultRatio = 1d / activeCount;
+        double total = 0d;
+        for (int i = 0; i < ratios.Length; i++)
+        {
+            double ratio = _searchLevels[i].CustomResultRatio ?? defaultRatio;
+            ratio = double.IsFinite(ratio) ? Math.Clamp(ratio, 0d, 1d) : defaultRatio;
+            ratios[i] = ratio;
+            total += ratio;
+        }
+
+        if (total <= 0d)
+        {
+            Array.Fill(ratios, defaultRatio);
+            return ratios;
+        }
+
+        for (int i = 0; i < ratios.Length; i++)
+        {
+            ratios[i] /= total;
+        }
+
+        return ratios;
+    }
+
+    private void ApplySearchResultRatioResize(int changedIndex, double requestedRatio, IReadOnlyList<double> startRatios, int availableResultHeight)
+    {
+        int activeCount = GetActiveSearchResultCount();
+        if (activeCount == 0)
+        {
+            return;
+        }
+
+        if (activeCount == 1)
+        {
+            _searchLevels[0].CustomResultRatio = 1d;
+            return;
+        }
+
+        double minimumRatio = GetMinimumSearchResultRatio(activeCount, availableResultHeight);
+        double maximumRatio = Math.Max(minimumRatio, 1d - (minimumRatio * (activeCount - 1)));
+        double changedRatio = Math.Clamp(requestedRatio, minimumRatio, maximumRatio);
+        double remainingRatio = Math.Max(0d, 1d - changedRatio);
+        double remainingWeight = 0d;
+        for (int i = 0; i < activeCount; i++)
+        {
+            if (i != changedIndex)
+            {
+                double ratio = i < startRatios.Count ? startRatios[i] : 0d;
+                remainingWeight += Math.Max(0d, ratio - minimumRatio);
+            }
+        }
+
+        double distributableRatio = Math.Max(0d, remainingRatio - (minimumRatio * (activeCount - 1)));
+        for (int i = 0; i < activeCount; i++)
+        {
+            if (i == changedIndex)
+            {
+                _searchLevels[i].CustomResultRatio = changedRatio;
+                continue;
+            }
+
+            double startRatio = i < startRatios.Count ? startRatios[i] : 0d;
+            double weight = Math.Max(0d, startRatio - minimumRatio);
+            double redistributedRatio = minimumRatio + (remainingWeight > 0d
+                ? distributableRatio * (weight / remainingWeight)
+                : distributableRatio / (activeCount - 1));
+            _searchLevels[i].CustomResultRatio = Math.Clamp(redistributedRatio, 0d, 1d);
+        }
+    }
+
+    private static double GetMinimumSearchResultRatio(int activeCount, int availableResultHeight)
+    {
+        if (activeCount <= 0 || availableResultHeight <= 0 || availableResultHeight < activeCount * MinimumSearchResultHeight)
+        {
+            return 0d;
+        }
+
+        return Math.Clamp(MinimumSearchResultHeight / (double)availableResultHeight, 0d, 1d / activeCount);
+    }
+
+    private int[] CalculateSearchResultHeights(int availableResultHeight)
+    {
+        int activeCount = GetActiveSearchResultCount();
+        int[] heights = new int[activeCount];
+        if (activeCount == 0)
+        {
+            return heights;
+        }
+
+        double[] ratios = GetNormalizedSearchResultRatios();
+        for (int i = 0; i < heights.Length; i++)
+        {
+            double ratio = i < ratios.Length ? ratios[i] : 0d;
+            int desiredHeight = (int)Math.Round(Math.Max(0, availableResultHeight) * ratio);
+            heights[i] = Math.Max(MinimumSearchResultHeight, desiredHeight);
+        }
+
+        int totalHeight = SumSearchResultHeights(heights);
+        int minimumTotalHeight = heights.Length * MinimumSearchResultHeight;
+        if (availableResultHeight > 0 && totalHeight > availableResultHeight && availableResultHeight >= minimumTotalHeight)
+        {
+            ScaleSearchResultHeightsToFit(heights, availableResultHeight);
+        }
+
+        return heights;
+    }
+
+    private static void ScaleSearchResultHeightsToFit(int[] heights, int availableResultHeight)
+    {
+        int extraHeight = 0;
+        for (int i = 0; i < heights.Length; i++)
+        {
+            extraHeight += Math.Max(0, heights[i] - MinimumSearchResultHeight);
+        }
+
+        int availableExtraHeight = Math.Max(0, availableResultHeight - (heights.Length * MinimumSearchResultHeight));
+        for (int i = 0; i < heights.Length; i++)
+        {
+            int currentExtra = Math.Max(0, heights[i] - MinimumSearchResultHeight);
+            int scaledExtra = extraHeight > 0
+                ? (int)Math.Round(currentExtra * (availableExtraHeight / (double)extraHeight))
+                : 0;
+            heights[i] = MinimumSearchResultHeight + scaledExtra;
+        }
+
+        while (SumSearchResultHeights(heights) > availableResultHeight)
+        {
+            for (int i = heights.Length - 1; i >= 0 && SumSearchResultHeights(heights) > availableResultHeight; i--)
+            {
+                if (heights[i] > MinimumSearchResultHeight)
+                {
+                    heights[i]--;
+                }
+            }
+        }
+    }
+
+    private static int SumSearchResultHeights(IReadOnlyList<int> heights)
+    {
+        int total = 0;
+        for (int i = 0; i < heights.Count; i++)
+        {
+            total += heights[i];
+        }
+
+        return total;
     }
 
     private void RecalculateLayout()
     {
         NativeMethods.GetClientRect(_hwnd, out NativeMethods.RECT clientRect);
-        int clientWidth = GetRectWidth(clientRect);
         int clientHeight = GetRectHeight(clientRect);
-        int searchAreaHeight = Math.Min(GetPreferredSearchAreaHeight(), clientHeight);
-        int searchResultsHeight = 0;
-        if (HasActiveSearch)
-        {
-            int availableHeight = Math.Max(0, clientHeight - searchAreaHeight);
-            double preferredRatio = _customSearchResultsRatio ?? 0.35d;
-            int preferredHeight = (int)Math.Round(availableHeight * preferredRatio);
-            searchResultsHeight = ClampSearchResultsHeight(preferredHeight, availableHeight);
-        }
-
-        int viewerBottom = Math.Max(clientRect.top, clientRect.bottom - searchAreaHeight - searchResultsHeight);
+        int searchAreaHeight = GetPreferredSearchAreaHeight(clientHeight);
+        int availableResultHeight = GetAvailableSearchResultHeight(searchAreaHeight);
+        int[] searchResultHeights = CalculateSearchResultHeights(availableResultHeight);
+        int viewerBottom = Math.Max(clientRect.top, clientRect.bottom - searchAreaHeight);
         int searchAreaTop = viewerBottom;
         int searchAreaBottom = Math.Min(clientRect.bottom, searchAreaTop + searchAreaHeight);
         NativeMethods.RECT viewerRect = new()
@@ -1907,15 +2543,6 @@ internal sealed class ViewerWindow
             right = clientRect.right,
             bottom = searchAreaBottom
         };
-        NativeMethods.RECT searchResultsRect = searchResultsHeight > 0
-            ? new NativeMethods.RECT
-            {
-                left = clientRect.left,
-                top = searchAreaBottom,
-                right = clientRect.right,
-                bottom = clientRect.bottom
-            }
-            : CreateZeroRect();
 
         NativeMethods.RECT searchAreaInner = InsetRect(searchAreaRect, SearchInnerPadding);
         SearchLevelLayout[] searchLevelLayouts = new SearchLevelLayout[_searchLevels.Count];
@@ -1961,11 +2588,36 @@ internal sealed class ViewerWindow
                 right = Math.Max(inputRowRect.left, regexRect.left - SearchToggleGap),
                 bottom = inputRowRect.bottom
             };
-            searchLevelLayouts[i] = new SearchLevelLayout(editRect, regexRect, ignoreCaseRect, invertMatchRect);
-            rowTop = inputBottom + SearchLevelRowGap;
+
+            NativeMethods.RECT resultRect = CreateZeroRect();
+            rowTop = inputBottom;
+            if (i < _activeSearchLevelCount)
+            {
+                rowTop += SearchLevelRowGap;
+                int resultHeight = i < searchResultHeights.Length ? searchResultHeights[i] : MinimumSearchResultHeight;
+                int resultBottom = Math.Min(searchAreaInner.bottom, rowTop + resultHeight);
+                if (rowTop < resultBottom)
+                {
+                    resultRect = new NativeMethods.RECT
+                    {
+                        left = searchAreaInner.left,
+                        top = rowTop,
+                        right = searchAreaInner.right,
+                        bottom = resultBottom
+                    };
+                }
+
+                rowTop = resultBottom;
+            }
+
+            searchLevelLayouts[i] = new SearchLevelLayout(editRect, regexRect, ignoreCaseRect, invertMatchRect, resultRect);
+            if (i < searchLevelLayouts.Length - 1)
+            {
+                rowTop += SearchLevelRowGap;
+            }
         }
 
-        int progressTop = Math.Min(searchAreaInner.bottom, rowTop - SearchLevelRowGap + SearchProgressGap);
+        int progressTop = Math.Min(searchAreaInner.bottom, rowTop + SearchProgressGap);
         NativeMethods.RECT progressRect = progressTop < searchAreaInner.bottom
             ? new NativeMethods.RECT
             {
@@ -1976,13 +2628,12 @@ internal sealed class ViewerWindow
             }
             : CreateZeroRect();
 
-        _layout = new WindowLayout(clientRect, viewerRect, searchAreaRect, searchResultsRect, searchLevelLayouts, progressRect);
+        _layout = new WindowLayout(clientRect, viewerRect, searchAreaRect, searchLevelLayouts, progressRect);
     }
 
     private void ApplyLayout()
     {
         _mainPane?.SetBounds(_layout.ViewerRect, true);
-        _filteredPane?.SetBounds(_layout.SearchResultsRect, !IsZeroRect(_layout.SearchResultsRect));
 
         for (int i = 0; i < _searchLevels.Count && i < _layout.SearchLevelLayouts.Length; i++)
         {
@@ -2020,6 +2671,8 @@ internal sealed class ViewerWindow
             NativeMethods.ShowWindow(level.RegexCheckbox, NativeMethods.SW_SHOW);
             NativeMethods.ShowWindow(level.IgnoreCaseCheckbox, NativeMethods.SW_SHOW);
             NativeMethods.ShowWindow(level.InvertMatchCheckbox, NativeMethods.SW_SHOW);
+            bool resultsVisible = i < _activeSearchLevelCount && !IsZeroRect(levelLayout.SearchResultsRect);
+            level.ResultsPane?.SetBounds(levelLayout.SearchResultsRect, resultsVisible);
         }
 
         ApplySearchResizeGripLayout();
@@ -2032,20 +2685,14 @@ internal sealed class ViewerWindow
             return;
         }
 
-        bool visible = HasActiveSearch && !IsZeroRect(_layout.SearchAreaRect);
-        uint visibilityFlag = visible ? NativeMethods.SWP_SHOWWINDOW : NativeMethods.SWP_HIDEWINDOW;
-        int top = GetSearchResizeGripTop();
-        int height = visible
-            ? Math.Min(SearchResizeHitSlopPx * 2 + 1, Math.Max(0, _layout.ClientRect.bottom - top))
-            : 1;
         NativeMethods.SetWindowPos(
             _searchResizeGrip,
             NativeMethods.HWND_TOP,
             _layout.ClientRect.left,
-            top,
+            _layout.ClientRect.top,
             GetRectWidth(_layout.ClientRect),
-            Math.Max(1, height),
-            NativeMethods.SWP_NOACTIVATE | visibilityFlag);
+            1,
+            NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_HIDEWINDOW);
     }
 
     private void ScheduleSearch()
@@ -2063,14 +2710,14 @@ internal sealed class ViewerWindow
         NativeMethods.KillTimer(_hwnd, SearchDebounceTimerId);
         StopFileWatcher();
         CancelActiveSearch();
-        if (_isSearchResultsResizing)
+        if (_isSearchAreaResizing || _isSearchResultsResizing)
         {
+            _isSearchAreaResizing = false;
             _isSearchResultsResizing = false;
             NativeMethods.ReleaseCapture();
         }
 
         _mainPane?.Dispose();
-        _filteredPane?.Dispose();
 
         foreach (SearchLevelState level in _searchLevels)
         {
@@ -2177,6 +2824,20 @@ internal sealed class ViewerWindow
         return NativeMethods.SendMessageW(hwnd, NativeMethods.BM_GETCHECK, IntPtr.Zero, IntPtr.Zero).ToInt32() == NativeMethods.BST_CHECKED;
     }
 
+    private static void SetButtonChecked(IntPtr hwnd, bool checkedState)
+    {
+        if (hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        NativeMethods.SendMessageW(
+            hwnd,
+            NativeMethods.BM_SETCHECK,
+            new IntPtr(checkedState ? NativeMethods.BST_CHECKED : NativeMethods.BST_UNCHECKED),
+            IntPtr.Zero);
+    }
+
     private static string ReadWindowText(IntPtr hwnd)
     {
         int length = NativeMethods.GetWindowTextLengthW(hwnd);
@@ -2208,9 +2869,4 @@ internal sealed class ViewerWindow
     private static int GetRectWidth(NativeMethods.RECT rect) => Math.Max(0, rect.right - rect.left);
 
     private static int GetRectHeight(NativeMethods.RECT rect) => Math.Max(0, rect.bottom - rect.top);
-
-    private static int ClampSearchResultsHeight(int requestedHeight, int availableHeight)
-    {
-        return Math.Clamp(requestedHeight, 0, Math.Max(0, availableHeight));
-    }
 }
