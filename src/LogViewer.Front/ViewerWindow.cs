@@ -46,9 +46,6 @@ internal sealed class ViewerWindow
     private const int SearchLevelRowGap = 4;
     private const int SearchProgressGap = 4;
     private const int SearchToggleGap = 8;
-    private const double DefaultSearchAreaRatio = 0.35d;
-    private const int MinimumMainViewerHeight = 96;
-    private const int MinimumSearchResultHeight = 48;
     private const int RegexToggleWidth = 72;
     private const int IgnoreCaseToggleWidth = 112;
     private const int InvertMatchToggleWidth = 120;
@@ -117,6 +114,8 @@ internal sealed class ViewerWindow
     }
 
     private readonly record struct SearchLevelSnapshot(string Query, bool UseRegex, bool IgnoreCase, bool InvertMatch);
+
+    private readonly record struct ActiveSearchLevelSnapshot(int SourceIndex, SearchLevelSnapshot Snapshot);
 
     private readonly record struct SearchLevelLayout(
         NativeMethods.RECT SearchEditRect,
@@ -922,7 +921,7 @@ internal sealed class ViewerWindow
         int searchAreaHeight = ClampSearchAreaHeight(requestedHeight, clientHeight);
         _customSearchAreaRatio = clientHeight > 0
             ? Math.Clamp(searchAreaHeight / (double)clientHeight, 0d, 1d)
-            : DefaultSearchAreaRatio;
+            : GetDefaultSearchAreaRatio(GetActiveSearchResultCount());
         RecalculateLayout();
         ApplyLayout();
         InvalidateHost();
@@ -948,8 +947,7 @@ internal sealed class ViewerWindow
         ApplySearchResultRatioResize(
             _resizingSearchResultIndex,
             _searchResultResizeStartRatio + deltaRatio,
-            _searchResultResizeStartRatios,
-            _searchResultResizeAvailableHeight);
+            _searchResultResizeStartRatios);
         RecalculateLayout();
         ApplyLayout();
         InvalidateHost();
@@ -1187,17 +1185,21 @@ internal sealed class ViewerWindow
     private void NormalizeSearchLevelsFromControls()
     {
         ReadAllSearchLevelsFromControls();
-        List<SearchLevelSnapshot> activeLevels = new();
+        int previousActiveCount = _activeSearchLevelCount;
+        double[] previousPanelRatios = GetNormalizedPanelRatios(previousActiveCount);
+        List<ActiveSearchLevelSnapshot> activeLevels = new();
         for (int i = 0; i < _searchLevels.Count; i++)
         {
             SearchLevelState level = _searchLevels[i];
             if (!string.IsNullOrEmpty(level.Query))
             {
-                activeLevels.Add(new SearchLevelSnapshot(level.Query, level.UseRegex, level.IgnoreCase, level.InvertMatch));
+                activeLevels.Add(new ActiveSearchLevelSnapshot(
+                    i,
+                    new SearchLevelSnapshot(level.Query, level.UseRegex, level.IgnoreCase, level.InvertMatch)));
             }
         }
 
-        bool structureChanged = activeLevels.Count != _activeSearchLevelCount || _searchLevels.Count != activeLevels.Count + 1;
+        bool structureChanged = activeLevels.Count != previousActiveCount || _searchLevels.Count != activeLevels.Count + 1;
         IntPtr hInstance = NativeMethods.GetModuleHandleW(null);
         while (_searchLevels.Count < activeLevels.Count + 1)
         {
@@ -1217,7 +1219,7 @@ internal sealed class ViewerWindow
         {
             for (int i = 0; i < activeLevels.Count; i++)
             {
-                SetSearchLevelControls(_searchLevels[i], activeLevels[i]);
+                SetSearchLevelControls(_searchLevels[i], activeLevels[i].Snapshot);
             }
 
             SetSearchLevelControls(_searchLevels[activeLevels.Count], new SearchLevelSnapshot(string.Empty, UseRegex: true, IgnoreCase: false, InvertMatch: false));
@@ -1230,7 +1232,7 @@ internal sealed class ViewerWindow
         _activeSearchLevelCount = activeLevels.Count;
         if (structureChanged)
         {
-            ResetSearchResultHeights();
+            ApplyPanelRatiosAfterStructureChange(previousPanelRatios, activeLevels, previousActiveCount);
         }
     }
 
@@ -1250,12 +1252,165 @@ internal sealed class ViewerWindow
         SetButtonChecked(level.InvertMatchCheckbox, snapshot.InvertMatch);
     }
 
-    private void ResetSearchResultHeights()
+    private double[] GetNormalizedPanelRatios(int activeSearchCount)
+    {
+        int activeCount = Math.Clamp(activeSearchCount, 0, _searchLevels.Count);
+        if (activeCount == 0)
+        {
+            return new[] { 1d };
+        }
+
+        double searchAreaRatio = GetSearchAreaRatio(activeCount);
+        double[] searchRatios = GetNormalizedSearchResultRatios(activeCount);
+        double[] panelRatios = new double[activeCount + 1];
+        panelRatios[0] = Math.Max(0d, 1d - searchAreaRatio);
+        for (int i = 0; i < activeCount; i++)
+        {
+            panelRatios[i + 1] = searchAreaRatio * (i < searchRatios.Length ? searchRatios[i] : 0d);
+        }
+
+        return NormalizeRatios(panelRatios, panelRatios.Length);
+    }
+
+    private void ApplyPanelRatiosAfterStructureChange(
+        IReadOnlyList<double> previousPanelRatios,
+        IReadOnlyList<ActiveSearchLevelSnapshot> activeLevels,
+        int previousActiveCount)
+    {
+        int activeCount = activeLevels.Count;
+        if (activeCount == 0)
+        {
+            _customSearchAreaRatio = null;
+            ClearSearchResultRatios();
+            return;
+        }
+
+        double[] previousRatios = NormalizeRatios(previousPanelRatios, Math.Max(1, previousActiveCount + 1));
+        double[] existingRatios = new double[activeCount + 1];
+        bool[] newSearchPanels = new bool[activeCount];
+
+        existingRatios[0] = previousRatios[0];
+        double existingTotal = existingRatios[0];
+        int existingPanelCount = 1;
+        int newPanelCount = 0;
+        for (int i = 0; i < activeCount; i++)
+        {
+            ActiveSearchLevelSnapshot activeLevel = activeLevels[i];
+            if (activeLevel.SourceIndex >= 0 && activeLevel.SourceIndex < previousActiveCount)
+            {
+                double ratio = GetRatioOrZero(previousRatios, activeLevel.SourceIndex + 1);
+                existingRatios[i + 1] = ratio;
+                existingTotal += ratio;
+                existingPanelCount++;
+                continue;
+            }
+
+            newSearchPanels[i] = true;
+            newPanelCount++;
+        }
+
+        double newPanelRatio = newPanelCount > 0 ? 1d / (activeCount + 1) : 0d;
+        double remainingRatio = Math.Clamp(1d - (newPanelRatio * newPanelCount), 0d, 1d);
+        double fallbackExistingRatio = existingPanelCount > 0 ? remainingRatio / existingPanelCount : 0d;
+        double existingScale = existingTotal > 0d ? remainingRatio / existingTotal : 0d;
+
+        double[] panelRatios = new double[activeCount + 1];
+        panelRatios[0] = existingTotal > 0d ? existingRatios[0] * existingScale : fallbackExistingRatio;
+        for (int i = 0; i < activeCount; i++)
+        {
+            panelRatios[i + 1] = newSearchPanels[i]
+                ? newPanelRatio
+                : existingTotal > 0d
+                    ? existingRatios[i + 1] * existingScale
+                    : fallbackExistingRatio;
+        }
+
+        ApplyPanelRatios(panelRatios, activeCount);
+    }
+
+    private void ApplyPanelRatios(IReadOnlyList<double> panelRatios, int activeSearchCount)
+    {
+        int activeCount = Math.Clamp(activeSearchCount, 0, _searchLevels.Count);
+        if (activeCount == 0)
+        {
+            _customSearchAreaRatio = null;
+            ClearSearchResultRatios();
+            return;
+        }
+
+        double[] normalizedRatios = NormalizeRatios(panelRatios, activeCount + 1);
+        double searchAreaRatio = 0d;
+        for (int i = 0; i < activeCount; i++)
+        {
+            searchAreaRatio += normalizedRatios[i + 1];
+        }
+
+        _customSearchAreaRatio = Math.Clamp(searchAreaRatio, 0d, 1d);
+        if (searchAreaRatio <= 0d)
+        {
+            double defaultRatio = 1d / activeCount;
+            for (int i = 0; i < activeCount; i++)
+            {
+                _searchLevels[i].CustomResultRatio = defaultRatio;
+            }
+        }
+        else
+        {
+            for (int i = 0; i < activeCount; i++)
+            {
+                _searchLevels[i].CustomResultRatio = Math.Clamp(normalizedRatios[i + 1] / searchAreaRatio, 0d, 1d);
+            }
+        }
+
+        for (int i = activeCount; i < _searchLevels.Count; i++)
+        {
+            _searchLevels[i].CustomResultRatio = null;
+        }
+    }
+
+    private void ClearSearchResultRatios()
     {
         foreach (SearchLevelState level in _searchLevels)
         {
             level.CustomResultRatio = null;
         }
+    }
+
+    private static double[] NormalizeRatios(IReadOnlyList<double> ratios, int expectedCount)
+    {
+        expectedCount = Math.Max(1, expectedCount);
+        double[] normalizedRatios = new double[expectedCount];
+        double total = 0d;
+        for (int i = 0; i < expectedCount; i++)
+        {
+            double ratio = GetRatioOrZero(ratios, i);
+            normalizedRatios[i] = ratio;
+            total += ratio;
+        }
+
+        if (total <= 0d)
+        {
+            Array.Fill(normalizedRatios, 1d / expectedCount);
+            return normalizedRatios;
+        }
+
+        for (int i = 0; i < normalizedRatios.Length; i++)
+        {
+            normalizedRatios[i] /= total;
+        }
+
+        return normalizedRatios;
+    }
+
+    private static double GetRatioOrZero(IReadOnlyList<double> ratios, int index)
+    {
+        if (index < 0 || index >= ratios.Count)
+        {
+            return 0d;
+        }
+
+        double ratio = ratios[index];
+        return double.IsFinite(ratio) ? Math.Clamp(ratio, 0d, 1d) : 0d;
     }
 
     private SearchOptions[] GetActiveSearchOptions()
@@ -2315,11 +2470,20 @@ internal sealed class ViewerWindow
 
     private double GetSearchAreaRatio()
     {
-        double ratio = _customSearchAreaRatio ?? DefaultSearchAreaRatio;
+        return GetSearchAreaRatio(GetActiveSearchResultCount());
+    }
+
+    private double GetSearchAreaRatio(int activeSearchCount)
+    {
+        double defaultRatio = GetDefaultSearchAreaRatio(activeSearchCount);
+        double ratio = _customSearchAreaRatio ?? defaultRatio;
         return double.IsFinite(ratio)
             ? Math.Clamp(ratio, 0d, 1d)
-            : DefaultSearchAreaRatio;
+            : defaultRatio;
     }
+
+    private static double GetDefaultSearchAreaRatio(int activeSearchCount) =>
+        activeSearchCount > 0 ? activeSearchCount / (activeSearchCount + 1d) : 0d;
 
     private int ClampSearchAreaHeight(int requestedHeight, int clientHeight)
     {
@@ -2328,23 +2492,7 @@ internal sealed class ViewerWindow
             return 0;
         }
 
-        int activeCount = GetActiveSearchResultCount();
-        int fixedHeight = GetSearchFixedAreaHeight();
-        int minimumSearchAreaHeight = activeCount > 0
-            ? fixedHeight + (activeCount * MinimumSearchResultHeight)
-            : fixedHeight;
-        minimumSearchAreaHeight = Math.Min(minimumSearchAreaHeight, clientHeight);
-
-        int maximumSearchAreaHeight = clientHeight > MinimumMainViewerHeight
-            ? clientHeight - MinimumMainViewerHeight
-            : clientHeight;
-        maximumSearchAreaHeight = Math.Clamp(maximumSearchAreaHeight, 0, clientHeight);
-        if (maximumSearchAreaHeight < minimumSearchAreaHeight)
-        {
-            return maximumSearchAreaHeight;
-        }
-
-        return Math.Clamp(requestedHeight, minimumSearchAreaHeight, maximumSearchAreaHeight);
+        return Math.Clamp(requestedHeight, 0, clientHeight);
     }
 
     private int GetSearchFixedAreaHeight()
@@ -2364,7 +2512,12 @@ internal sealed class ViewerWindow
 
     private double[] GetNormalizedSearchResultRatios()
     {
-        int activeCount = GetActiveSearchResultCount();
+        return GetNormalizedSearchResultRatios(GetActiveSearchResultCount());
+    }
+
+    private double[] GetNormalizedSearchResultRatios(int activeSearchCount)
+    {
+        int activeCount = Math.Clamp(activeSearchCount, 0, _searchLevels.Count);
         double[] ratios = new double[activeCount];
         if (activeCount == 0)
         {
@@ -2395,7 +2548,7 @@ internal sealed class ViewerWindow
         return ratios;
     }
 
-    private void ApplySearchResultRatioResize(int changedIndex, double requestedRatio, IReadOnlyList<double> startRatios, int availableResultHeight)
+    private void ApplySearchResultRatioResize(int changedIndex, double requestedRatio, IReadOnlyList<double> startRatios)
     {
         int activeCount = GetActiveSearchResultCount();
         if (activeCount == 0)
@@ -2409,9 +2562,7 @@ internal sealed class ViewerWindow
             return;
         }
 
-        double minimumRatio = GetMinimumSearchResultRatio(activeCount, availableResultHeight);
-        double maximumRatio = Math.Max(minimumRatio, 1d - (minimumRatio * (activeCount - 1)));
-        double changedRatio = Math.Clamp(requestedRatio, minimumRatio, maximumRatio);
+        double changedRatio = Math.Clamp(requestedRatio, 0d, 1d);
         double remainingRatio = Math.Max(0d, 1d - changedRatio);
         double remainingWeight = 0d;
         for (int i = 0; i < activeCount; i++)
@@ -2419,11 +2570,10 @@ internal sealed class ViewerWindow
             if (i != changedIndex)
             {
                 double ratio = i < startRatios.Count ? startRatios[i] : 0d;
-                remainingWeight += Math.Max(0d, ratio - minimumRatio);
+                remainingWeight += Math.Max(0d, ratio);
             }
         }
 
-        double distributableRatio = Math.Max(0d, remainingRatio - (minimumRatio * (activeCount - 1)));
         for (int i = 0; i < activeCount; i++)
         {
             if (i == changedIndex)
@@ -2433,22 +2583,12 @@ internal sealed class ViewerWindow
             }
 
             double startRatio = i < startRatios.Count ? startRatios[i] : 0d;
-            double weight = Math.Max(0d, startRatio - minimumRatio);
-            double redistributedRatio = minimumRatio + (remainingWeight > 0d
-                ? distributableRatio * (weight / remainingWeight)
-                : distributableRatio / (activeCount - 1));
+            double weight = Math.Max(0d, startRatio);
+            double redistributedRatio = remainingWeight > 0d
+                ? remainingRatio * (weight / remainingWeight)
+                : remainingRatio / (activeCount - 1);
             _searchLevels[i].CustomResultRatio = Math.Clamp(redistributedRatio, 0d, 1d);
         }
-    }
-
-    private static double GetMinimumSearchResultRatio(int activeCount, int availableResultHeight)
-    {
-        if (activeCount <= 0 || availableResultHeight <= 0 || availableResultHeight < activeCount * MinimumSearchResultHeight)
-        {
-            return 0d;
-        }
-
-        return Math.Clamp(MinimumSearchResultHeight / (double)availableResultHeight, 0d, 1d / activeCount);
     }
 
     private int[] CalculateSearchResultHeights(int availableResultHeight)
@@ -2465,58 +2605,10 @@ internal sealed class ViewerWindow
         {
             double ratio = i < ratios.Length ? ratios[i] : 0d;
             int desiredHeight = (int)Math.Round(Math.Max(0, availableResultHeight) * ratio);
-            heights[i] = Math.Max(MinimumSearchResultHeight, desiredHeight);
-        }
-
-        int totalHeight = SumSearchResultHeights(heights);
-        int minimumTotalHeight = heights.Length * MinimumSearchResultHeight;
-        if (availableResultHeight > 0 && totalHeight > availableResultHeight && availableResultHeight >= minimumTotalHeight)
-        {
-            ScaleSearchResultHeightsToFit(heights, availableResultHeight);
+            heights[i] = Math.Max(0, desiredHeight);
         }
 
         return heights;
-    }
-
-    private static void ScaleSearchResultHeightsToFit(int[] heights, int availableResultHeight)
-    {
-        int extraHeight = 0;
-        for (int i = 0; i < heights.Length; i++)
-        {
-            extraHeight += Math.Max(0, heights[i] - MinimumSearchResultHeight);
-        }
-
-        int availableExtraHeight = Math.Max(0, availableResultHeight - (heights.Length * MinimumSearchResultHeight));
-        for (int i = 0; i < heights.Length; i++)
-        {
-            int currentExtra = Math.Max(0, heights[i] - MinimumSearchResultHeight);
-            int scaledExtra = extraHeight > 0
-                ? (int)Math.Round(currentExtra * (availableExtraHeight / (double)extraHeight))
-                : 0;
-            heights[i] = MinimumSearchResultHeight + scaledExtra;
-        }
-
-        while (SumSearchResultHeights(heights) > availableResultHeight)
-        {
-            for (int i = heights.Length - 1; i >= 0 && SumSearchResultHeights(heights) > availableResultHeight; i--)
-            {
-                if (heights[i] > MinimumSearchResultHeight)
-                {
-                    heights[i]--;
-                }
-            }
-        }
-    }
-
-    private static int SumSearchResultHeights(IReadOnlyList<int> heights)
-    {
-        int total = 0;
-        for (int i = 0; i < heights.Count; i++)
-        {
-            total += heights[i];
-        }
-
-        return total;
     }
 
     private void RecalculateLayout()
@@ -2594,7 +2686,7 @@ internal sealed class ViewerWindow
             if (i < _activeSearchLevelCount)
             {
                 rowTop += SearchLevelRowGap;
-                int resultHeight = i < searchResultHeights.Length ? searchResultHeights[i] : MinimumSearchResultHeight;
+                int resultHeight = i < searchResultHeights.Length ? searchResultHeights[i] : 0;
                 int resultBottom = Math.Min(searchAreaInner.bottom, rowTop + resultHeight);
                 if (rowTop < resultBottom)
                 {
