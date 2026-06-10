@@ -14,6 +14,11 @@ internal static class Program
             Directory.CreateDirectory(tempRoot);
 
             RunRegexCaptureGroups(tempRoot);
+            RunRegexNamedCaptureGroups(tempRoot);
+            RunRegexMixedNamedAndUnnamedCaptureGroups(tempRoot);
+            RunRegexNonCapturingGroupsDoNotCreateColumns(tempRoot);
+            RunRegexOnlyNonCapturingGroupsUsesPlainRows(tempRoot);
+            RunRegexOptionalCaptureGroupUsesEmptyCell(tempRoot);
             RunRegexWithoutGroupsUsesPlainRows(tempRoot);
             RunLiteralSearchUsesPlainRows(tempRoot);
             RunLiteralInvertMatch(tempRoot);
@@ -45,14 +50,17 @@ internal static class Program
             RunCascadedInvertMatch(tempRoot);
             RunCascadedInvalidRegexValidation();
             RunCascadedCaptureGroupsUseLastCapturingRegex(tempRoot);
+            RunCascadedNamedCaptureGroupsSurviveNonCapturingStage(tempRoot);
             RunStagedLiteralSearchKeepsIntermediateResults(tempRoot);
             RunStagedCaptureGroupsUsePerStageCaptures(tempRoot);
+            RunStagedNamedCaptureGroupsUsePerStageHeaders(tempRoot);
             RunAppendStagedSearchKeepsIntermediateResults(tempRoot);
             RunAppendSearchCascadeAddsMatches(tempRoot);
             RunAppendSearchAddsMatches(tempRoot);
             RunAppendSearchWithoutMatchKeepsCount(tempRoot);
             RunAppendSearchRescansPartialLastLine(tempRoot);
             RunAppendSearchPreservesRegexCaptureGroups(tempRoot);
+            RunAppendSearchPreservesNamedCaptureGroups(tempRoot);
             RunAppendSearchInvertMatch(tempRoot);
             RunAppendSearchStalesWhenEarlierLineGrows(tempRoot);
             RunPageUpNearStartClampsToTop(tempRoot);
@@ -99,6 +107,93 @@ internal static class Program
         AssertEqual("capture text", columns.CurrentCells[0][1], "aaabccc xx aabcc");
         AssertEqual("first match group 0", columns.CurrentCells[0][2], "aaa");
         AssertEqual("first match group 1", columns.CurrentCells[0][3], "ccc");
+    }
+
+    private static void RunRegexNamedCaptureGroups(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "named-capture-groups.log", "code-42 user-ian\r\nplain\r\n");
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("code-(?<code>\\d+) user-(?<user>[a-z]+)", UseRegex: true, IgnoreCase: false));
+
+        reader.ReadFromPercentage(0d, 10);
+        IColumnViewportReader columns = reader;
+
+        AssertSequence("named capture headers", columns.ColumnHeaders, "#", "Text", "code", "user");
+        AssertSequence("named capture cells", columns.CurrentCells[0], "1", "code-42 user-ian", "42", "ian");
+    }
+
+    private static void RunRegexMixedNamedAndUnnamedCaptureGroups(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "mixed-capture-groups.log", "aaabccc\r\nplain\r\n");
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("(a+)b(?<suffix>c+)", UseRegex: true, IgnoreCase: false));
+
+        reader.ReadFromPercentage(0d, 10);
+        IColumnViewportReader columns = reader;
+
+        AssertSequence("mixed capture headers", columns.ColumnHeaders, "#", "Text", "0", "suffix");
+        AssertSequence("mixed capture cells", columns.CurrentCells[0], "1", "aaabccc", "aaa", "ccc");
+    }
+
+    private static void RunRegexNonCapturingGroupsDoNotCreateColumns(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "non-capturing-groups.log", "GET /api/orders\r\nPOST /api/users\r\nplain\r\n");
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("(?:GET|POST) /api/(?<resource>\\w+)", UseRegex: true, IgnoreCase: false));
+
+        reader.ReadFromPercentage(0d, 10);
+        IColumnViewportReader columns = reader;
+
+        AssertSequence("non-capturing headers", columns.ColumnHeaders, "#", "Text", "resource");
+        AssertSequence("non-capturing first cells", columns.CurrentCells[0], "1", "GET /api/orders", "orders");
+        AssertSequence("non-capturing second cells", columns.CurrentCells[1], "2", "POST /api/users", "users");
+    }
+
+    private static void RunRegexOnlyNonCapturingGroupsUsesPlainRows(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "only-non-capturing-groups.log", "GET /api/orders\r\nplain\r\n");
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("(?:GET|POST) /api/\\w+", UseRegex: true, IgnoreCase: false));
+
+        reader.ReadFromPercentage(0d, 10);
+        IColumnViewportReader columns = reader;
+
+        AssertSequence("only non-capturing headers", columns.ColumnHeaders, "#", "Text");
+        AssertSequence("only non-capturing cells", columns.CurrentCells[0], "1", "GET /api/orders");
+    }
+
+    private static void RunRegexOptionalCaptureGroupUsesEmptyCell(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "optional-capture-groups.log", "code-\r\ncode-42\r\nplain\r\n");
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("code-(?<code>\\d+)?", UseRegex: true, IgnoreCase: false));
+
+        reader.ReadFromPercentage(0d, 10);
+        IColumnViewportReader columns = reader;
+
+        AssertSequence("optional capture headers", columns.ColumnHeaders, "#", "Text", "code");
+        AssertSequence("optional capture empty cells", columns.CurrentCells[0], "1", "code-", string.Empty);
+        AssertSequence("optional capture filled cells", columns.CurrentCells[1], "2", "code-42", "42");
     }
 
     private static void RunRegexWithoutGroupsUsesPlainRows(string tempRoot)
@@ -632,6 +727,24 @@ internal static class Program
         AssertSequence("cascade capture second cells", columns.CurrentCells[1], "2", "aabcc code-7", "7");
     }
 
+    private static void RunCascadedNamedCaptureGroupsSurviveNonCapturingStage(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "cascade-named-captures.log", "code-42 GET /api/orders\r\ncode-7 POST /api/users\r\nplain GET /api/orders\r\n");
+        SearchOptions[] options =
+        {
+            new("code-(?<code>\\d+)", UseRegex: true, IgnoreCase: false),
+            new("(?:GET|POST) /api/\\w+", UseRegex: true, IgnoreCase: false)
+        };
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(path, Encoding.UTF8, dataOffset: 0, options);
+        reader.ReadFromPercentage(0d, 10);
+        IColumnViewportReader columns = reader;
+
+        AssertSequence("cascade named capture headers", columns.ColumnHeaders, "#", "Text", "code");
+        AssertSequence("cascade named capture first cells", columns.CurrentCells[0], "1", "code-42 GET /api/orders", "42");
+        AssertSequence("cascade named capture second cells", columns.CurrentCells[1], "2", "code-7 POST /api/users", "7");
+    }
+
     private static void RunStagedLiteralSearchKeepsIntermediateResults(string tempRoot)
     {
         string path = WriteLog(tempRoot, "staged-literal.log", "alpha\r\nalpha beta\r\nbeta\r\nalpha beta gamma\r\n");
@@ -686,6 +799,38 @@ internal static class Program
             AssertSequence("staged capture second headers", secondColumns.ColumnHeaders, "#", "Text", "0");
             AssertSequence("staged capture second first cells", secondColumns.CurrentCells[0], "1", "aaabccc code-42", "42");
             AssertSequence("staged capture second second cells", secondColumns.CurrentCells[1], "2", "aabcc code-7", "7");
+        }
+        finally
+        {
+            DisposeReaders(readers);
+        }
+    }
+
+    private static void RunStagedNamedCaptureGroupsUsePerStageHeaders(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "staged-named-captures.log", "code-42 user-ian\r\ncode-7 user-ana\r\nplain user-bob\r\n");
+        SearchOptions[] options =
+        {
+            new("code-(?<code>\\d+)", UseRegex: true, IgnoreCase: false),
+            new("user-(?<user>[a-z]+)", UseRegex: true, IgnoreCase: false)
+        };
+
+        FilteredVisualRowReader[] readers = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, options);
+        try
+        {
+            AssertEqual("staged named capture reader count", readers.Length, 2);
+            readers[0].ReadFromPercentage(0d, 10);
+            readers[1].ReadFromPercentage(0d, 10);
+
+            IColumnViewportReader firstColumns = readers[0];
+            AssertSequence("staged named capture first headers", firstColumns.ColumnHeaders, "#", "Text", "code");
+            AssertSequence("staged named capture first cells", firstColumns.CurrentCells[0], "1", "code-42 user-ian", "42");
+            AssertSequence("staged named capture first second cells", firstColumns.CurrentCells[1], "2", "code-7 user-ana", "7");
+
+            IColumnViewportReader secondColumns = readers[1];
+            AssertSequence("staged named capture second headers", secondColumns.ColumnHeaders, "#", "Text", "user");
+            AssertSequence("staged named capture second first cells", secondColumns.CurrentCells[0], "1", "code-42 user-ian", "ian");
+            AssertSequence("staged named capture second second cells", secondColumns.CurrentCells[1], "2", "code-7 user-ana", "ana");
         }
         finally
         {
@@ -837,6 +982,28 @@ internal static class Program
         AssertEqual("append capture text", columns.CurrentCells[1][1], "aaabccc");
         AssertEqual("append capture group 0", columns.CurrentCells[1][2], "aaa");
         AssertEqual("append capture group 1", columns.CurrentCells[1][3], "ccc");
+    }
+
+    private static void RunAppendSearchPreservesNamedCaptureGroups(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "append-search-named-captures.log", "code-42\r\nplain\r\n");
+        SearchOptions options = new("code-(?<code>\\d+)", UseRegex: true, IgnoreCase: false);
+
+        using FilteredVisualRowReader initial = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            options);
+
+        File.AppendAllText(path, "code-7\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        using FilteredVisualRowReader appended = BuildAppendedReader(initial, options);
+        appended.ReadFromPercentage(0d, 10);
+        IColumnViewportReader columns = appended;
+
+        AssertSequence("append named capture headers", columns.ColumnHeaders, "#", "Text", "code");
+        AssertEqual("append named capture row count", columns.CurrentCells.Count, 2);
+        AssertSequence("append named capture first cells", columns.CurrentCells[0], "1", "code-42", "42");
+        AssertSequence("append named capture second cells", columns.CurrentCells[1], "3", "code-7", "7");
     }
 
     private static void RunAppendSearchInvertMatch(string tempRoot)

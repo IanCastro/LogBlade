@@ -457,7 +457,7 @@ public static class LogSearchBuilder
         RealLineData line,
         SearchMatcherCascade matcher)
     {
-        if (!matcher.TryMatch(line.Text, out string[]? captureGroups))
+        if (!matcher.TryMatch(line.Text, out FilteredCaptureGroups? captureGroups))
         {
             return;
         }
@@ -480,7 +480,7 @@ public static class LogSearchBuilder
             return;
         }
 
-        string[]?[] captureGroupsByStage = new string[]?[descriptors.Length];
+        FilteredCaptureGroups?[] captureGroupsByStage = new FilteredCaptureGroups?[descriptors.Length];
         int includedStages = matcher.MatchStages(line.Text, captureGroupsByStage);
         for (int i = 0; i < includedStages; i++)
         {
@@ -697,20 +697,20 @@ public static class LogSearchBuilder
             return new SearchMatcherCascade(optionCopy, matchers);
         }
 
-        public bool TryMatch(string text, out string[]? captureGroups)
+        public bool TryMatch(string text, out FilteredCaptureGroups? captureGroups)
         {
-            string[]?[] captureGroupsByStage = new string[]?[_matchers.Length];
+            FilteredCaptureGroups?[] captureGroupsByStage = new FilteredCaptureGroups?[_matchers.Length];
             int includedStages = MatchStages(text, captureGroupsByStage);
             captureGroups = includedStages > 0 ? captureGroupsByStage[includedStages - 1] : null;
             return includedStages == _matchers.Length;
         }
 
-        public int MatchStages(string text, string[]?[] captureGroupsByStage)
+        public int MatchStages(string text, FilteredCaptureGroups?[] captureGroupsByStage)
         {
-            string[]? currentCaptureGroups = null;
+            FilteredCaptureGroups? currentCaptureGroups = null;
             for (int i = 0; i < _matchers.Length; i++)
             {
-                bool matched = _matchers[i].TryMatch(text, out string[]? matchCaptureGroups);
+                bool matched = _matchers[i].TryMatch(text, out FilteredCaptureGroups? matchCaptureGroups);
                 SearchOptions options = _options[i];
                 if (matched == options.InvertMatch)
                 {
@@ -734,14 +734,15 @@ public static class LogSearchBuilder
         private readonly Regex? _regex;
         private readonly string _query;
         private readonly StringComparison _literalComparison;
-        private readonly int _captureGroupCount;
+        private readonly int[] _captureGroupNumbers;
+        private readonly string[] _captureGroupHeaders;
 
         private SearchMatcher(Regex regex)
         {
             _regex = regex;
             _query = string.Empty;
             _literalComparison = StringComparison.Ordinal;
-            _captureGroupCount = Math.Max(0, regex.GetGroupNumbers().Length - 1);
+            (_captureGroupNumbers, _captureGroupHeaders) = CreateCaptureGroupDefinitions(regex);
         }
 
         private SearchMatcher(string query, StringComparison literalComparison)
@@ -749,7 +750,8 @@ public static class LogSearchBuilder
             _regex = null;
             _query = query;
             _literalComparison = literalComparison;
-            _captureGroupCount = 0;
+            _captureGroupNumbers = Array.Empty<int>();
+            _captureGroupHeaders = Array.Empty<string>();
         }
 
         public static SearchMatcher Create(SearchOptions options)
@@ -765,7 +767,7 @@ public static class LogSearchBuilder
             return new SearchMatcher(options.Query, comparison);
         }
 
-        public bool TryMatch(string text, out string[]? captureGroups)
+        public bool TryMatch(string text, out FilteredCaptureGroups? captureGroups)
         {
             captureGroups = null;
             if (_regex is not null)
@@ -776,26 +778,60 @@ public static class LogSearchBuilder
                     return false;
                 }
 
-                if (_captureGroupCount > 0)
+                if (_captureGroupNumbers.Length > 0)
                 {
-                    captureGroups = new string[_captureGroupCount];
-                    int groupsToCopy = Math.Min(_captureGroupCount, match.Groups.Count - 1);
-                    for (int i = 0; i < groupsToCopy; i++)
+                    string[] values = new string[_captureGroupNumbers.Length];
+                    for (int i = 0; i < values.Length; i++)
                     {
-                        Group group = match.Groups[i + 1];
-                        captureGroups[i] = group.Success ? group.Value : string.Empty;
+                        int groupNumber = _captureGroupNumbers[i];
+                        Group? group = groupNumber >= 0 && groupNumber < match.Groups.Count
+                            ? match.Groups[groupNumber]
+                            : null;
+                        values[i] = group is not null && group.Success ? group.Value : string.Empty;
                     }
 
-                    for (int i = groupsToCopy; i < captureGroups.Length; i++)
-                    {
-                        captureGroups[i] = string.Empty;
-                    }
+                    captureGroups = new FilteredCaptureGroups(_captureGroupHeaders, values);
                 }
 
                 return true;
             }
 
             return text.IndexOf(_query, _literalComparison) >= 0;
+        }
+
+        private static (int[] Numbers, string[] Headers) CreateCaptureGroupDefinitions(Regex regex)
+        {
+            int[] groupNumbers = regex.GetGroupNumbers();
+            string[] groupNames = regex.GetGroupNames();
+            List<int> captureGroupNumbers = new();
+            List<string> captureGroupHeaders = new();
+            int unnamedCaptureIndex = 0;
+
+            for (int i = 0; i < groupNumbers.Length; i++)
+            {
+                int groupNumber = groupNumbers[i];
+                if (groupNumber == 0)
+                {
+                    continue;
+                }
+
+                string groupName = i < groupNames.Length ? groupNames[i] : groupNumber.ToString();
+                string header;
+                if (int.TryParse(groupName, out _))
+                {
+                    header = unnamedCaptureIndex.ToString();
+                    unnamedCaptureIndex++;
+                }
+                else
+                {
+                    header = groupName;
+                }
+
+                captureGroupNumbers.Add(groupNumber);
+                captureGroupHeaders.Add(header);
+            }
+
+            return (captureGroupNumbers.ToArray(), captureGroupHeaders.ToArray());
         }
     }
 }

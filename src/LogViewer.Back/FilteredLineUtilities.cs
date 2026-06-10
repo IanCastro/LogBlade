@@ -3,7 +3,9 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 
-public readonly record struct FilteredLineDescriptor(long StartOffset, long EndOffset, int VisualRowCount, string[]? CaptureGroups = null, long LineNumber = 0);
+public readonly record struct FilteredCaptureGroups(string[] Headers, string[] Values);
+
+public readonly record struct FilteredLineDescriptor(long StartOffset, long EndOffset, int VisualRowCount, FilteredCaptureGroups? CaptureGroups = null, long LineNumber = 0);
 
 public sealed class FilteredLineStaleException : IOException
 {

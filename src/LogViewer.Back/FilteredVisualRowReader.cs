@@ -17,6 +17,7 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
     private readonly List<IReadOnlyList<string>> _currentCells = new();
     private readonly List<ViewportRowSelectionKey> _currentRowSelectionKeys = new();
     private int _captureGroupCount;
+    private string[] _captureGroupHeaders = Array.Empty<string>();
     private long _totalVisualRows;
     private long _topRowOrdinal;
     private long _viewportBytes;
@@ -42,7 +43,14 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
             _descriptors[i] = descriptors[i];
             _descriptorRowStarts[i] = runningRows;
             runningRows++;
-            _captureGroupCount = Math.Max(_captureGroupCount, descriptors[i].CaptureGroups?.Length ?? 0);
+            FilteredCaptureGroups? captureGroups = descriptors[i].CaptureGroups;
+            int captureGroupCount = captureGroups?.Values.Length ?? 0;
+            if (_captureGroupHeaders.Length == 0 && captureGroupCount > 0)
+            {
+                _captureGroupHeaders = CopyCaptureGroupHeaders(captureGroups!.Value.Headers, captureGroupCount);
+            }
+
+            _captureGroupCount = Math.Max(_captureGroupCount, captureGroupCount);
             _totalLineCount = Math.Max(_totalLineCount, descriptors[i].LineNumber);
         }
 
@@ -52,7 +60,9 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
         _columnHeaders[1] = "Text";
         for (int i = 0; i < _captureGroupCount; i++)
         {
-            _columnHeaders[i + 2] = i.ToString();
+            _columnHeaders[i + 2] = i < _captureGroupHeaders.Length && !string.IsNullOrEmpty(_captureGroupHeaders[i])
+                ? _captureGroupHeaders[i]
+                : i.ToString();
         }
 
         _totalVisualRows = runningRows;
@@ -477,7 +487,7 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
             return cells;
         }
 
-        string[]? captureGroups = descriptor.CaptureGroups;
+        string[]? captureGroups = descriptor.CaptureGroups?.Values;
         int groupsToCopy = Math.Min(_captureGroupCount, captureGroups?.Length ?? 0);
         for (int i = 0; i < groupsToCopy; i++)
         {
@@ -485,6 +495,23 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
         }
 
         return cells;
+    }
+
+    private static string[] CopyCaptureGroupHeaders(IReadOnlyList<string> headers, int captureGroupCount)
+    {
+        string[] copy = new string[captureGroupCount];
+        int headersToCopy = Math.Min(headers.Count, copy.Length);
+        for (int i = 0; i < headersToCopy; i++)
+        {
+            copy[i] = headers[i];
+        }
+
+        for (int i = headersToCopy; i < copy.Length; i++)
+        {
+            copy[i] = i.ToString();
+        }
+
+        return copy;
     }
 
     private string[] CreateSelectedCells(string rowText, FilteredLineDescriptor descriptor)
