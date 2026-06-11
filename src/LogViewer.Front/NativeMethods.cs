@@ -12,11 +12,21 @@ internal static class NativeMethods
     public const int WS_BORDER = 0x00800000;
     public const int WS_CLIPCHILDREN = 0x02000000;
     public const int WS_OVERLAPPEDWINDOW = 0x00CF0000;
+    public const int WS_GROUP = 0x00020000;
     public const int WS_HSCROLL = 0x00100000;
     public const int WS_VSCROLL = 0x00200000;
     public const int WS_EX_TRANSPARENT = 0x00000020;
     public const int ES_AUTOHSCROLL = 0x0080;
+    public const int ES_AUTOVSCROLL = 0x0040;
+    public const int ES_MULTILINE = 0x0004;
+    public const int ES_READONLY = 0x0800;
+    public const int ES_WANTRETURN = 0x1000;
     public const int BS_AUTOCHECKBOX = 0x00000003;
+    public const int BS_AUTORADIOBUTTON = 0x00000009;
+    public const int BS_PUSHBUTTON = 0x00000000;
+    public const int CBS_DROPDOWNLIST = 0x0003;
+    public const int CBS_HASSTRINGS = 0x0200;
+    public const int LBS_NOTIFY = 0x0001;
     public const int CW_USEDEFAULT = unchecked((int)0x80000000);
     public const int SW_HIDE = 0;
     public const int SW_SHOW = 5;
@@ -52,6 +62,17 @@ internal static class NativeMethods
     public const int WM_NCDESTROY = 0x0082;
     public const int BM_GETCHECK = 0x00F0;
     public const int BM_SETCHECK = 0x00F1;
+    public const int CBN_SELCHANGE = 1;
+    public const int CB_ADDSTRING = 0x0143;
+    public const int CB_RESETCONTENT = 0x014B;
+    public const int CB_GETCURSEL = 0x0147;
+    public const int CB_SETCURSEL = 0x014E;
+    public const int CB_ERR = -1;
+    public const int LB_ADDSTRING = 0x0180;
+    public const int LB_RESETCONTENT = 0x0184;
+    public const int LB_SETCURSEL = 0x0186;
+    public const int LB_GETCURSEL = 0x0188;
+    public const int LB_ERR = -1;
     public const int EM_SETSEL = 0x00B1;
     public const int WM_APP = 0x8000;
     public const int WM_APP_BEGIN_OPEN = WM_APP + 1;
@@ -102,8 +123,12 @@ internal static class NativeMethods
     public const int DT_NOPREFIX = 0x0800;
     public const int WHEEL_DELTA = 120;
     public const int MB_OK = 0x00000000;
+    public const int MB_YESNO = 0x00000004;
     public const int MB_ICONERROR = 0x00000010;
+    public const int MB_ICONQUESTION = 0x00000020;
+    public const int IDYES = 6;
     public const int EN_CHANGE = 0x0300;
+    public const int LBN_DBLCLK = 2;
     public const int BN_CLICKED = 0;
     public const int BST_UNCHECKED = 0;
     public const int BST_CHECKED = 1;
@@ -125,6 +150,7 @@ internal static class NativeMethods
     public static readonly IntPtr IDC_SIZENS = new(32645);
     public static readonly IntPtr IDC_SIZEWE = new(32644);
     public static readonly IntPtr HWND_TOP = IntPtr.Zero;
+    public const int DEFAULT_GUI_FONT = 17;
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     public struct WNDCLASSEXW
@@ -448,6 +474,9 @@ internal static class NativeMethods
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern IntPtr SendMessageW(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr SendMessageW(IntPtr hWnd, uint Msg, IntPtr wParam, string lParam);
+
     [DllImport("user32.dll", SetLastError = true)]
     public static extern nuint SetTimer(IntPtr hWnd, nuint nIDEvent, uint uElapse, IntPtr lpTimerFunc);
 
@@ -460,6 +489,13 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     public static extern IntPtr SetWindowLongPtrW(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool EnableWindow(IntPtr hWnd, bool bEnable);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr SetActiveWindow(IntPtr hWnd);
 
     [DllImport("user32.dll")]
     public static extern IntPtr GetParent(IntPtr hWnd);

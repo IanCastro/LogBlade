@@ -13,6 +13,14 @@ internal static class Program
         {
             Directory.CreateDirectory(tempRoot);
 
+            RunDisplayParserJsonTemplate();
+            RunDisplayParserJsonWithTrailingText();
+            RunDisplayParserRegexNamedDisplay();
+            RunDisplayParserRegexDefaultFullMatch();
+            RunDisplayParserFallbackOriginal();
+            RunSearchUsesDisplayParserLiteral(tempRoot);
+            RunSearchUsesDisplayParserRegexCaptures(tempRoot);
+            RunAppendSearchUsesDisplayParser(tempRoot);
             RunRegexCaptureGroups(tempRoot);
             RunRegexNamedCaptureGroups(tempRoot);
             RunRegexMixedNamedAndUnnamedCaptureGroups(tempRoot);
@@ -86,6 +94,147 @@ internal static class Program
         {
             TryDeleteDirectory(tempRoot);
         }
+    }
+
+    private static void RunDisplayParserJsonTemplate()
+    {
+        DisplayParserRule rule = new()
+        {
+            Mode = DisplayParserMode.Json,
+            Rule = "{Timestamp} [{Logger}] {upper:Level} {Logger} - {Message}"
+        };
+
+        string input = "{ \"Timestamp\": \"2025-09-12 14:50:48.637060\", \"Level\": \"Info\", \"Logger\": \"EventScheduler\", \"Message\": \"Strategy task JT67_48_250912145048_00064 is running\" }";
+        string parsed = DisplayParserEvaluator.EvaluateOrOriginal(rule, input);
+
+        AssertEqual(
+            "display parser json template",
+            parsed,
+            "2025-09-12 14:50:48.637060 [EventScheduler] INFO EventScheduler - Strategy task JT67_48_250912145048_00064 is running");
+    }
+
+    private static void RunDisplayParserJsonWithTrailingText()
+    {
+        DisplayParserRule rule = new()
+        {
+            Mode = DisplayParserMode.Json,
+            Rule = "{upper:Level} {Logger} - {Message}"
+        };
+
+        string input = "{ \"Level\": \"Info\", \"Logger\": \"EventScheduler\", \"Message\": \"running\" } 2025-09-12 [EventScheduler]";
+        AssertEqual("display parser json trailing text", DisplayParserEvaluator.EvaluateOrOriginal(rule, input), "INFO EventScheduler - running");
+    }
+
+    private static void RunDisplayParserRegexNamedDisplay()
+    {
+        DisplayParserRule rule = new()
+        {
+            Mode = DisplayParserMode.Regex,
+            Rule = @"(?<Timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+).*?\[(?<Logger>[^\]]+)\].*?(?<Level>Info).*? - (?<Message>.*)",
+            Template = "{Timestamp} [{Logger}] {upper:Level} {Logger} - {Message}"
+        };
+
+        string input = "2025-09-12 14:50:48.637060 [EventScheduler] Info EventScheduler - Strategy task JT67_48_250912145048_00064 is running";
+        AssertEqual(
+            "display parser regex named display",
+            DisplayParserEvaluator.EvaluateOrOriginal(rule, input),
+            "2025-09-12 14:50:48.637060 [EventScheduler] INFO EventScheduler - Strategy task JT67_48_250912145048_00064 is running");
+    }
+
+    private static void RunDisplayParserRegexDefaultFullMatch()
+    {
+        DisplayParserRule rule = new()
+        {
+            Mode = DisplayParserMode.Regex,
+            Rule = "user-(?<user>[a-z]+)"
+        };
+
+        AssertEqual("display parser regex default full match", DisplayParserEvaluator.EvaluateOrOriginal(rule, "prefix user-ana suffix"), "user-ana");
+    }
+
+    private static void RunDisplayParserFallbackOriginal()
+    {
+        DisplayParserRule rule = new()
+        {
+            Mode = DisplayParserMode.Json,
+            Rule = "{Level} {Message}"
+        };
+
+        AssertEqual("display parser fallback original", DisplayParserEvaluator.EvaluateOrOriginal(rule, "not json"), "not json");
+    }
+
+    private static void RunSearchUsesDisplayParserLiteral(string tempRoot)
+    {
+        string path = WriteLog(
+            tempRoot,
+            "display-parser-search-literal.log",
+            "{\"Level\":\"Info\",\"Message\":\"ready\"}\r\n{\"Level\":\"Error\",\"Message\":\"failed\"}\r\n");
+        DisplayParserRule parser = new()
+        {
+            Mode = DisplayParserMode.Json,
+            Rule = "{upper:Level} - {Message}"
+        };
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("ERROR - failed", UseRegex: false, IgnoreCase: false),
+            parser);
+
+        reader.ReadFromPercentage(0d, 10);
+        IColumnViewportReader columns = reader;
+        AssertSequence("display parser literal rows", reader.CurrentRows, "ERROR - failed");
+        AssertSequence("display parser literal cells", columns.CurrentCells[0], "2", "ERROR - failed");
+    }
+
+    private static void RunSearchUsesDisplayParserRegexCaptures(string tempRoot)
+    {
+        string path = WriteLog(
+            tempRoot,
+            "display-parser-search-regex.log",
+            "{\"Level\":\"Info\",\"Message\":\"ready\"}\r\n{\"Level\":\"Error\",\"Message\":\"failed\"}\r\n");
+        DisplayParserRule parser = new()
+        {
+            Mode = DisplayParserMode.Json,
+            Rule = "{upper:Level} - {Message}"
+        };
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("(?<level>ERROR) - (?<message>failed)", UseRegex: true, IgnoreCase: false),
+            parser);
+
+        reader.ReadFromPercentage(0d, 10);
+        IColumnViewportReader columns = reader;
+        AssertSequence("display parser regex headers", columns.ColumnHeaders, "#", "Text", "level", "message");
+        AssertSequence("display parser regex cells", columns.CurrentCells[0], "2", "ERROR - failed", "ERROR", "failed");
+    }
+
+    private static void RunAppendSearchUsesDisplayParser(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "display-parser-append.log", "{\"Level\":\"Info\",\"Message\":\"ready\"}\r\n");
+        DisplayParserRule parser = new()
+        {
+            Mode = DisplayParserMode.Json,
+            Rule = "{upper:Level} - {Message}"
+        };
+
+        using FilteredVisualRowReader initial = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("ERROR", UseRegex: false, IgnoreCase: false),
+            parser);
+
+        File.AppendAllText(path, "{\"Level\":\"Error\",\"Message\":\"failed\"}\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        using FilteredVisualRowReader appended = BuildAppendedReader(initial, new SearchOptions("ERROR", UseRegex: false, IgnoreCase: false), parser);
+        appended.ReadFromPercentage(0d, 10);
+
+        AssertSequence("display parser append rows", appended.CurrentRows, "ERROR - failed");
+        AssertSequence("display parser append cells", ((IColumnViewportReader)appended).CurrentCells[0], "2", "ERROR - failed");
     }
 
     private static void RunRegexCaptureGroups(string tempRoot)
@@ -1052,7 +1201,12 @@ internal static class Program
         return BuildAppendedReader(initial, new[] { options });
     }
 
-    private static FilteredVisualRowReader BuildAppendedReader(FilteredVisualRowReader initial, IReadOnlyList<SearchOptions> options)
+    private static FilteredVisualRowReader BuildAppendedReader(FilteredVisualRowReader initial, SearchOptions options, DisplayParserRule displayParserRule)
+    {
+        return BuildAppendedReader(initial, new[] { options }, displayParserRule);
+    }
+
+    private static FilteredVisualRowReader BuildAppendedReader(FilteredVisualRowReader initial, IReadOnlyList<SearchOptions> options, DisplayParserRule? displayParserRule = null)
     {
         FilteredVisualRowReader? latest = null;
         LogSearchBuilder.BuildAppendedFilteredReaderIncremental(
@@ -1068,7 +1222,8 @@ internal static class Program
                     latest = update.Reader;
                 }
             },
-            CancellationToken.None);
+            CancellationToken.None,
+            displayParserRule);
 
         return latest ?? throw new InvalidOperationException("Append search did not publish a reader.");
     }

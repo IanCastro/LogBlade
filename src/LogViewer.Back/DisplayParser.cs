@@ -3,94 +3,94 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
-internal enum ParserMode
+public enum DisplayParserMode
 {
     Regex,
     Json
 }
 
-internal static class ParserEvaluator
+public sealed class DisplayParserRule
 {
-    public static string Evaluate(ParserMode mode, string rule, string input)
+    public string Name { get; set; } = string.Empty;
+    public DisplayParserMode Mode { get; set; } = DisplayParserMode.Json;
+    public string Rule { get; set; } = string.Empty;
+    public string Template { get; set; } = string.Empty;
+    public string Sample { get; set; } = string.Empty;
+
+    public DisplayParserRule Clone() => new()
     {
-        if (string.IsNullOrWhiteSpace(rule) || input.Length == 0)
+        Name = Name,
+        Mode = Mode,
+        Rule = Rule,
+        Template = Template,
+        Sample = Sample
+    };
+}
+
+public static class DisplayParserEvaluator
+{
+    public static DisplayParserRule? CloneRule(DisplayParserRule? rule)
+    {
+        if (rule is null || string.IsNullOrWhiteSpace(rule.Rule))
         {
-            return string.Empty;
+            return null;
         }
 
-        try
+        return rule.Clone();
+    }
+
+    public static void ValidateRule(DisplayParserRule rule)
+    {
+        if (string.IsNullOrWhiteSpace(rule.Rule))
         {
-            return mode switch
-            {
-                ParserMode.Regex => EvaluateRegex(rule, template: null, input, requireMatch: false),
-                ParserMode.Json => EvaluateJson(rule, input),
-                _ => string.Empty
-            };
+            throw new ArgumentException("Rule is required.", nameof(rule));
         }
-        catch (Exception ex) when (ex is ArgumentException or JsonException)
+
+        if (rule.Mode == DisplayParserMode.Regex)
         {
-            return "Erro: " + ex.Message;
+            _ = new Regex(rule.Rule, RegexOptions.CultureInvariant);
         }
     }
 
-    public static string EvaluateLines(ParserRule? rule, string input)
+    public static string EvaluateOrOriginal(DisplayParserRule? rule, string input)
     {
-        if (rule is null || input.Length == 0)
+        if (rule is null || string.IsNullOrWhiteSpace(rule.Rule) || input.Length == 0)
         {
-            return string.Empty;
+            return input;
         }
 
-        string normalized = input.Replace("\r\n", "\n").Replace('\r', '\n');
-        string[] lines = normalized.Split('\n');
-        string[] output = new string[lines.Length];
-        for (int i = 0; i < lines.Length; i++)
-        {
-            string line = lines[i];
-            if (line.Length == 0)
-            {
-                output[i] = string.Empty;
-                continue;
-            }
-
-            output[i] = TryEvaluateLine(rule, line, out string parsed)
-                ? parsed
-                : line;
-        }
-
-        return string.Join(Environment.NewLine, output);
+        return TryEvaluate(rule, input, out string parsed)
+            ? parsed
+            : input;
     }
 
-    private static bool TryEvaluateLine(ParserRule rule, string line, out string parsed)
+    public static bool TryEvaluate(DisplayParserRule rule, string input, out string parsed)
     {
+        parsed = input;
         try
         {
             parsed = rule.Mode switch
             {
-                ParserMode.Regex => EvaluateRegex(rule.Rule, rule.Template, line, requireMatch: true),
-                ParserMode.Json => EvaluateJson(rule.Rule, line),
-                _ => line
+                DisplayParserMode.Regex => EvaluateRegex(rule.Rule, rule.Template, input),
+                DisplayParserMode.Json => EvaluateJson(rule.Rule, input),
+                _ => input
             };
             return true;
         }
         catch (Exception ex) when (ex is ArgumentException or JsonException or InvalidOperationException)
         {
-            parsed = line;
+            parsed = input;
             return false;
         }
     }
 
-    private static string EvaluateRegex(string pattern, string? template, string input, bool requireMatch)
+    private static string EvaluateRegex(string pattern, string? template, string input)
     {
         Regex regex = new(pattern, RegexOptions.CultureInvariant);
         Match match = regex.Match(input);
         if (!match.Success)
         {
-            if (requireMatch)
-            {
-                throw new InvalidOperationException("Regex did not match.");
-            }
-
-            return string.Empty;
+            throw new InvalidOperationException("Regex did not match.");
         }
 
         string displayTemplate = string.IsNullOrWhiteSpace(template) ? "{0}" : template;
@@ -284,13 +284,13 @@ internal static class ParserEvaluator
         int start = FindJsonStart(input);
         if (start < 0)
         {
-            throw new JsonException("Nenhum objeto ou array JSON encontrado na linha.");
+            throw new JsonException("No JSON object or array found in line.");
         }
 
         int end = FindJsonEnd(input, start);
         if (end < 0)
         {
-            throw new JsonException("JSON vazio ou incompleto.");
+            throw new JsonException("JSON is empty or incomplete.");
         }
 
         return input.Substring(start, end - start + 1);

@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Text.RegularExpressions;
 
 internal sealed class RuleEditorWindow
 {
@@ -16,8 +15,8 @@ internal sealed class RuleEditorWindow
     private const int IdSaveButton = 201;
     private const int IdCancelButton = 202;
 
-    private readonly IReadOnlyList<ParserRule> _existingRules;
-    private readonly ParserRule? _initialRule;
+    private readonly IReadOnlyList<DisplayParserRule> _existingRules;
+    private readonly DisplayParserRule? _initialRule;
     private readonly string? _originalName;
     private IntPtr _hwnd;
     private IntPtr _owner;
@@ -38,29 +37,29 @@ internal sealed class RuleEditorWindow
     private IntPtr _previewEdit;
     private IntPtr _saveButton;
     private IntPtr _cancelButton;
-    private ParserMode _mode = ParserMode.Json;
+    private DisplayParserMode _mode = DisplayParserMode.Json;
     private bool _closed;
     private bool _updatingPreview;
 
     private static readonly NativeMethods.WindowProc s_wndProc = WindowProc;
     private static bool s_registered;
 
-    public RuleEditorWindow(IReadOnlyList<ParserRule> existingRules)
+    public RuleEditorWindow(IReadOnlyList<DisplayParserRule> existingRules)
         : this(existingRules, initialRule: null)
     {
     }
 
-    public RuleEditorWindow(IReadOnlyList<ParserRule> existingRules, ParserRule? initialRule)
+    public RuleEditorWindow(IReadOnlyList<DisplayParserRule> existingRules, DisplayParserRule? initialRule)
     {
         _existingRules = existingRules;
         _initialRule = initialRule;
         _originalName = initialRule?.Name;
-        _mode = initialRule?.Mode ?? ParserMode.Json;
+        _mode = initialRule?.Mode ?? DisplayParserMode.Json;
     }
 
-    public ParserRule? SavedRule { get; private set; }
+    public DisplayParserRule? SavedRule { get; private set; }
 
-    public ParserRule? ShowModal(IntPtr owner)
+    public DisplayParserRule? ShowModal(IntPtr owner)
     {
         _owner = owner;
         RegisterClass();
@@ -96,7 +95,7 @@ internal sealed class RuleEditorWindow
         }
 
         IntPtr hInstance = NativeMethods.GetModuleHandleW(null);
-        const string className = "LogParserPocRuleEditorWindow";
+        const string className = "LogViewerRuleEditorWindow";
         NativeMethods.WNDCLASSEXW wc = new()
         {
             cbSize = (uint)Marshal.SizeOf<NativeMethods.WNDCLASSEXW>(),
@@ -121,7 +120,7 @@ internal sealed class RuleEditorWindow
         _selfHandle = GCHandle.Alloc(this);
         _hwnd = NativeMethods.CreateWindowExW(
             0,
-            "LogParserPocRuleEditorWindow",
+            "LogViewerRuleEditorWindow",
             _initialRule is null ? "Add Parser Rule" : "Edit Parser Rule",
             NativeMethods.WS_OVERLAPPEDWINDOW | NativeMethods.WS_CLIPCHILDREN,
             NativeMethods.CW_USEDEFAULT,
@@ -210,8 +209,8 @@ internal sealed class RuleEditorWindow
         _saveButton = CreateButton("Save", IdSaveButton);
         _cancelButton = CreateButton("Cancel", IdCancelButton);
 
-        SetButtonChecked(_regexRadio, _mode == ParserMode.Regex);
-        SetButtonChecked(_jsonRadio, _mode == ParserMode.Json);
+        SetButtonChecked(_regexRadio, _mode == DisplayParserMode.Regex);
+        SetButtonChecked(_jsonRadio, _mode == DisplayParserMode.Json);
         if (_initialRule is null)
         {
             SetDefaultJsonExample();
@@ -235,10 +234,10 @@ internal sealed class RuleEditorWindow
 
         if (notification == NativeMethods.BN_CLICKED && id is IdRegexMode or IdJsonMode)
         {
-            _mode = id == IdRegexMode ? ParserMode.Regex : ParserMode.Json;
-            SetButtonChecked(_regexRadio, _mode == ParserMode.Regex);
-            SetButtonChecked(_jsonRadio, _mode == ParserMode.Json);
-            if (_mode == ParserMode.Json)
+            _mode = id == IdRegexMode ? DisplayParserMode.Regex : DisplayParserMode.Json;
+            SetButtonChecked(_regexRadio, _mode == DisplayParserMode.Regex);
+            SetButtonChecked(_jsonRadio, _mode == DisplayParserMode.Json);
+            if (_mode == DisplayParserMode.Json)
             {
                 SetDefaultJsonExample();
             }
@@ -300,11 +299,16 @@ internal sealed class RuleEditorWindow
             }
         }
 
-        if (_mode == ParserMode.Regex)
+        if (_mode == DisplayParserMode.Regex)
         {
             try
             {
-                _ = new Regex(rule, RegexOptions.CultureInvariant);
+                DisplayParserEvaluator.ValidateRule(new DisplayParserRule
+                {
+                    Mode = _mode,
+                    Rule = rule,
+                    Template = template
+                });
             }
             catch (ArgumentException ex)
             {
@@ -313,12 +317,12 @@ internal sealed class RuleEditorWindow
             }
         }
 
-        SavedRule = new ParserRule
+        SavedRule = new DisplayParserRule
         {
             Name = name,
             Mode = _mode,
             Rule = rule,
-            Template = _mode == ParserMode.Regex ? template : string.Empty,
+            Template = _mode == DisplayParserMode.Regex ? template : string.Empty,
             Sample = sample
         };
         Close();
@@ -348,7 +352,7 @@ internal sealed class RuleEditorWindow
         int inputLeft = margin + labelWidth + 12;
         int inputWidth = Math.Max(280, width - inputLeft - margin);
         int y = margin;
-        bool isRegex = _mode == ParserMode.Regex;
+        bool isRegex = _mode == DisplayParserMode.Regex;
         int ruleHeight = isRegex ? 58 : 78;
         int templateHeight = isRegex ? 48 : 0;
 
@@ -402,7 +406,7 @@ internal sealed class RuleEditorWindow
         }
 
         _updatingPreview = true;
-        ParserRule previewRule = new()
+        DisplayParserRule previewRule = new()
         {
             Name = GetWindowText(_nameEdit),
             Mode = _mode,
@@ -410,9 +414,30 @@ internal sealed class RuleEditorWindow
             Template = GetWindowText(_templateEdit),
             Sample = GetWindowText(_sampleEdit)
         };
-        string result = ParserEvaluator.EvaluateLines(previewRule, previewRule.Sample);
+        string result = EvaluateSample(previewRule);
         NativeMethods.SetWindowTextW(_previewEdit, result);
         _updatingPreview = false;
+    }
+
+    private static string EvaluateSample(DisplayParserRule rule)
+    {
+        if (rule.Sample.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        string normalized = rule.Sample.Replace("\r\n", "\n").Replace('\r', '\n');
+        string[] lines = normalized.Split('\n');
+        string[] output = new string[lines.Length];
+        for (int i = 0; i < lines.Length; i++)
+        {
+            string line = lines[i];
+            output[i] = line.Length == 0
+                ? string.Empty
+                : DisplayParserEvaluator.EvaluateOrOriginal(rule, line);
+        }
+
+        return string.Join(Environment.NewLine, output);
     }
 
     private void SetDefaultJsonExample()
@@ -435,7 +460,7 @@ internal sealed class RuleEditorWindow
 
     private void UpdateModeUi()
     {
-        bool isRegex = _mode == ParserMode.Regex;
+        bool isRegex = _mode == DisplayParserMode.Regex;
         NativeMethods.SetWindowTextW(_ruleLabel, isRegex ? "Regex" : "Template");
         NativeMethods.SetWindowTextW(_templateLabel, "Display");
         NativeMethods.ShowWindow(_templateLabel, isRegex ? NativeMethods.SW_SHOW : NativeMethods.SW_HIDE);
@@ -445,7 +470,7 @@ internal sealed class RuleEditorWindow
 
     private void ShowError(string message)
     {
-        NativeMethods.MessageBoxW(_hwnd, message, "Parser POC", NativeMethods.MB_OK | NativeMethods.MB_ICONERROR);
+        NativeMethods.MessageBoxW(_hwnd, message, Program.AppTitle, NativeMethods.MB_OK | NativeMethods.MB_ICONERROR);
     }
 
     private IntPtr CreateLabel(string text)

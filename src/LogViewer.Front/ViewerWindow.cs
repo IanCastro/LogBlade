@@ -38,6 +38,10 @@ internal sealed class SearchWorkerResult
 
 internal sealed class ViewerWindow
 {
+    private const int TopBarHeight = 34;
+    private const int TopBarPadding = 4;
+    private const int ParserLabelWidth = 52;
+    private const int ParserComboWidth = 360;
     private const int SearchInputRowHeight = 24;
     private const int SearchProgressRowHeight = 24;
     private const int SearchDebounceMs = 200;
@@ -51,11 +55,14 @@ internal sealed class ViewerWindow
     private const int InvertMatchToggleWidth = 120;
     private const int SearchResizeHitSlopPx = 4;
     private const string SearchResizeGripClassName = "LogViewerSearchResizeGripWindow";
+    private const string ConfigureParserText = "Configure";
 
     private readonly string _path;
     private readonly string _titleSuffix;
     private IntPtr _hwnd;
     private IntPtr _font;
+    private IntPtr _parserLabel;
+    private IntPtr _parserCombo;
     private IntPtr _searchResizeGrip;
     private FileSystemWatcher? _fileWatcher;
     private GCHandle _selfHandle;
@@ -63,7 +70,10 @@ internal sealed class ViewerWindow
     private int _charWidth = 8;
     private bool _firstRenderLogged;
     private bool _closing;
+    private bool _updatingParserCombo;
     private bool _updatingSearchControls;
+    private List<DisplayParserRule> _parserRules = new();
+    private int _selectedParserRuleIndex = -1;
     private readonly List<SearchLevelState> _searchLevels = new();
     private int _activeSearchLevelCount;
     private DetectedEncodingInfo? _detectedEncoding;
@@ -126,6 +136,9 @@ internal sealed class ViewerWindow
 
     private readonly record struct WindowLayout(
         NativeMethods.RECT ClientRect,
+        NativeMethods.RECT TopBarRect,
+        NativeMethods.RECT ParserLabelRect,
+        NativeMethods.RECT ParserComboRect,
         NativeMethods.RECT ViewerRect,
         NativeMethods.RECT SearchAreaRect,
         SearchLevelLayout[] SearchLevelLayouts,
@@ -410,6 +423,9 @@ internal sealed class ViewerWindow
         MeasureFont();
 
         IntPtr hInstance = NativeMethods.GetModuleHandleW(null);
+        CreateParserControls(hInstance);
+        ReloadParserRules(selectRuleName: null);
+
         _mainPane = new ViewportPaneWindow(
             _font,
             _lineHeight,
@@ -425,6 +441,156 @@ internal sealed class ViewerWindow
 
         RecalculateLayout();
         ApplyLayout();
+    }
+
+    private void CreateParserControls(IntPtr hInstance)
+    {
+        _parserLabel = NativeMethods.CreateWindowExW(
+            0,
+            "STATIC",
+            "Parser",
+            NativeMethods.WS_CHILD | NativeMethods.WS_VISIBLE,
+            0,
+            0,
+            1,
+            1,
+            _hwnd,
+            IntPtr.Zero,
+            hInstance,
+            IntPtr.Zero);
+
+        if (_parserLabel == IntPtr.Zero)
+        {
+            throw new InvalidOperationException("CreateWindowExW failed for parser label.");
+        }
+
+        _parserCombo = NativeMethods.CreateWindowExW(
+            0,
+            "COMBOBOX",
+            string.Empty,
+            NativeMethods.WS_CHILD | NativeMethods.WS_VISIBLE | NativeMethods.WS_TABSTOP | NativeMethods.WS_VSCROLL | NativeMethods.CBS_DROPDOWNLIST | NativeMethods.CBS_HASSTRINGS,
+            0,
+            0,
+            1,
+            1,
+            _hwnd,
+            IntPtr.Zero,
+            hInstance,
+            IntPtr.Zero);
+
+        if (_parserCombo == IntPtr.Zero)
+        {
+            throw new InvalidOperationException("CreateWindowExW failed for parser combo.");
+        }
+
+        NativeMethods.SendMessageW(_parserLabel, NativeMethods.WM_SETFONT, _font, new IntPtr(1));
+        NativeMethods.SendMessageW(_parserCombo, NativeMethods.WM_SETFONT, _font, new IntPtr(1));
+    }
+
+    private void ReloadParserRules(string? selectRuleName)
+    {
+        if (_parserCombo == IntPtr.Zero)
+        {
+            return;
+        }
+
+        _parserRules = DisplayParserRuleStore.Load();
+        _updatingParserCombo = true;
+        NativeMethods.SendMessageW(_parserCombo, NativeMethods.CB_RESETCONTENT, IntPtr.Zero, IntPtr.Zero);
+        NativeMethods.SendMessageW(_parserCombo, NativeMethods.CB_ADDSTRING, IntPtr.Zero, string.Empty);
+        for (int i = 0; i < _parserRules.Count; i++)
+        {
+            NativeMethods.SendMessageW(_parserCombo, NativeMethods.CB_ADDSTRING, IntPtr.Zero, _parserRules[i].Name);
+        }
+
+        NativeMethods.SendMessageW(_parserCombo, NativeMethods.CB_ADDSTRING, IntPtr.Zero, ConfigureParserText);
+        _selectedParserRuleIndex = FindParserRuleIndex(selectRuleName);
+        SetParserComboSelection(_selectedParserRuleIndex);
+        _updatingParserCombo = false;
+    }
+
+    private void SetParserComboSelection(int ruleIndex)
+    {
+        int comboIndex = ruleIndex >= 0 ? ruleIndex + 1 : 0;
+        NativeMethods.SendMessageW(_parserCombo, NativeMethods.CB_SETCURSEL, new IntPtr(comboIndex), IntPtr.Zero);
+    }
+
+    private int FindParserRuleIndex(string? name)
+    {
+        if (string.IsNullOrEmpty(name))
+        {
+            return -1;
+        }
+
+        for (int i = 0; i < _parserRules.Count; i++)
+        {
+            if (string.Equals(_parserRules[i].Name, name, StringComparison.OrdinalIgnoreCase))
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    private DisplayParserRule? GetSelectedParserRule()
+    {
+        return _selectedParserRuleIndex >= 0 && _selectedParserRuleIndex < _parserRules.Count
+            ? _parserRules[_selectedParserRuleIndex].Clone()
+            : null;
+    }
+
+    private void OnParserSelectionChanged()
+    {
+        int selected = NativeMethods.SendMessageW(_parserCombo, NativeMethods.CB_GETCURSEL, IntPtr.Zero, IntPtr.Zero).ToInt32();
+        int configureIndex = _parserRules.Count + 1;
+        if (selected == configureIndex)
+        {
+            OpenRuleManager();
+            return;
+        }
+
+        _selectedParserRuleIndex = selected > 0 && selected <= _parserRules.Count ? selected - 1 : -1;
+        ApplyParserRuleChange();
+    }
+
+    private void OpenRuleManager()
+    {
+        string? activeRuleName = GetSelectedParserRule()?.Name;
+        RuleManagerWindow manager = new(_parserRules, activeRuleName);
+        string? selectedRuleName = manager.ShowModal(_hwnd);
+        ReloadParserRules(selectedRuleName);
+        ApplyParserRuleChange();
+    }
+
+    private void ApplyParserRuleChange()
+    {
+        ReloadMainReaderWithSelectedParser();
+        if (HasActiveSearch)
+        {
+            RestartSearchAfterInputChange();
+        }
+    }
+
+    private void ReloadMainReaderWithSelectedParser()
+    {
+        if (_mainPane is null || _mainPane.Reader is null || _detectedEncoding is not DetectedEncodingInfo detected)
+        {
+            return;
+        }
+
+        double scrollPercentage = _mainPane.Reader.ScrollPercentage;
+        int visibleLines = _mainPane.VisibleLineCount;
+        try
+        {
+            VisualRowReader reader = new(_path, detected.Encoding, detected.DataOffset, GetSelectedParserRule());
+            reader.ReadFromPercentage(scrollPercentage, visibleLines);
+            _mainPane.SetReader(reader, visibleLines, preserveSelection: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            NativeMethods.MessageBoxW(_hwnd, "Failed to apply parser: " + ex.Message, Program.AppTitle, NativeMethods.MB_OK | NativeMethods.MB_ICONERROR);
+        }
     }
 
     private SearchLevelState CreateSearchLevel(IntPtr hInstance)
@@ -625,6 +791,7 @@ internal sealed class ViewerWindow
         string workerPath = _path;
         IntPtr hwnd = _hwnd;
         int visibleLines = _mainPane.VisibleLineCount;
+        DisplayParserRule? workerParserRule = GetSelectedParserRule();
         ThreadPool.QueueUserWorkItem(_ =>
         {
             var result = new OpenWorkerResult();
@@ -632,7 +799,7 @@ internal sealed class ViewerWindow
             {
                 AppLog.Instance.Info("file.open.begin", "begin", new LogField("path", workerPath));
                 result.DetectedEncoding = LogEncodingDetector.DetectEncoding(workerPath);
-                result.Reader = new VisualRowReader(workerPath, result.DetectedEncoding.Value.Encoding, result.DetectedEncoding.Value.DataOffset);
+                result.Reader = new VisualRowReader(workerPath, result.DetectedEncoding.Value.Encoding, result.DetectedEncoding.Value.DataOffset, workerParserRule);
                 result.Reader.ReadFromPercentage(0d, visibleLines);
                 result.Success = true;
                 result.PreloadedVisibleLines = visibleLines;
@@ -1607,12 +1774,18 @@ internal sealed class ViewerWindow
 
     private void OnCommand(IntPtr wParam, IntPtr lParam)
     {
+        int notification = NativeMethods.HighWord(wParam);
+        if (lParam == _parserCombo && notification == NativeMethods.CBN_SELCHANGE && !_updatingParserCombo)
+        {
+            OnParserSelectionChanged();
+            return;
+        }
+
         if (_updatingSearchControls)
         {
             return;
         }
 
-        int notification = NativeMethods.HighWord(wParam);
         if (FindSearchLevelByEdit(lParam) is not null && notification == NativeMethods.EN_CHANGE)
         {
             NormalizeSearchLevelsFromControls();
@@ -1735,6 +1908,7 @@ internal sealed class ViewerWindow
         bool useRegex = AnySearchOptionUsesRegex(workerOptions);
         bool ignoreCase = AnySearchOptionIgnoresCase(workerOptions);
         bool invertMatch = AnySearchOptionInvertsMatch(workerOptions);
+        DisplayParserRule? workerParserRule = GetSelectedParserRule();
         CancellationTokenSource searchCancellation = BeginSearchCancellation();
         CancellationToken cancellationToken = searchCancellation.Token;
         ThreadPool.QueueUserWorkItem(_ =>
@@ -1786,7 +1960,7 @@ internal sealed class ViewerWindow
                         IsFinal = update.IsFinal,
                         IsAppendUpdate = false
                     });
-                }, cancellationToken);
+                }, cancellationToken, workerParserRule);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -1966,6 +2140,7 @@ internal sealed class ViewerWindow
         bool useRegex = AnySearchOptionUsesRegex(workerOptions);
         bool ignoreCase = AnySearchOptionIgnoresCase(workerOptions);
         bool invertMatch = AnySearchOptionInvertsMatch(workerOptions);
+        DisplayParserRule? workerParserRule = GetSelectedParserRule();
         CancellationTokenSource searchCancellation = BeginSearchCancellation();
         CancellationToken cancellationToken = searchCancellation.Token;
         _appendSearchPending = false;
@@ -2020,7 +2195,7 @@ internal sealed class ViewerWindow
                         IsFinal = update.IsFinal,
                         IsAppendUpdate = true
                     });
-                }, cancellationToken);
+                }, cancellationToken, workerParserRule);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -2615,16 +2790,40 @@ internal sealed class ViewerWindow
     {
         NativeMethods.GetClientRect(_hwnd, out NativeMethods.RECT clientRect);
         int clientHeight = GetRectHeight(clientRect);
-        int searchAreaHeight = GetPreferredSearchAreaHeight(clientHeight);
+        int contentHeight = Math.Max(0, clientHeight - TopBarHeight);
+        int searchAreaHeight = GetPreferredSearchAreaHeight(contentHeight);
         int availableResultHeight = GetAvailableSearchResultHeight(searchAreaHeight);
         int[] searchResultHeights = CalculateSearchResultHeights(availableResultHeight);
-        int viewerBottom = Math.Max(clientRect.top, clientRect.bottom - searchAreaHeight);
+        int topBarBottom = Math.Min(clientRect.bottom, clientRect.top + TopBarHeight);
+        NativeMethods.RECT topBarRect = new()
+        {
+            left = clientRect.left,
+            top = clientRect.top,
+            right = clientRect.right,
+            bottom = topBarBottom
+        };
+        NativeMethods.RECT parserLabelRect = new()
+        {
+            left = topBarRect.left + TopBarPadding,
+            top = topBarRect.top + TopBarPadding + 4,
+            right = topBarRect.left + TopBarPadding + ParserLabelWidth,
+            bottom = Math.Min(topBarRect.bottom, topBarRect.top + TopBarPadding + 4 + SearchInputRowHeight)
+        };
+        int parserComboLeft = parserLabelRect.right + SearchToggleGap;
+        NativeMethods.RECT parserComboRect = new()
+        {
+            left = parserComboLeft,
+            top = topBarRect.top + TopBarPadding,
+            right = Math.Max(parserComboLeft, Math.Min(topBarRect.right - TopBarPadding, parserComboLeft + ParserComboWidth)),
+            bottom = topBarRect.top + TopBarPadding + 220
+        };
+        int viewerBottom = Math.Max(topBarBottom, clientRect.bottom - searchAreaHeight);
         int searchAreaTop = viewerBottom;
         int searchAreaBottom = Math.Min(clientRect.bottom, searchAreaTop + searchAreaHeight);
         NativeMethods.RECT viewerRect = new()
         {
             left = clientRect.left,
-            top = clientRect.top,
+            top = topBarBottom,
             right = clientRect.right,
             bottom = viewerBottom
         };
@@ -2720,11 +2919,35 @@ internal sealed class ViewerWindow
             }
             : CreateZeroRect();
 
-        _layout = new WindowLayout(clientRect, viewerRect, searchAreaRect, searchLevelLayouts, progressRect);
+        _layout = new WindowLayout(clientRect, topBarRect, parserLabelRect, parserComboRect, viewerRect, searchAreaRect, searchLevelLayouts, progressRect);
     }
 
     private void ApplyLayout()
     {
+        if (_parserLabel != IntPtr.Zero)
+        {
+            NativeMethods.MoveWindow(
+                _parserLabel,
+                _layout.ParserLabelRect.left,
+                _layout.ParserLabelRect.top,
+                GetRectWidth(_layout.ParserLabelRect),
+                GetRectHeight(_layout.ParserLabelRect),
+                true);
+            NativeMethods.ShowWindow(_parserLabel, NativeMethods.SW_SHOW);
+        }
+
+        if (_parserCombo != IntPtr.Zero)
+        {
+            NativeMethods.MoveWindow(
+                _parserCombo,
+                _layout.ParserComboRect.left,
+                _layout.ParserComboRect.top,
+                GetRectWidth(_layout.ParserComboRect),
+                GetRectHeight(_layout.ParserComboRect),
+                true);
+            NativeMethods.ShowWindow(_parserCombo, NativeMethods.SW_SHOW);
+        }
+
         _mainPane?.SetBounds(_layout.ViewerRect, true);
 
         for (int i = 0; i < _searchLevels.Count && i < _layout.SearchLevelLayouts.Length; i++)
@@ -2810,6 +3033,18 @@ internal sealed class ViewerWindow
         }
 
         _mainPane?.Dispose();
+
+        if (_parserCombo != IntPtr.Zero)
+        {
+            NativeMethods.DestroyWindow(_parserCombo);
+            _parserCombo = IntPtr.Zero;
+        }
+
+        if (_parserLabel != IntPtr.Zero)
+        {
+            NativeMethods.DestroyWindow(_parserLabel);
+            _parserLabel = IntPtr.Zero;
+        }
 
         foreach (SearchLevelState level in _searchLevels)
         {

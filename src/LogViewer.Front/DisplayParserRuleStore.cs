@@ -5,7 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-internal static class ParserRuleStore
+internal static class DisplayParserRuleStore
 {
     private static readonly JsonSerializerOptions s_jsonOptions = new()
     {
@@ -13,28 +13,28 @@ internal static class ParserRuleStore
         Converters = { new JsonStringEnumConverter() }
     };
 
-    public static string StorePath => Path.Combine(FindRepoRoot(), ".local", "parser-poc-rules.json");
+    public static string StorePath => Path.Combine(FindRepoRoot(), ".local", "parser-rules.json");
 
-    public static List<ParserRule> Load()
+    public static List<DisplayParserRule> Load()
     {
         string path = StorePath;
         if (!File.Exists(path))
         {
-            return new List<ParserRule>();
+            return new List<DisplayParserRule>();
         }
 
         try
         {
             string json = File.ReadAllText(path, Encoding.UTF8);
-            return JsonSerializer.Deserialize<List<ParserRule>>(json, s_jsonOptions) ?? new List<ParserRule>();
+            return JsonSerializer.Deserialize<List<DisplayParserRule>>(json, s_jsonOptions) ?? new List<DisplayParserRule>();
         }
         catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
         {
-            return new List<ParserRule>();
+            return new List<DisplayParserRule>();
         }
     }
 
-    public static void Save(IReadOnlyList<ParserRule> rules)
+    public static void Save(IReadOnlyList<DisplayParserRule> rules)
     {
         string path = StorePath;
         Directory.CreateDirectory(Path.GetDirectoryName(path) ?? ".");
@@ -47,7 +47,7 @@ internal static class ParserRuleStore
         string? current = AppContext.BaseDirectory;
         while (!string.IsNullOrEmpty(current))
         {
-            if (File.Exists(Path.Combine(current, "build-parser-poc.ps1")))
+            if (File.Exists(Path.Combine(current, "build.ps1")))
             {
                 return current;
             }
@@ -59,7 +59,7 @@ internal static class ParserRuleStore
         current = Directory.GetCurrentDirectory();
         while (!string.IsNullOrEmpty(current))
         {
-            if (File.Exists(Path.Combine(current, "build-parser-poc.ps1")))
+            if (File.Exists(Path.Combine(current, "build.ps1")))
             {
                 return current;
             }

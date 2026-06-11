@@ -10,7 +10,7 @@ internal sealed class RuleManagerWindow
     private const int IdRemoveButton = 203;
     private const int IdCloseButton = 204;
 
-    private readonly List<ParserRule> _rules;
+    private readonly List<DisplayParserRule> _rules;
     private string? _activeRuleName;
     private IntPtr _hwnd;
     private IntPtr _owner;
@@ -27,9 +27,9 @@ internal sealed class RuleManagerWindow
     private static readonly NativeMethods.WindowProc s_wndProc = WindowProc;
     private static bool s_registered;
 
-    public RuleManagerWindow(IReadOnlyList<ParserRule> rules, string? activeRuleName)
+    public RuleManagerWindow(IReadOnlyList<DisplayParserRule> rules, string? activeRuleName)
     {
-        _rules = new List<ParserRule>(rules);
+        _rules = new List<DisplayParserRule>(rules);
         _activeRuleName = activeRuleName;
     }
 
@@ -69,7 +69,7 @@ internal sealed class RuleManagerWindow
         }
 
         IntPtr hInstance = NativeMethods.GetModuleHandleW(null);
-        const string className = "LogParserPocRuleManagerWindow";
+        const string className = "LogViewerRuleManagerWindow";
         NativeMethods.WNDCLASSEXW wc = new()
         {
             cbSize = (uint)Marshal.SizeOf<NativeMethods.WNDCLASSEXW>(),
@@ -94,7 +94,7 @@ internal sealed class RuleManagerWindow
         _selfHandle = GCHandle.Alloc(this);
         _hwnd = NativeMethods.CreateWindowExW(
             0,
-            "LogParserPocRuleManagerWindow",
+            "LogViewerRuleManagerWindow",
             "Configure Parser Rules",
             NativeMethods.WS_OVERLAPPEDWINDOW | NativeMethods.WS_CLIPCHILDREN,
             NativeMethods.CW_USEDEFAULT,
@@ -213,7 +213,7 @@ internal sealed class RuleManagerWindow
     private void AddRule()
     {
         RuleEditorWindow editor = new(_rules);
-        ParserRule? saved = editor.ShowModal(_hwnd);
+        DisplayParserRule? saved = editor.ShowModal(_hwnd);
         if (saved is null)
         {
             return;
@@ -235,7 +235,7 @@ internal sealed class RuleManagerWindow
         }
 
         RuleEditorWindow editor = new(_rules, CopyRule(_rules[index]));
-        ParserRule? saved = editor.ShowModal(_hwnd);
+        DisplayParserRule? saved = editor.ShowModal(_hwnd);
         if (saved is null)
         {
             return;
@@ -266,7 +266,7 @@ internal sealed class RuleManagerWindow
         int result = NativeMethods.MessageBoxW(
             _hwnd,
             "Remove rule '" + removedName + "'?",
-            "Parser POC",
+            Program.AppTitle,
             NativeMethods.MB_YESNO | NativeMethods.MB_ICONQUESTION);
         if (result != NativeMethods.IDYES)
         {
@@ -325,7 +325,7 @@ internal sealed class RuleManagerWindow
 
     private void SaveRules()
     {
-        ParserRuleStore.Save(_rules);
+        DisplayParserRuleStore.Save(_rules);
     }
 
     private void Close()
@@ -411,7 +411,7 @@ internal sealed class RuleManagerWindow
 
     private void ShowError(string message)
     {
-        NativeMethods.MessageBoxW(_hwnd, message, "Parser POC", NativeMethods.MB_OK | NativeMethods.MB_ICONERROR);
+        NativeMethods.MessageBoxW(_hwnd, message, Program.AppTitle, NativeMethods.MB_OK | NativeMethods.MB_ICONERROR);
     }
 
     private static void Move(IntPtr hwnd, int x, int y, int width, int height)
@@ -422,9 +422,9 @@ internal sealed class RuleManagerWindow
         }
     }
 
-    private static ParserRule CopyRule(ParserRule source)
+    private static DisplayParserRule CopyRule(DisplayParserRule source)
     {
-        return new ParserRule
+        return new DisplayParserRule
         {
             Name = source.Name,
             Mode = source.Mode,

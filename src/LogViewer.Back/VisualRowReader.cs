@@ -71,6 +71,7 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
     private readonly LogEncodingKind _kind;
     private readonly Encoding _encoding;
     private readonly long _dataOffset;
+    private readonly DisplayParserRule? _displayParserRule;
     private long _fileSize;
     private readonly List<ViewportRow> _viewportRows = new();
     private long _topOffset;
@@ -78,24 +79,26 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
     private int _viewportVisibleLines;
     private bool _viewportLoaded;
 
-    private VisualRowReader(string filePath, LogEncodingKind kind, Encoding encoding, long dataOffset, long fileSize)
+    private VisualRowReader(string filePath, LogEncodingKind kind, Encoding encoding, long dataOffset, long fileSize, DisplayParserRule? displayParserRule)
     {
         _filePath = filePath;
         _kind = kind;
         _encoding = encoding;
         _dataOffset = dataOffset;
+        _displayParserRule = DisplayParserEvaluator.CloneRule(displayParserRule);
         _fileSize = fileSize;
         _topOffset = dataOffset;
         _viewportEndOffset = dataOffset;
     }
 
-    public VisualRowReader(string filePath, Encoding encoding, long dataOffset)
+    public VisualRowReader(string filePath, Encoding encoding, long dataOffset, DisplayParserRule? displayParserRule = null)
         : this(
             Path.GetFullPath(filePath),
             InferKind(encoding, dataOffset),
             encoding,
             dataOffset,
-            new FileInfo(Path.GetFullPath(filePath)).Length)
+            new FileInfo(Path.GetFullPath(filePath)).Length,
+            displayParserRule)
     {
     }
 
@@ -138,6 +141,7 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
             for (int i = 0; i < _viewportRows.Count; i++)
             {
                 rows[i] = _viewportRows[i].Text;
+                rows[i] = FormatDisplayText(rows[i]);
             }
 
             return rows;
@@ -210,7 +214,7 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
             if (!excluded.Contains(key) && emitted.Add(key))
             {
                 string lineText = ReadSelectedLogicalLineText(fs, read.Row, read.NextPosition, out VisualPosition? nextLinePosition);
-                rows.Add(new ViewportSelectedRow(key, lineText));
+                rows.Add(new ViewportSelectedRow(key, FormatDisplayText(lineText)));
                 if (nextLinePosition is null)
                 {
                     break;
@@ -587,7 +591,7 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
 
     public VisualRowReader CloneForWorker()
     {
-        VisualRowReader clone = new(_filePath, _kind, _encoding, _dataOffset, _fileSize)
+        VisualRowReader clone = new(_filePath, _kind, _encoding, _dataOffset, _fileSize, _displayParserRule)
         {
             _topOffset = _topOffset,
             _viewportEndOffset = _viewportEndOffset,
@@ -623,6 +627,9 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
     public void Dispose()
     {
     }
+
+    private string FormatDisplayText(string text) =>
+        DisplayParserEvaluator.EvaluateOrOriginal(_displayParserRule, text);
 
     internal static FileStream OpenSourceStream(string path)
     {

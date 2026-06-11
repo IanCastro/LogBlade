@@ -10,6 +10,7 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
     private Encoding _encoding;
     private long _dataOffset;
     private long _fileSize;
+    private readonly DisplayParserRule? _displayParserRule;
     private FilteredLineDescriptor[] _descriptors;
     private long[] _descriptorRowStarts;
     private string[] _columnHeaders = Array.Empty<string>();
@@ -27,13 +28,22 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
     private bool _viewportLoaded;
     private bool _disposed;
 
-    internal FilteredVisualRowReader(string filePath, LogEncodingKind kind, Encoding encoding, long dataOffset, long fileSize, IReadOnlyList<FilteredLineDescriptor> descriptors, long totalLineCount = 0)
+    internal FilteredVisualRowReader(
+        string filePath,
+        LogEncodingKind kind,
+        Encoding encoding,
+        long dataOffset,
+        long fileSize,
+        IReadOnlyList<FilteredLineDescriptor> descriptors,
+        long totalLineCount = 0,
+        DisplayParserRule? displayParserRule = null)
     {
         _filePath = filePath;
         _kind = kind;
         _encoding = encoding;
         _dataOffset = dataOffset;
         _fileSize = fileSize;
+        _displayParserRule = DisplayParserEvaluator.CloneRule(displayParserRule);
         _descriptors = new FilteredLineDescriptor[descriptors.Count];
         _descriptorRowStarts = new long[descriptors.Count];
 
@@ -197,7 +207,7 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
                 continue;
             }
 
-            string text = FilteredLineUtilities.ReadLineText(fs, _encoding, descriptor.StartOffset, descriptor.EndOffset);
+            string text = FormatDisplayText(FilteredLineUtilities.ReadLineText(fs, _encoding, descriptor.StartOffset, descriptor.EndOffset));
             rows.Add(new ViewportSelectedRow(key, text, CreateSelectedCells(text, descriptor)));
         }
 
@@ -361,7 +371,7 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
     public IViewportReader CloneForWorker()
     {
         ThrowIfDisposed();
-        var clone = new FilteredVisualRowReader(_filePath, _kind, _encoding, _dataOffset, _fileSize, _descriptors, _totalLineCount)
+        var clone = new FilteredVisualRowReader(_filePath, _kind, _encoding, _dataOffset, _fileSize, _descriptors, _totalLineCount, _displayParserRule)
         {
             _topRowOrdinal = _topRowOrdinal,
             _viewportBytes = _viewportBytes,
@@ -463,7 +473,7 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
         while (_currentRows.Count < visibleLines && currentDescriptorIndex < _descriptors.Length)
         {
             FilteredLineDescriptor descriptor = _descriptors[currentDescriptorIndex];
-            string text = FilteredLineUtilities.ReadLineText(fs, _encoding, descriptor.StartOffset, descriptor.EndOffset);
+            string text = FormatDisplayText(FilteredLineUtilities.ReadLineText(fs, _encoding, descriptor.StartOffset, descriptor.EndOffset));
             _currentRows.Add(text);
             _currentRowSelectionKeys.Add(new ViewportRowSelectionKey(descriptor.StartOffset, descriptor.EndOffset, 0));
             _currentCells.Add(CreateCells(text, descriptor, includeCaptureGroups: true));
@@ -521,6 +531,9 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
         Array.Copy(visibleCells, 1, selectedCells, 0, selectedCells.Length);
         return selectedCells;
     }
+
+    private string FormatDisplayText(string text) =>
+        DisplayParserEvaluator.EvaluateOrOriginal(_displayParserRule, text);
 
     private (int DescriptorIndex, int SegmentIndex) MapTopRow(long rowOrdinal)
     {
