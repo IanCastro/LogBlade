@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -12,18 +13,28 @@ public enum DisplayParserMode
 public sealed class DisplayParserRule
 {
     public string Name { get; set; } = string.Empty;
-    public DisplayParserMode Mode { get; set; } = DisplayParserMode.Json;
-    public string Rule { get; set; } = string.Empty;
-    public string Template { get; set; } = string.Empty;
+    public List<DisplayParserStage> Stages { get; set; } = new();
     public string Sample { get; set; } = string.Empty;
 
     public DisplayParserRule Clone() => new()
     {
         Name = Name,
+        Stages = Stages is null ? new List<DisplayParserStage>() : Stages.ConvertAll(stage => stage.Clone()),
+        Sample = Sample
+    };
+}
+
+public sealed class DisplayParserStage
+{
+    public DisplayParserMode Mode { get; set; } = DisplayParserMode.Json;
+    public string Rule { get; set; } = string.Empty;
+    public string Template { get; set; } = string.Empty;
+
+    public DisplayParserStage Clone() => new()
+    {
         Mode = Mode,
         Rule = Rule,
-        Template = Template,
-        Sample = Sample
+        Template = Template
     };
 }
 
@@ -31,7 +42,7 @@ public static class DisplayParserEvaluator
 {
     public static DisplayParserRule? CloneRule(DisplayParserRule? rule)
     {
-        if (rule is null || string.IsNullOrWhiteSpace(rule.Rule))
+        if (rule is null || rule.Stages is null || rule.Stages.Count == 0)
         {
             return null;
         }
@@ -41,20 +52,40 @@ public static class DisplayParserEvaluator
 
     public static void ValidateRule(DisplayParserRule rule)
     {
-        if (string.IsNullOrWhiteSpace(rule.Rule))
+        if (rule.Stages is null || rule.Stages.Count == 0)
         {
-            throw new ArgumentException("Rule is required.", nameof(rule));
+            throw new ArgumentException("At least one parser stage is required.", nameof(rule));
         }
 
-        if (rule.Mode == DisplayParserMode.Regex)
+        for (int i = 0; i < rule.Stages.Count; i++)
         {
-            _ = new Regex(rule.Rule, RegexOptions.CultureInvariant);
+            try
+            {
+                ValidateStage(rule.Stages[i]);
+            }
+            catch (ArgumentException ex)
+            {
+                throw new ArgumentException($"Stage {i + 1}: {ex.Message}", nameof(rule), ex);
+            }
+        }
+    }
+
+    public static void ValidateStage(DisplayParserStage stage)
+    {
+        if (string.IsNullOrWhiteSpace(stage.Rule))
+        {
+            throw new ArgumentException("Rule is required.", nameof(stage));
+        }
+
+        if (stage.Mode == DisplayParserMode.Regex)
+        {
+            _ = new Regex(stage.Rule, RegexOptions.CultureInvariant);
         }
     }
 
     public static string EvaluateOrOriginal(DisplayParserRule? rule, string input)
     {
-        if (rule is null || string.IsNullOrWhiteSpace(rule.Rule) || input.Length == 0)
+        if (rule is null || rule.Stages is null || rule.Stages.Count == 0 || input.Length == 0)
         {
             return input;
         }
@@ -67,12 +98,36 @@ public static class DisplayParserEvaluator
     public static bool TryEvaluate(DisplayParserRule rule, string input, out string parsed)
     {
         parsed = input;
+        string current = input;
+        string lastValid = input;
+        bool hasValidStage = false;
+
+        for (int i = 0; i < rule.Stages.Count; i++)
+        {
+            if (!TryEvaluateStage(rule.Stages[i], current, out string next))
+            {
+                parsed = lastValid;
+                return hasValidStage;
+            }
+
+            current = next;
+            lastValid = current;
+            hasValidStage = true;
+        }
+
+        parsed = lastValid;
+        return hasValidStage;
+    }
+
+    private static bool TryEvaluateStage(DisplayParserStage stage, string input, out string parsed)
+    {
+        parsed = input;
         try
         {
-            parsed = rule.Mode switch
+            parsed = stage.Mode switch
             {
-                DisplayParserMode.Regex => EvaluateRegex(rule.Rule, rule.Template, input),
-                DisplayParserMode.Json => EvaluateJson(rule.Rule, input),
+                DisplayParserMode.Regex => EvaluateRegex(stage.Rule, stage.Template, input),
+                DisplayParserMode.Json => EvaluateJson(stage.Rule, input),
                 _ => input
             };
             return true;

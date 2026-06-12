@@ -6,39 +6,42 @@ using System.Text;
 internal sealed class RuleEditorWindow
 {
     private const int IdNameEdit = 101;
-    private const int IdRegexMode = 102;
-    private const int IdJsonMode = 103;
-    private const int IdRuleEdit = 104;
-    private const int IdSampleEdit = 105;
-    private const int IdPreviewEdit = 106;
-    private const int IdTemplateEdit = 107;
-    private const int IdSaveButton = 201;
-    private const int IdCancelButton = 202;
+    private const int IdStagesList = 102;
+    private const int IdSampleEdit = 103;
+    private const int IdPreviewEdit = 104;
+    private const int IdAddStageButton = 201;
+    private const int IdEditStageButton = 202;
+    private const int IdRemoveStageButton = 203;
+    private const int IdUpStageButton = 204;
+    private const int IdDownStageButton = 205;
+    private const int IdSaveButton = 206;
+    private const int IdCancelButton = 207;
 
     private readonly IReadOnlyList<DisplayParserRule> _existingRules;
     private readonly DisplayParserRule? _initialRule;
     private readonly string? _originalName;
+    private readonly List<DisplayParserStage> _stages;
     private IntPtr _hwnd;
     private IntPtr _owner;
     private IntPtr _font;
     private GCHandle _selfHandle;
     private IntPtr _nameLabel;
     private IntPtr _nameEdit;
-    private IntPtr _typeLabel;
-    private IntPtr _regexRadio;
-    private IntPtr _jsonRadio;
-    private IntPtr _ruleLabel;
-    private IntPtr _ruleEdit;
-    private IntPtr _templateLabel;
-    private IntPtr _templateEdit;
+    private IntPtr _stagesLabel;
+    private IntPtr _stagesList;
+    private IntPtr _addStageButton;
+    private IntPtr _editStageButton;
+    private IntPtr _removeStageButton;
+    private IntPtr _upStageButton;
+    private IntPtr _downStageButton;
     private IntPtr _sampleLabel;
     private IntPtr _sampleEdit;
     private IntPtr _previewLabel;
     private IntPtr _previewEdit;
     private IntPtr _saveButton;
     private IntPtr _cancelButton;
-    private DisplayParserMode _mode = DisplayParserMode.Json;
     private bool _closed;
+    private bool _updatingList;
     private bool _updatingPreview;
 
     private static readonly NativeMethods.WindowProc s_wndProc = WindowProc;
@@ -54,7 +57,9 @@ internal sealed class RuleEditorWindow
         _existingRules = existingRules;
         _initialRule = initialRule;
         _originalName = initialRule?.Name;
-        _mode = initialRule?.Mode ?? DisplayParserMode.Json;
+        _stages = initialRule is null
+            ? new List<DisplayParserStage> { CreateDefaultJsonStage() }
+            : initialRule.Stages.ConvertAll(stage => stage.Clone());
     }
 
     public DisplayParserRule? SavedRule { get; private set; }
@@ -125,8 +130,8 @@ internal sealed class RuleEditorWindow
             NativeMethods.WS_OVERLAPPEDWINDOW | NativeMethods.WS_CLIPCHILDREN,
             NativeMethods.CW_USEDEFAULT,
             NativeMethods.CW_USEDEFAULT,
-            780,
-            640,
+            820,
+            680,
             _owner,
             IntPtr.Zero,
             NativeMethods.GetModuleHandleW(null),
@@ -195,13 +200,13 @@ internal sealed class RuleEditorWindow
 
         _nameLabel = CreateLabel("Nome");
         _nameEdit = CreateEdit(IdNameEdit, multiline: false, readOnly: false);
-        _typeLabel = CreateLabel("Tipo");
-        _regexRadio = CreateRadio("Regex", IdRegexMode);
-        _jsonRadio = CreateRadio("JSON", IdJsonMode);
-        _ruleLabel = CreateLabel("Regra");
-        _ruleEdit = CreateEdit(IdRuleEdit, multiline: true, readOnly: false);
-        _templateLabel = CreateLabel("Display");
-        _templateEdit = CreateEdit(IdTemplateEdit, multiline: true, readOnly: false);
+        _stagesLabel = CreateLabel("Stages");
+        _stagesList = CreateListBox(IdStagesList);
+        _addStageButton = CreateButton("Add", IdAddStageButton);
+        _editStageButton = CreateButton("Edit", IdEditStageButton);
+        _removeStageButton = CreateButton("Remove", IdRemoveStageButton);
+        _upStageButton = CreateButton("Up", IdUpStageButton);
+        _downStageButton = CreateButton("Down", IdDownStageButton);
         _sampleLabel = CreateLabel("Amostra");
         _sampleEdit = CreateEdit(IdSampleEdit, multiline: true, readOnly: false);
         _previewLabel = CreateLabel("Preview");
@@ -209,21 +214,18 @@ internal sealed class RuleEditorWindow
         _saveButton = CreateButton("Save", IdSaveButton);
         _cancelButton = CreateButton("Cancel", IdCancelButton);
 
-        SetButtonChecked(_regexRadio, _mode == DisplayParserMode.Regex);
-        SetButtonChecked(_jsonRadio, _mode == DisplayParserMode.Json);
         if (_initialRule is null)
         {
-            SetDefaultJsonExample();
+            NativeMethods.SetWindowTextW(_sampleEdit, DefaultJsonSample());
         }
         else
         {
             NativeMethods.SetWindowTextW(_nameEdit, _initialRule.Name);
-            NativeMethods.SetWindowTextW(_ruleEdit, _initialRule.Rule);
-            NativeMethods.SetWindowTextW(_templateEdit, _initialRule.Template);
             NativeMethods.SetWindowTextW(_sampleEdit, _initialRule.Sample);
         }
 
-        UpdateModeUi();
+        ReloadStagesList(_stages.Count == 0 ? -1 : 0);
+        Layout();
         UpdatePreview();
     }
 
@@ -232,28 +234,45 @@ internal sealed class RuleEditorWindow
         int id = NativeMethods.LowWord(wParam);
         int notification = NativeMethods.HighWord(wParam);
 
-        if (notification == NativeMethods.BN_CLICKED && id is IdRegexMode or IdJsonMode)
+        if (id == IdStagesList && notification == NativeMethods.LBN_DBLCLK && !_updatingList)
         {
-            _mode = id == IdRegexMode ? DisplayParserMode.Regex : DisplayParserMode.Json;
-            SetButtonChecked(_regexRadio, _mode == DisplayParserMode.Regex);
-            SetButtonChecked(_jsonRadio, _mode == DisplayParserMode.Json);
-            if (_mode == DisplayParserMode.Json)
-            {
-                SetDefaultJsonExample();
-            }
-            else
-            {
-                SetDefaultRegexExample();
-            }
+            EditStage();
+            return;
+        }
 
-            UpdateModeUi();
+        if (notification == NativeMethods.EN_CHANGE && id == IdSampleEdit)
+        {
             UpdatePreview();
             return;
         }
 
-        if (notification == NativeMethods.EN_CHANGE && id is IdRuleEdit or IdTemplateEdit or IdSampleEdit)
+        if (notification == NativeMethods.BN_CLICKED && id == IdAddStageButton)
         {
-            UpdatePreview();
+            AddStage();
+            return;
+        }
+
+        if (notification == NativeMethods.BN_CLICKED && id == IdEditStageButton)
+        {
+            EditStage();
+            return;
+        }
+
+        if (notification == NativeMethods.BN_CLICKED && id == IdRemoveStageButton)
+        {
+            RemoveStage();
+            return;
+        }
+
+        if (notification == NativeMethods.BN_CLICKED && id == IdUpStageButton)
+        {
+            MoveStage(-1);
+            return;
+        }
+
+        if (notification == NativeMethods.BN_CLICKED && id == IdDownStageButton)
+        {
+            MoveStage(1);
             return;
         }
 
@@ -269,22 +288,77 @@ internal sealed class RuleEditorWindow
         }
     }
 
+    private void AddStage()
+    {
+        ParserStageEditorWindow editor = new();
+        DisplayParserStage? saved = editor.ShowModal(_hwnd);
+        if (saved is null)
+        {
+            return;
+        }
+
+        _stages.Add(saved);
+        ReloadStagesList(_stages.Count - 1);
+        UpdatePreview();
+    }
+
+    private void EditStage()
+    {
+        int index = GetSelectedStageIndex();
+        if (index < 0)
+        {
+            ShowError("Select a stage to edit.");
+            return;
+        }
+
+        ParserStageEditorWindow editor = new(_stages[index].Clone());
+        DisplayParserStage? saved = editor.ShowModal(_hwnd);
+        if (saved is null)
+        {
+            return;
+        }
+
+        _stages[index] = saved;
+        ReloadStagesList(index);
+        UpdatePreview();
+    }
+
+    private void RemoveStage()
+    {
+        int index = GetSelectedStageIndex();
+        if (index < 0)
+        {
+            ShowError("Select a stage to remove.");
+            return;
+        }
+
+        _stages.RemoveAt(index);
+        ReloadStagesList(Math.Min(index, _stages.Count - 1));
+        UpdatePreview();
+    }
+
+    private void MoveStage(int direction)
+    {
+        int index = GetSelectedStageIndex();
+        int next = index + direction;
+        if (index < 0 || next < 0 || next >= _stages.Count)
+        {
+            return;
+        }
+
+        (_stages[index], _stages[next]) = (_stages[next], _stages[index]);
+        ReloadStagesList(next);
+        UpdatePreview();
+    }
+
     private void SaveRule()
     {
         string name = GetWindowText(_nameEdit).Trim();
-        string rule = GetWindowText(_ruleEdit).Trim();
-        string template = GetWindowText(_templateEdit).Trim();
         string sample = GetWindowText(_sampleEdit);
 
         if (name.Length == 0)
         {
             ShowError("Name is required.");
-            return;
-        }
-
-        if (rule.Length == 0)
-        {
-            ShowError("Rule is required.");
             return;
         }
 
@@ -299,32 +373,24 @@ internal sealed class RuleEditorWindow
             }
         }
 
-        if (_mode == DisplayParserMode.Regex)
-        {
-            try
-            {
-                DisplayParserEvaluator.ValidateRule(new DisplayParserRule
-                {
-                    Mode = _mode,
-                    Rule = rule,
-                    Template = template
-                });
-            }
-            catch (ArgumentException ex)
-            {
-                ShowError("Invalid regex: " + ex.Message);
-                return;
-            }
-        }
-
-        SavedRule = new DisplayParserRule
+        DisplayParserRule rule = new()
         {
             Name = name,
-            Mode = _mode,
-            Rule = rule,
-            Template = _mode == DisplayParserMode.Regex ? template : string.Empty,
+            Stages = CloneStages(),
             Sample = sample
         };
+
+        try
+        {
+            DisplayParserEvaluator.ValidateRule(rule);
+        }
+        catch (ArgumentException ex)
+        {
+            ShowError(ex.Message);
+            return;
+        }
+
+        SavedRule = rule;
         Close();
     }
 
@@ -343,48 +409,40 @@ internal sealed class RuleEditorWindow
             return;
         }
 
-        int width = Math.Max(520, client.right - client.left);
-        int height = Math.Max(420, client.bottom - client.top);
+        int width = Math.Max(560, client.right - client.left);
+        int height = Math.Max(460, client.bottom - client.top);
         const int margin = 16;
         const int labelWidth = 78;
         const int rowHeight = 26;
         const int gap = 10;
+        const int stageButtonWidth = 88;
         int inputLeft = margin + labelWidth + 12;
-        int inputWidth = Math.Max(280, width - inputLeft - margin);
+        int inputWidth = Math.Max(320, width - inputLeft - margin);
         int y = margin;
-        bool isRegex = _mode == DisplayParserMode.Regex;
-        int ruleHeight = isRegex ? 58 : 78;
-        int templateHeight = isRegex ? 48 : 0;
 
         Move(_nameLabel, margin, y + 4, labelWidth, rowHeight);
         Move(_nameEdit, inputLeft, y, inputWidth, rowHeight);
 
         y += rowHeight + gap;
-        Move(_typeLabel, margin, y + 4, labelWidth, rowHeight);
-        Move(_regexRadio, inputLeft, y, 88, rowHeight);
-        Move(_jsonRadio, inputLeft + 96, y, 88, rowHeight);
-
-        y += rowHeight + gap;
-        Move(_ruleLabel, margin, y + 4, labelWidth, rowHeight);
-        Move(_ruleEdit, inputLeft, y, inputWidth, ruleHeight);
-
-        y += ruleHeight + gap;
-        if (isRegex)
-        {
-            Move(_templateLabel, margin, y + 4, labelWidth, rowHeight);
-            Move(_templateEdit, inputLeft, y, inputWidth, templateHeight);
-            y += templateHeight + gap;
-        }
-        else
-        {
-            Move(_templateLabel, 0, 0, 0, 0);
-            Move(_templateEdit, 0, 0, 0, 0);
-        }
-
         int buttonsHeight = 34;
+        int availableForContent = Math.Max(240, height - y - buttonsHeight - margin - gap);
+        int stageButtonsHeight = (rowHeight * 5) + (gap * 4);
+        int stagesHeight = Math.Max(stageButtonsHeight, Math.Min(190, availableForContent / 2));
+        int stageListWidth = Math.Max(180, inputWidth - stageButtonWidth - gap);
+        int stageButtonLeft = inputLeft + stageListWidth + gap;
+
+        Move(_stagesLabel, margin, y + 4, labelWidth, rowHeight);
+        Move(_stagesList, inputLeft, y, stageListWidth, stagesHeight);
+        Move(_addStageButton, stageButtonLeft, y, stageButtonWidth, rowHeight);
+        Move(_editStageButton, stageButtonLeft, y + rowHeight + gap, stageButtonWidth, rowHeight);
+        Move(_removeStageButton, stageButtonLeft, y + ((rowHeight + gap) * 2), stageButtonWidth, rowHeight);
+        Move(_upStageButton, stageButtonLeft, y + ((rowHeight + gap) * 3), stageButtonWidth, rowHeight);
+        Move(_downStageButton, stageButtonLeft, y + ((rowHeight + gap) * 4), stageButtonWidth, rowHeight);
+
+        y += stagesHeight + gap;
         int remaining = Math.Max(160, height - y - buttonsHeight - margin - gap);
-        int sampleHeight = Math.Max(80, (remaining - gap) / 2);
-        int previewHeight = Math.Max(80, remaining - sampleHeight - gap);
+        int sampleHeight = Math.Max(70, (remaining - gap) / 2);
+        int previewHeight = Math.Max(70, remaining - sampleHeight - gap);
 
         Move(_sampleLabel, margin, y + 4, labelWidth, rowHeight);
         Move(_sampleEdit, inputLeft, y, inputWidth, sampleHeight);
@@ -398,6 +456,30 @@ internal sealed class RuleEditorWindow
         Move(_saveButton, width - margin - 190, y, 90, rowHeight);
     }
 
+    private void ReloadStagesList(int selectIndex)
+    {
+        _updatingList = true;
+        NativeMethods.SendMessageW(_stagesList, NativeMethods.LB_RESETCONTENT, IntPtr.Zero, IntPtr.Zero);
+        for (int i = 0; i < _stages.Count; i++)
+        {
+            NativeMethods.SendMessageW(_stagesList, NativeMethods.LB_ADDSTRING, IntPtr.Zero, FormatStageLabel(i, _stages[i]));
+        }
+
+        if (selectIndex >= _stages.Count)
+        {
+            selectIndex = _stages.Count - 1;
+        }
+
+        NativeMethods.SendMessageW(_stagesList, NativeMethods.LB_SETCURSEL, new IntPtr(selectIndex), IntPtr.Zero);
+        _updatingList = false;
+    }
+
+    private int GetSelectedStageIndex()
+    {
+        int index = NativeMethods.SendMessageW(_stagesList, NativeMethods.LB_GETCURSEL, IntPtr.Zero, IntPtr.Zero).ToInt32();
+        return index >= 0 && index < _stages.Count ? index : -1;
+    }
+
     private void UpdatePreview()
     {
         if (_updatingPreview || _previewEdit == IntPtr.Zero)
@@ -409,14 +491,17 @@ internal sealed class RuleEditorWindow
         DisplayParserRule previewRule = new()
         {
             Name = GetWindowText(_nameEdit),
-            Mode = _mode,
-            Rule = GetWindowText(_ruleEdit),
-            Template = GetWindowText(_templateEdit),
+            Stages = CloneStages(),
             Sample = GetWindowText(_sampleEdit)
         };
         string result = EvaluateSample(previewRule);
         NativeMethods.SetWindowTextW(_previewEdit, result);
         _updatingPreview = false;
+    }
+
+    private List<DisplayParserStage> CloneStages()
+    {
+        return _stages.ConvertAll(stage => stage.Clone());
     }
 
     private static string EvaluateSample(DisplayParserRule rule)
@@ -440,32 +525,29 @@ internal sealed class RuleEditorWindow
         return string.Join(Environment.NewLine, output);
     }
 
-    private void SetDefaultJsonExample()
+    private static string FormatStageLabel(int index, DisplayParserStage stage)
     {
-        NativeMethods.SetWindowTextW(_ruleEdit, "{Timestamp} [{Logger}] {upper:Level} {Logger} - {Message}");
-        NativeMethods.SetWindowTextW(_templateEdit, string.Empty);
-        NativeMethods.SetWindowTextW(
-            _sampleEdit,
-            "{ \"Timestamp\": \"2025-09-12 14:50:48.637060\", \"Level\": \"Info\", \"Logger\": \"EventScheduler\", \"Message\": \"Strategy task JT67_48_250912145048_00064 is running\" }");
+        string rule = stage.Rule.Replace("\r", " ").Replace("\n", " ");
+        if (rule.Length > 92)
+        {
+            rule = rule.Substring(0, 89) + "...";
+        }
+
+        return $"{index + 1}. {stage.Mode} - {rule}";
     }
 
-    private void SetDefaultRegexExample()
+    private static DisplayParserStage CreateDefaultJsonStage()
     {
-        NativeMethods.SetWindowTextW(
-            _ruleEdit,
-            @"(?<Timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+).*?\[(?<Logger>[^\]]+)\].*?(?<Level>Trace|Debug|Info|Warn|Error|Fatal|Information).*? - (?<Message>.*)");
-        NativeMethods.SetWindowTextW(_templateEdit, "{Timestamp} [{Logger}] {upper:Level} {Logger} - {Message}");
-        NativeMethods.SetWindowTextW(_sampleEdit, "2025-09-12 14:50:48.637060 [EventScheduler] Info EventScheduler - Strategy task JT67_48_250912145048_00064 is running");
+        return new DisplayParserStage
+        {
+            Mode = DisplayParserMode.Json,
+            Rule = "{Timestamp} [{Logger}] {upper:Level} {Logger} - {Message}"
+        };
     }
 
-    private void UpdateModeUi()
+    private static string DefaultJsonSample()
     {
-        bool isRegex = _mode == DisplayParserMode.Regex;
-        NativeMethods.SetWindowTextW(_ruleLabel, isRegex ? "Regex" : "Template");
-        NativeMethods.SetWindowTextW(_templateLabel, "Display");
-        NativeMethods.ShowWindow(_templateLabel, isRegex ? NativeMethods.SW_SHOW : NativeMethods.SW_HIDE);
-        NativeMethods.ShowWindow(_templateEdit, isRegex ? NativeMethods.SW_SHOW : NativeMethods.SW_HIDE);
-        Layout();
+        return "{ \"Timestamp\": \"2025-09-12 14:50:48.637060\", \"Level\": \"Info\", \"Logger\": \"EventScheduler\", \"Message\": \"Strategy task JT67_48_250912145048_00064 is running\" }";
     }
 
     private void ShowError(string message)
@@ -492,13 +574,13 @@ internal sealed class RuleEditorWindow
         return hwnd;
     }
 
-    private IntPtr CreateRadio(string text, int id)
+    private IntPtr CreateListBox(int id)
     {
         IntPtr hwnd = NativeMethods.CreateWindowExW(
             0,
-            "BUTTON",
-            text,
-            NativeMethods.WS_CHILD | NativeMethods.WS_VISIBLE | NativeMethods.WS_TABSTOP | NativeMethods.BS_AUTORADIOBUTTON | NativeMethods.WS_GROUP,
+            "LISTBOX",
+            string.Empty,
+            NativeMethods.WS_CHILD | NativeMethods.WS_VISIBLE | NativeMethods.WS_TABSTOP | NativeMethods.WS_BORDER | NativeMethods.WS_VSCROLL | NativeMethods.LBS_NOTIFY,
             0,
             0,
             10,
@@ -572,20 +654,6 @@ internal sealed class RuleEditorWindow
         {
             NativeMethods.MoveWindow(hwnd, x, y, width, height, true);
         }
-    }
-
-    private static bool IsButtonChecked(IntPtr hwnd)
-    {
-        return NativeMethods.SendMessageW(hwnd, NativeMethods.BM_GETCHECK, IntPtr.Zero, IntPtr.Zero).ToInt32() == NativeMethods.BST_CHECKED;
-    }
-
-    private static void SetButtonChecked(IntPtr hwnd, bool checkedState)
-    {
-        NativeMethods.SendMessageW(
-            hwnd,
-            NativeMethods.BM_SETCHECK,
-            new IntPtr(checkedState ? NativeMethods.BST_CHECKED : NativeMethods.BST_UNCHECKED),
-            IntPtr.Zero);
     }
 
     private static string GetWindowText(IntPtr hwnd)

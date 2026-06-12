@@ -18,9 +18,14 @@ internal static class Program
             RunDisplayParserRegexNamedDisplay();
             RunDisplayParserRegexDefaultFullMatch();
             RunDisplayParserFallbackOriginal();
+            RunDisplayParserRegexThenJsonTemplate();
+            RunDisplayParserSecondStageFailureReturnsFirstOutput();
             RunSearchUsesDisplayParserLiteral(tempRoot);
             RunSearchUsesDisplayParserRegexCaptures(tempRoot);
             RunAppendSearchUsesDisplayParser(tempRoot);
+            RunSearchUsesCascadedDisplayParserLiteral(tempRoot);
+            RunSearchUsesCascadedDisplayParserRegexCaptures(tempRoot);
+            RunAppendSearchUsesCascadedDisplayParser(tempRoot);
             RunRegexCaptureGroups(tempRoot);
             RunRegexNamedCaptureGroups(tempRoot);
             RunRegexMixedNamedAndUnnamedCaptureGroups(tempRoot);
@@ -98,11 +103,7 @@ internal static class Program
 
     private static void RunDisplayParserJsonTemplate()
     {
-        DisplayParserRule rule = new()
-        {
-            Mode = DisplayParserMode.Json,
-            Rule = "{Timestamp} [{Logger}] {upper:Level} {Logger} - {Message}"
-        };
+        DisplayParserRule rule = ParserRule(JsonStage("{Timestamp} [{Logger}] {upper:Level} {Logger} - {Message}"));
 
         string input = "{ \"Timestamp\": \"2025-09-12 14:50:48.637060\", \"Level\": \"Info\", \"Logger\": \"EventScheduler\", \"Message\": \"Strategy task JT67_48_250912145048_00064 is running\" }";
         string parsed = DisplayParserEvaluator.EvaluateOrOriginal(rule, input);
@@ -115,11 +116,7 @@ internal static class Program
 
     private static void RunDisplayParserJsonWithTrailingText()
     {
-        DisplayParserRule rule = new()
-        {
-            Mode = DisplayParserMode.Json,
-            Rule = "{upper:Level} {Logger} - {Message}"
-        };
+        DisplayParserRule rule = ParserRule(JsonStage("{upper:Level} {Logger} - {Message}"));
 
         string input = "{ \"Level\": \"Info\", \"Logger\": \"EventScheduler\", \"Message\": \"running\" } 2025-09-12 [EventScheduler]";
         AssertEqual("display parser json trailing text", DisplayParserEvaluator.EvaluateOrOriginal(rule, input), "INFO EventScheduler - running");
@@ -127,12 +124,9 @@ internal static class Program
 
     private static void RunDisplayParserRegexNamedDisplay()
     {
-        DisplayParserRule rule = new()
-        {
-            Mode = DisplayParserMode.Regex,
-            Rule = @"(?<Timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+).*?\[(?<Logger>[^\]]+)\].*?(?<Level>Info).*? - (?<Message>.*)",
-            Template = "{Timestamp} [{Logger}] {upper:Level} {Logger} - {Message}"
-        };
+        DisplayParserRule rule = ParserRule(RegexStage(
+            @"(?<Timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+).*?\[(?<Logger>[^\]]+)\].*?(?<Level>Info).*? - (?<Message>.*)",
+            "{Timestamp} [{Logger}] {upper:Level} {Logger} - {Message}"));
 
         string input = "2025-09-12 14:50:48.637060 [EventScheduler] Info EventScheduler - Strategy task JT67_48_250912145048_00064 is running";
         AssertEqual(
@@ -143,24 +137,34 @@ internal static class Program
 
     private static void RunDisplayParserRegexDefaultFullMatch()
     {
-        DisplayParserRule rule = new()
-        {
-            Mode = DisplayParserMode.Regex,
-            Rule = "user-(?<user>[a-z]+)"
-        };
+        DisplayParserRule rule = ParserRule(RegexStage("user-(?<user>[a-z]+)"));
 
         AssertEqual("display parser regex default full match", DisplayParserEvaluator.EvaluateOrOriginal(rule, "prefix user-ana suffix"), "user-ana");
     }
 
     private static void RunDisplayParserFallbackOriginal()
     {
-        DisplayParserRule rule = new()
-        {
-            Mode = DisplayParserMode.Json,
-            Rule = "{Level} {Message}"
-        };
+        DisplayParserRule rule = ParserRule(JsonStage("{Level} {Message}"));
 
         AssertEqual("display parser fallback original", DisplayParserEvaluator.EvaluateOrOriginal(rule, "not json"), "not json");
+    }
+
+    private static void RunDisplayParserRegexThenJsonTemplate()
+    {
+        DisplayParserRule rule = ParserRule(
+            RegexStage(@": (?<json>.*)", "{json}"),
+            JsonStage("{Key}"));
+
+        AssertEqual("display parser regex then json", DisplayParserEvaluator.EvaluateOrOriginal(rule, "Out[0]: {\"Key\":\"Value\"}"), "Value");
+    }
+
+    private static void RunDisplayParserSecondStageFailureReturnsFirstOutput()
+    {
+        DisplayParserRule rule = ParserRule(
+            RegexStage(@"payload=(?<json>.*)", "{json}"),
+            JsonStage("{Key}"));
+
+        AssertEqual("display parser second stage failure", DisplayParserEvaluator.EvaluateOrOriginal(rule, "payload=not-json"), "not-json");
     }
 
     private static void RunSearchUsesDisplayParserLiteral(string tempRoot)
@@ -169,11 +173,7 @@ internal static class Program
             tempRoot,
             "display-parser-search-literal.log",
             "{\"Level\":\"Info\",\"Message\":\"ready\"}\r\n{\"Level\":\"Error\",\"Message\":\"failed\"}\r\n");
-        DisplayParserRule parser = new()
-        {
-            Mode = DisplayParserMode.Json,
-            Rule = "{upper:Level} - {Message}"
-        };
+        DisplayParserRule parser = ParserRule(JsonStage("{upper:Level} - {Message}"));
 
         using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
             path,
@@ -194,11 +194,7 @@ internal static class Program
             tempRoot,
             "display-parser-search-regex.log",
             "{\"Level\":\"Info\",\"Message\":\"ready\"}\r\n{\"Level\":\"Error\",\"Message\":\"failed\"}\r\n");
-        DisplayParserRule parser = new()
-        {
-            Mode = DisplayParserMode.Json,
-            Rule = "{upper:Level} - {Message}"
-        };
+        DisplayParserRule parser = ParserRule(JsonStage("{upper:Level} - {Message}"));
 
         using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
             path,
@@ -216,11 +212,7 @@ internal static class Program
     private static void RunAppendSearchUsesDisplayParser(string tempRoot)
     {
         string path = WriteLog(tempRoot, "display-parser-append.log", "{\"Level\":\"Info\",\"Message\":\"ready\"}\r\n");
-        DisplayParserRule parser = new()
-        {
-            Mode = DisplayParserMode.Json,
-            Rule = "{upper:Level} - {Message}"
-        };
+        DisplayParserRule parser = ParserRule(JsonStage("{upper:Level} - {Message}"));
 
         using FilteredVisualRowReader initial = LogSearchBuilder.BuildFilteredReader(
             path,
@@ -235,6 +227,74 @@ internal static class Program
 
         AssertSequence("display parser append rows", appended.CurrentRows, "ERROR - failed");
         AssertSequence("display parser append cells", ((IColumnViewportReader)appended).CurrentCells[0], "2", "ERROR - failed");
+    }
+
+    private static void RunSearchUsesCascadedDisplayParserLiteral(string tempRoot)
+    {
+        string path = WriteLog(
+            tempRoot,
+            "display-parser-cascade-search-literal.log",
+            "Out[0]: {\"Key\":\"Value\"}\r\nOut[1]: {\"Key\":\"Other\"}\r\n");
+        DisplayParserRule parser = ParserRule(
+            RegexStage(@": (?<json>.*)", "{json}"),
+            JsonStage("KEY={Key}"));
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("KEY=Value", UseRegex: false, IgnoreCase: false),
+            parser);
+
+        reader.ReadFromPercentage(0d, 10);
+        IColumnViewportReader columns = reader;
+        AssertSequence("cascaded display parser literal rows", reader.CurrentRows, "KEY=Value");
+        AssertSequence("cascaded display parser literal cells", columns.CurrentCells[0], "1", "KEY=Value");
+    }
+
+    private static void RunSearchUsesCascadedDisplayParserRegexCaptures(string tempRoot)
+    {
+        string path = WriteLog(
+            tempRoot,
+            "display-parser-cascade-search-regex.log",
+            "Out[0]: {\"Level\":\"Info\",\"Message\":\"ready\"}\r\nOut[1]: {\"Level\":\"Error\",\"Message\":\"failed\"}\r\n");
+        DisplayParserRule parser = ParserRule(
+            RegexStage(@": (?<json>.*)", "{json}"),
+            JsonStage("{upper:Level} - {Message}"));
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("(?<level>ERROR) - (?<message>failed)", UseRegex: true, IgnoreCase: false),
+            parser);
+
+        reader.ReadFromPercentage(0d, 10);
+        IColumnViewportReader columns = reader;
+        AssertSequence("cascaded display parser regex headers", columns.ColumnHeaders, "#", "Text", "level", "message");
+        AssertSequence("cascaded display parser regex cells", columns.CurrentCells[0], "2", "ERROR - failed", "ERROR", "failed");
+    }
+
+    private static void RunAppendSearchUsesCascadedDisplayParser(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "display-parser-cascade-append.log", "Out[0]: {\"Level\":\"Info\",\"Message\":\"ready\"}\r\n");
+        DisplayParserRule parser = ParserRule(
+            RegexStage(@": (?<json>.*)", "{json}"),
+            JsonStage("{upper:Level} - {Message}"));
+
+        using FilteredVisualRowReader initial = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("ERROR", UseRegex: false, IgnoreCase: false),
+            parser);
+
+        File.AppendAllText(path, "Out[1]: {\"Level\":\"Error\",\"Message\":\"failed\"}\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        using FilteredVisualRowReader appended = BuildAppendedReader(initial, new SearchOptions("ERROR", UseRegex: false, IgnoreCase: false), parser);
+        appended.ReadFromPercentage(0d, 10);
+
+        AssertSequence("cascaded display parser append rows", appended.CurrentRows, "ERROR - failed");
+        AssertSequence("cascaded display parser append cells", ((IColumnViewportReader)appended).CurrentCells[0], "2", "ERROR - failed");
     }
 
     private static void RunRegexCaptureGroups(string tempRoot)
@@ -1395,6 +1455,33 @@ internal static class Program
         {
             reader.Dispose();
         }
+    }
+
+    private static DisplayParserRule ParserRule(params DisplayParserStage[] stages)
+    {
+        return new DisplayParserRule
+        {
+            Stages = new List<DisplayParserStage>(stages)
+        };
+    }
+
+    private static DisplayParserStage JsonStage(string template)
+    {
+        return new DisplayParserStage
+        {
+            Mode = DisplayParserMode.Json,
+            Rule = template
+        };
+    }
+
+    private static DisplayParserStage RegexStage(string pattern, string template = "")
+    {
+        return new DisplayParserStage
+        {
+            Mode = DisplayParserMode.Regex,
+            Rule = pattern,
+            Template = template
+        };
     }
 
     private static string WriteLog(string tempRoot, string name, string content)

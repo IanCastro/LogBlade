@@ -26,7 +26,9 @@ internal static class DisplayParserRuleStore
         try
         {
             string json = File.ReadAllText(path, Encoding.UTF8);
-            return JsonSerializer.Deserialize<List<DisplayParserRule>>(json, s_jsonOptions) ?? new List<DisplayParserRule>();
+            List<DisplayParserRule> rules = JsonSerializer.Deserialize<List<DisplayParserRule>>(json, s_jsonOptions) ?? new List<DisplayParserRule>();
+            rules.RemoveAll(rule => rule.Stages is null || rule.Stages.Count == 0);
+            return rules;
         }
         catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
         {

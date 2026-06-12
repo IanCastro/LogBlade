@@ -424,13 +424,6 @@ internal sealed class RuleManagerWindow
 
     private static DisplayParserRule CopyRule(DisplayParserRule source)
     {
-        return new DisplayParserRule
-        {
-            Name = source.Name,
-            Mode = source.Mode,
-            Rule = source.Rule,
-            Template = source.Template,
-            Sample = source.Sample
-        };
+        return source.Clone();
     }
 }
