@@ -59,6 +59,9 @@ internal static class Program
             RunFilteredSelectionCopiesCaptureCells(tempRoot);
             RunFilteredSelectionCopiesLiteralTextCell(tempRoot);
             RunInvalidRegexValidation();
+            RunNonBacktrackingRegexRejectsUnsupportedPattern();
+            RunNonBacktrackingRegexLeadingDotStarNoMatchOnLongLine(tempRoot);
+            RunNonBacktrackingRegexLeadingDotStarMatchesLongLine(tempRoot);
             RunCascadedLiteralSearchFiltersPrevious(tempRoot);
             RunCascadedInvertMatch(tempRoot);
             RunCascadedInvalidRegexValidation();
@@ -861,6 +864,49 @@ internal static class Program
         }
 
         throw new InvalidOperationException("Invalid regex did not fail validation.");
+    }
+
+    private static void RunNonBacktrackingRegexRejectsUnsupportedPattern()
+    {
+        try
+        {
+            LogSearchBuilder.ValidateOptions(new SearchOptions("(?<word>[a-z]+)\\s+\\k<word>", UseRegex: true, IgnoreCase: false));
+        }
+        catch (ArgumentException)
+        {
+            return;
+        }
+
+        throw new InvalidOperationException("Unsupported non-backtracking regex did not fail validation.");
+    }
+
+    private static void RunNonBacktrackingRegexLeadingDotStarNoMatchOnLongLine(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "nonbacktracking-leading-dotstar-no-match.log", new string('a', VisualRowReader.VisibleSegmentChars * 12) + "\r\n");
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("(.*ERROR)", UseRegex: true, IgnoreCase: false));
+
+        reader.ReadFromPercentage(0d, 10);
+        AssertEqual("nonbacktracking leading dotstar no-match count", reader.MatchedLineCount, 0L);
+    }
+
+    private static void RunNonBacktrackingRegexLeadingDotStarMatchesLongLine(string tempRoot)
+    {
+        string line = new string('a', VisualRowReader.VisibleSegmentChars * 6) + "ERROR" + new string('b', VisualRowReader.VisibleSegmentChars * 6);
+        string path = WriteLog(tempRoot, "nonbacktracking-leading-dotstar-match.log", line + "\r\n");
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("(.*ERROR)", UseRegex: true, IgnoreCase: false));
+
+        reader.ReadFromPercentage(0d, 10);
+        AssertEqual("nonbacktracking leading dotstar match count", reader.MatchedLineCount, 1L);
     }
 
     private static void RunCascadedLiteralSearchFiltersPrevious(string tempRoot)

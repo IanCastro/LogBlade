@@ -681,13 +681,20 @@ public static class LogSearchBuilder
 
     private static Regex CreateRegex(SearchOptions options)
     {
-        RegexOptions regexOptions = RegexOptions.CultureInvariant;
+        RegexOptions regexOptions = RegexOptions.CultureInvariant | RegexOptions.NonBacktracking;
         if (options.IgnoreCase)
         {
             regexOptions |= RegexOptions.IgnoreCase;
         }
 
-        return new Regex(options.Query, regexOptions);
+        try
+        {
+            return new Regex(options.Query, regexOptions);
+        }
+        catch (NotSupportedException ex)
+        {
+            throw new ArgumentException("Regex is not supported by the non-backtracking engine: " + ex.Message, nameof(options), ex);
+        }
     }
 
     private readonly struct SearchMatcherCascade
