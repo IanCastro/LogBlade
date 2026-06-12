@@ -141,7 +141,6 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
             for (int i = 0; i < _viewportRows.Count; i++)
             {
                 rows[i] = _viewportRows[i].Text;
-                rows[i] = FormatDisplayText(rows[i]);
             }
 
             return rows;
@@ -214,7 +213,7 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
             if (!excluded.Contains(key) && emitted.Add(key))
             {
                 string lineText = ReadSelectedLogicalLineText(fs, read.Row, read.NextPosition, out VisualPosition? nextLinePosition);
-                rows.Add(new ViewportSelectedRow(key, FormatDisplayText(lineText)));
+                rows.Add(new ViewportSelectedRow(key, lineText));
                 if (nextLinePosition is null)
                 {
                     break;
@@ -458,12 +457,12 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
             return LoadViewportAt(ToVisualPosition(_viewportRows[1]), visibleLines);
         }
 
-        if (IsOffsetAtKnownEnd(_viewportEndOffset))
+        if (!TryGetNextVisualPosition(_viewportRows[0], out VisualPosition next))
         {
             return false;
         }
 
-        return LoadViewportAt(_viewportEndOffset, visibleLines);
+        return LoadViewportAt(next, visibleLines);
     }
 
     private bool ScrollLineUp(int visibleLines)
@@ -549,12 +548,28 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
             return false;
         }
 
-        if (IsOffsetAtKnownEnd(_viewportEndOffset))
+        if (!TryGetNextVisualPosition(_viewportRows[^1], out VisualPosition next))
         {
             return false;
         }
 
-        return LoadViewportAt(_viewportEndOffset, visibleLines);
+        return LoadViewportAt(next, visibleLines);
+    }
+
+    private bool TryGetNextVisualPosition(ViewportRow row, out VisualPosition next)
+    {
+        using FileStream fs = OpenSourceStream(_filePath);
+        VisualPosition current = ToVisualPosition(row);
+        fs.Position = current.StartOffset;
+        VisualReadResult read = ReadVisualRow(fs, current);
+        if (read.NextPosition is VisualPosition nextPosition)
+        {
+            next = nextPosition;
+            return true;
+        }
+
+        next = default;
+        return false;
     }
 
     private bool ScrollPageUp(int visibleLines)
@@ -1278,6 +1293,11 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
         }
 
         RealLineStartInfo realLineStart = forcedRealStart ?? FindRealLineStartContaining(bounded);
+        if (_displayParserRule is not null)
+        {
+            return LocateParsedVisualPositionForOffset(realLineStart, bounded);
+        }
+
         VisualPosition current = new(realLineStart.StartOffset, realLineStart.StartOffset, realLineStart.Kind, VisualStartKind.RealStart, 0);
 
         using FileStream fs = OpenSourceStream(_filePath);
@@ -1296,6 +1316,30 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
                 return current;
             }
         }
+    }
+
+    private VisualPosition LocateParsedVisualPositionForOffset(RealLineStartInfo realLineStart, long boundedOffset)
+    {
+        VisualPosition first = new(realLineStart.StartOffset, realLineStart.StartOffset, realLineStart.Kind, VisualStartKind.RealStart, 0);
+        using FileStream fs = OpenSourceStream(_filePath);
+        if (!TryReadRealLine(fs, realLineStart.StartOffset, out RealLineData line, out _))
+        {
+            return first;
+        }
+
+        string displayText = FormatDisplayText(line.Text);
+        int visualRowCount = FilteredLineUtilities.CountVisualRows(displayText);
+        if (boundedOffset >= line.EndOffset && visualRowCount > 1)
+        {
+            return new(
+                realLineStart.StartOffset,
+                realLineStart.StartOffset,
+                realLineStart.Kind,
+                VisualStartKind.ForcedWrap,
+                visualRowCount - 1);
+        }
+
+        return first;
     }
 
     private bool TryGetPreviousVisualPosition(VisualPosition current, out VisualPosition previous)
@@ -1466,7 +1510,97 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
         return true;
     }
 
-    private VisualReadResult ReadVisualRow(FileStream fs, VisualPosition position) =>
+    private VisualReadResult ReadVisualRow(FileStream fs, VisualPosition position)
+    {
+        if (_displayParserRule is null)
+        {
+            return ReadRawVisualRow(fs, position);
+        }
+
+        return ReadParsedVisualRow(fs, position);
+    }
+
+    private VisualReadResult ReadParsedVisualRow(FileStream fs, VisualPosition position)
+    {
+        if (!TryReadRealLine(fs, position.RealLineStartOffset, out RealLineData line, out long nextLineOffset))
+        {
+            return CreateParsedResult(
+                position,
+                text: string.Empty,
+                segmentIndex: 0,
+                visualRowCount: 1,
+                nextLineOffset: null);
+        }
+
+        string displayText = FormatDisplayText(line.Text);
+        int visualRowCount = FilteredLineUtilities.CountVisualRows(displayText);
+        int segmentIndex = Math.Clamp(position.SegmentIndex, 0, visualRowCount - 1);
+        string segmentText = FilteredLineUtilities.GetVisualRowText(displayText, segmentIndex);
+
+        return CreateParsedResult(position, segmentText, segmentIndex, visualRowCount, nextLineOffset);
+    }
+
+    private bool TryReadRealLine(FileStream fs, long realLineStartOffset, out RealLineData line, out long nextLineOffset)
+    {
+        fs.Position = realLineStartOffset;
+        if (!FilteredLineUtilities.TryReadNextRealLine(fs, _kind, _encoding, _fileSize, out line))
+        {
+            nextLineOffset = realLineStartOffset;
+            return false;
+        }
+
+        nextLineOffset = fs.Position;
+        return true;
+    }
+
+    private VisualReadResult CreateParsedResult(
+        VisualPosition position,
+        string text,
+        int segmentIndex,
+        int visualRowCount,
+        long? nextLineOffset)
+    {
+        bool hasNextSegment = segmentIndex + 1 < visualRowCount;
+        long realLineStartOffset = position.RealLineStartOffset;
+        long endOffset = hasNextSegment
+            ? Math.Min(nextLineOffset ?? _fileSize, realLineStartOffset + CodeUnitSize)
+            : nextLineOffset ?? _fileSize;
+        VisualStartKind visualStartKind = segmentIndex == 0 ? VisualStartKind.RealStart : VisualStartKind.ForcedWrap;
+
+        VisualPosition? next = null;
+        if (hasNextSegment)
+        {
+            next = new(
+                realLineStartOffset,
+                realLineStartOffset,
+                position.RealLineStartKind,
+                VisualStartKind.ForcedWrap,
+                segmentIndex + 1);
+        }
+        else if (nextLineOffset is long nextRealLineOffset && nextRealLineOffset < _fileSize)
+        {
+            next = new(
+                nextRealLineOffset,
+                nextRealLineOffset,
+                RealLineStartKind.TrueBreak,
+                VisualStartKind.RealStart,
+                0);
+        }
+
+        ViewportRow row = new(
+            StartOffset: realLineStartOffset,
+            EndOffset: endOffset,
+            RealLineStartOffset: realLineStartOffset,
+            RealLineStartKind: position.RealLineStartKind,
+            VisualStartKind: visualStartKind,
+            SegmentIndex: segmentIndex,
+            SegmentStartOffset: realLineStartOffset,
+            SegmentEndOffset: endOffset,
+            Text: text);
+        return new(row, next);
+    }
+
+    private VisualReadResult ReadRawVisualRow(FileStream fs, VisualPosition position) =>
         _kind switch
         {
             LogEncodingKind.Utf16Le or LogEncodingKind.Utf16Be => ReadUtf16VisualRow(fs, position),

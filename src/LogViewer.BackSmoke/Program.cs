@@ -48,6 +48,10 @@ internal static class Program
             RunSearchRowOffsetSyncsMainReader(tempRoot);
             RunSearchRowOffsetDetectsStaleLine(tempRoot);
             RunSearchRowOrdinalLookup(tempRoot);
+            RunDisplayParserMainViewerParsesWholeWrappedJsonLine(tempRoot);
+            RunDisplayParserMainViewerSkipsRawSegmentsAfterShortParse(tempRoot);
+            RunDisplayParserMainViewerWrapsParsedOutput(tempRoot);
+            RunDisplayParserMainViewerSelectionCopiesParsedLine(tempRoot);
             RunVisualSelectionRangeAcrossViewport(tempRoot);
             RunVisualSelectionSelectsAllRows(tempRoot);
             RunVisualSelectionWrappedRowCopiesOriginalLine(tempRoot);
@@ -670,6 +674,68 @@ internal static class Program
 
         reader.ReadFromRowOrdinal(rowOrdinal, 2);
         AssertSequence("search row ordinal rows", reader.CurrentRows, "alpha-1", "alpha-2");
+    }
+
+    private static void RunDisplayParserMainViewerParsesWholeWrappedJsonLine(string tempRoot)
+    {
+        string padding = new('x', VisualRowReader.VisibleSegmentChars + 32);
+        string json = "{ \"Padding\": \"" + padding + "\", \"Timestamp\": \"2026-06-11 10:20:30.123\", \"Level\": \"Info\", \"Logger\": \"LongLine\", \"Message\": \"done\" }";
+        string path = WriteLog(tempRoot, "display-parser-main-whole-line.log", json + "\r\nnext\r\n");
+        DisplayParserRule parser = ParserRule(JsonStage("{Timestamp} [{Logger}] {upper:Level} {Logger} - {Message}"));
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0, parser);
+        reader.ReadFromPercentage(0d, 4);
+
+        AssertSequence("display parser main whole line", reader.CurrentRows, "2026-06-11 10:20:30.123 [LongLine] INFO LongLine - done", "next");
+    }
+
+    private static void RunDisplayParserMainViewerSkipsRawSegmentsAfterShortParse(string tempRoot)
+    {
+        string padding = new('y', VisualRowReader.VisibleSegmentChars * 2);
+        string json = "{ \"Padding\": \"" + padding + "\", \"Message\": \"short\" }";
+        string path = WriteLog(tempRoot, "display-parser-main-short-output.log", json + "\r\nnext\r\n");
+        DisplayParserRule parser = ParserRule(JsonStage("{Message}"));
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0, parser);
+        reader.ReadFromPercentage(0d, 5);
+
+        AssertSequence("display parser main short output", reader.CurrentRows, "short", "next");
+    }
+
+    private static void RunDisplayParserMainViewerWrapsParsedOutput(string tempRoot)
+    {
+        string message = new('m', VisualRowReader.VisibleSegmentChars + 7);
+        string path = WriteLog(tempRoot, "display-parser-main-long-output.log", "{ \"Message\": \"" + message + "\" }\r\nnext\r\n");
+        DisplayParserRule parser = ParserRule(JsonStage("{Message}"));
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0, parser);
+        reader.ReadFromPercentage(0d, 3);
+
+        AssertSequence(
+            "display parser main long output",
+            reader.CurrentRows,
+            new string('m', VisualRowReader.VisibleSegmentChars),
+            new string('m', 7),
+            "next");
+    }
+
+    private static void RunDisplayParserMainViewerSelectionCopiesParsedLine(string tempRoot)
+    {
+        string message = new('s', VisualRowReader.VisibleSegmentChars + 9);
+        string path = WriteLog(tempRoot, "display-parser-main-selection.log", "{ \"Message\": \"" + message + "\" }\r\nnext\r\n");
+        DisplayParserRule parser = ParserRule(JsonStage("{Message}"));
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0, parser);
+        reader.ReadFromPercentage(0d, 3);
+        ISelectableViewportReader selectable = reader;
+        ViewportRowSelectionKey secondSegment = selectable.CurrentRowSelectionKeys[1];
+
+        IReadOnlyList<ViewportSelectedRow> rows = selectable.ReadSelectedRows(
+            selectAll: false,
+            new[] { new ViewportRowSelectionRange(secondSegment, secondSegment) },
+            Array.Empty<ViewportRowSelectionKey>());
+
+        AssertSelectedRows("display parser main selection", rows, message);
     }
 
     private static void RunVisualSelectionRangeAcrossViewport(string tempRoot)
