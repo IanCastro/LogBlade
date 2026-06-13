@@ -70,7 +70,7 @@ internal sealed class RuleEditorWindow
         _originalName = initialRule?.Name;
         _defaultSample = defaultSample;
         _stages = initialRule is null
-            ? new List<DisplayParserStage> { CreateDefaultJsonStage() }
+            ? new List<DisplayParserStage>()
             : initialRule.Stages.ConvertAll(stage => stage.Clone());
     }
 
@@ -546,15 +546,6 @@ internal sealed class RuleEditorWindow
         }
 
         return $"{index + 1}. {stage.Mode} - {rule}";
-    }
-
-    private static DisplayParserStage CreateDefaultJsonStage()
-    {
-        return new DisplayParserStage
-        {
-            Mode = DisplayParserMode.Json,
-            Rule = "{Timestamp} [{Logger}] {upper:Level} {Logger} - {Message}"
-        };
     }
 
     private static string DefaultJsonSample()
