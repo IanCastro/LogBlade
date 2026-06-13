@@ -69,6 +69,7 @@ internal sealed class ViewportPaneWindow : IDisposable
     private readonly Action<ViewportPaneWindow>? _onUsefulPaint;
     private readonly Action<ViewportPaneWindow>? _onStale;
     private readonly Action<ViewportPaneWindow, long>? _onRowActivated;
+    private readonly Action? _onPasteRequested;
     private readonly Func<ViewportPaneWindow, int, bool>? _onHostVerticalResizeHit;
     private readonly Func<ViewportPaneWindow, int, bool>? _onHostVerticalResizeBegin;
 
@@ -153,6 +154,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         Action<ViewportPaneWindow>? onUsefulPaint = null,
         Action<ViewportPaneWindow>? onStale = null,
         Action<ViewportPaneWindow, long>? onRowActivated = null,
+        Action? onPasteRequested = null,
         Func<ViewportPaneWindow, int, bool>? onHostVerticalResizeHit = null,
         Func<ViewportPaneWindow, int, bool>? onHostVerticalResizeBegin = null)
     {
@@ -163,6 +165,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         _onUsefulPaint = onUsefulPaint;
         _onStale = onStale;
         _onRowActivated = onRowActivated;
+        _onPasteRequested = onPasteRequested;
         _onHostVerticalResizeHit = onHostVerticalResizeHit;
         _onHostVerticalResizeBegin = onHostVerticalResizeBegin;
     }
@@ -2599,6 +2602,12 @@ internal sealed class ViewportPaneWindow : IDisposable
         if (key == NativeMethods.VK_C && IsControlKeyDown())
         {
             CopySelectionToClipboard();
+            return;
+        }
+
+        if (key == NativeMethods.VK_V && IsControlKeyDown())
+        {
+            _onPasteRequested?.Invoke();
             return;
         }
 

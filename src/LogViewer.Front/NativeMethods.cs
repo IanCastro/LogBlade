@@ -142,6 +142,7 @@ internal static class NativeMethods
     public const int VK_END = 0x23;
     public const int VK_A = 0x41;
     public const int VK_C = 0x43;
+    public const int VK_V = 0x56;
     public const int VK_CONTROL = 0x11;
     public const int VK_SHIFT = 0x10;
     public const int CF_UNICODETEXT = 13;
@@ -522,6 +523,13 @@ internal static class NativeMethods
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool EmptyClipboard();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsClipboardFormatAvailable(uint format);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr GetClipboardData(uint uFormat);
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern IntPtr SetClipboardData(uint uFormat, IntPtr hMem);

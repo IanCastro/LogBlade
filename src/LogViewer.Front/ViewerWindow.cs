@@ -336,6 +336,13 @@ internal sealed class ViewerWindow
                 case NativeMethods.WM_TIMER:
                     self.OnTimer((nuint)wParam);
                     return IntPtr.Zero;
+                case NativeMethods.WM_KEYDOWN:
+                    if (self.OnKeyDown(wParam.ToInt32()))
+                    {
+                        return IntPtr.Zero;
+                    }
+
+                    return NativeMethods.DefWindowProcW(hwnd, msg, wParam, lParam);
                 case NativeMethods.WM_ERASEBKGND:
                     return new IntPtr(1);
                 case NativeMethods.WM_PAINT:
@@ -431,6 +438,7 @@ internal sealed class ViewerWindow
             _lineHeight,
             _charWidth,
             onUsefulPaint: OnMainPaneUsefulPaint,
+            onPasteRequested: OpenClipboardTextInNewWindow,
             onHostVerticalResizeHit: OnMainPaneResizeHit,
             onHostVerticalResizeBegin: OnMainPaneResizeBegin);
         _mainPane.Create(_hwnd, hInstance);
@@ -561,6 +569,146 @@ internal sealed class ViewerWindow
         string? selectedRuleName = manager.ShowModal(_hwnd);
         ReloadParserRules(selectedRuleName);
         ApplyParserRuleChange();
+    }
+
+    private bool OnKeyDown(int key)
+    {
+        if (key == NativeMethods.VK_V && IsControlKeyDown())
+        {
+            OpenClipboardTextInNewWindow();
+            return true;
+        }
+
+        return false;
+    }
+
+    private void OpenClipboardTextInNewWindow()
+    {
+        if (!TryGetClipboardText(out string text) || text.Length == 0)
+        {
+            NativeMethods.MessageBoxW(_hwnd, "Clipboard does not contain text.", Program.AppTitle, NativeMethods.MB_OK | NativeMethods.MB_ICONERROR);
+            return;
+        }
+
+        try
+        {
+            string path = WritePastedTextFile(text);
+            string? executable = Environment.ProcessPath;
+            if (string.IsNullOrEmpty(executable))
+            {
+                throw new InvalidOperationException("Current executable path is not available.");
+            }
+
+            ProcessStartInfo startInfo = new()
+            {
+                FileName = executable,
+                UseShellExecute = false
+            };
+            startInfo.ArgumentList.Add(path);
+            Process? process = Process.Start(startInfo);
+            if (process is null)
+            {
+                throw new InvalidOperationException("Process.Start returned null.");
+            }
+
+            AppLog.Instance.Info(
+                "paste.open_window",
+                "opened",
+                new LogField("path", path),
+                new LogField("pid", process.Id.ToString()));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            AppLog.Instance.Error(
+                "paste.open_window.failed",
+                "failed",
+                new LogField("type", ex.GetType().FullName ?? ex.GetType().Name),
+                new LogField("message", ex.Message));
+            NativeMethods.MessageBoxW(_hwnd, "Failed to open pasted text: " + ex.Message, Program.AppTitle, NativeMethods.MB_OK | NativeMethods.MB_ICONERROR);
+        }
+    }
+
+    private bool TryGetClipboardText(out string text)
+    {
+        text = string.Empty;
+        if (!NativeMethods.IsClipboardFormatAvailable(NativeMethods.CF_UNICODETEXT) ||
+            !NativeMethods.OpenClipboard(_hwnd))
+        {
+            return false;
+        }
+
+        try
+        {
+            IntPtr handle = NativeMethods.GetClipboardData(NativeMethods.CF_UNICODETEXT);
+            if (handle == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            IntPtr data = NativeMethods.GlobalLock(handle);
+            if (data == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            try
+            {
+                text = Marshal.PtrToStringUni(data) ?? string.Empty;
+                return text.Length > 0;
+            }
+            finally
+            {
+                NativeMethods.GlobalUnlock(handle);
+            }
+        }
+        finally
+        {
+            NativeMethods.CloseClipboard();
+        }
+    }
+
+    private static string WritePastedTextFile(string text)
+    {
+        string directory = GetPastedTextDirectory();
+        string fileName = "pasted-" +
+            DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff", System.Globalization.CultureInfo.InvariantCulture) +
+            "-" +
+            Guid.NewGuid().ToString("N") +
+            ".log";
+        string path = Path.Combine(directory, fileName);
+        File.WriteAllText(path, text, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+        return path;
+    }
+
+    private static string GetPastedTextDirectory()
+    {
+        string? localAppData = Environment.GetEnvironmentVariable("LOCALAPPDATA");
+        if (!string.IsNullOrWhiteSpace(localAppData) && TryCreatePastedTextDirectory(localAppData, out string directory))
+        {
+            return directory;
+        }
+
+        if (TryCreatePastedTextDirectory(Path.GetTempPath(), out directory))
+        {
+            return directory;
+        }
+
+        throw new IOException("Could not create pasted text directory.");
+    }
+
+    private static bool TryCreatePastedTextDirectory(string basePath, out string directory)
+    {
+        directory = Path.Combine(basePath, "LogReaderMvp", "mvp-csharp-nativeaot-win32", "pasted");
+        try
+        {
+            Directory.CreateDirectory(directory);
+            return true;
+        }
+        catch
+        {
+            directory = string.Empty;
+            return false;
+        }
     }
 
     private string CreateDefaultParserRuleSample()
@@ -726,6 +874,7 @@ internal sealed class ViewerWindow
             _charWidth,
             onStale: OnFilteredPaneStale,
             onRowActivated: OnFilteredRowActivated,
+            onPasteRequested: OpenClipboardTextInNewWindow,
             onHostVerticalResizeHit: OnResultsPaneResizeHit,
             onHostVerticalResizeBegin: OnResultsPaneResizeBegin);
         level.ResultsPane.Create(_hwnd, hInstance);
