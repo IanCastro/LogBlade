@@ -7,7 +7,8 @@ using System.Text.RegularExpressions;
 public enum DisplayParserMode
 {
     Regex,
-    Json
+    Json,
+    RegexReplace
 }
 
 public sealed class DisplayParserRule
@@ -77,7 +78,7 @@ public static class DisplayParserEvaluator
             throw new ArgumentException("Rule is required.", nameof(stage));
         }
 
-        if (stage.Mode == DisplayParserMode.Regex)
+        if (stage.Mode is DisplayParserMode.Regex or DisplayParserMode.RegexReplace)
         {
             _ = new Regex(stage.Rule, RegexOptions.CultureInvariant);
         }
@@ -128,6 +129,7 @@ public static class DisplayParserEvaluator
             {
                 DisplayParserMode.Regex => EvaluateRegex(stage.Rule, stage.Template, input),
                 DisplayParserMode.Json => EvaluateJson(stage.Rule, input),
+                DisplayParserMode.RegexReplace => EvaluateRegexReplace(stage.Rule, stage.Template, input),
                 _ => input
             };
             return true;
@@ -150,6 +152,12 @@ public static class DisplayParserEvaluator
 
         string displayTemplate = string.IsNullOrWhiteSpace(template) ? "{0}" : template;
         return RenderTemplate(displayTemplate, selector => ResolveRegexPlaceholder(regex, match, selector));
+    }
+
+    private static string EvaluateRegexReplace(string pattern, string? replacement, string input)
+    {
+        Regex regex = new(pattern, RegexOptions.CultureInvariant);
+        return regex.Replace(input, replacement ?? string.Empty);
     }
 
     private static string EvaluateJson(string template, string input)

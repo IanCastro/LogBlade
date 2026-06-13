@@ -6,8 +6,9 @@ internal sealed class ParserStageEditorWindow
 {
     private const int IdRegexMode = 101;
     private const int IdJsonMode = 102;
-    private const int IdRuleEdit = 103;
-    private const int IdTemplateEdit = 104;
+    private const int IdRegexReplaceMode = 103;
+    private const int IdRuleEdit = 104;
+    private const int IdTemplateEdit = 105;
     private const int IdSaveButton = 201;
     private const int IdCancelButton = 202;
 
@@ -19,6 +20,7 @@ internal sealed class ParserStageEditorWindow
     private IntPtr _typeLabel;
     private IntPtr _regexRadio;
     private IntPtr _jsonRadio;
+    private IntPtr _regexReplaceRadio;
     private IntPtr _ruleLabel;
     private IntPtr _ruleEdit;
     private IntPtr _templateLabel;
@@ -180,6 +182,7 @@ internal sealed class ParserStageEditorWindow
 
         _typeLabel = CreateLabel("Tipo");
         _regexRadio = CreateRadio("Regex", IdRegexMode);
+        _regexReplaceRadio = CreateRadio("Regex Replace", IdRegexReplaceMode);
         _jsonRadio = CreateRadio("JSON", IdJsonMode);
         _ruleLabel = CreateLabel("Regra");
         _ruleEdit = CreateEdit(IdRuleEdit, multiline: true, readOnly: false);
@@ -189,6 +192,7 @@ internal sealed class ParserStageEditorWindow
         _cancelButton = CreateButton("Cancel", IdCancelButton);
 
         SetButtonChecked(_regexRadio, _mode == DisplayParserMode.Regex);
+        SetButtonChecked(_regexReplaceRadio, _mode == DisplayParserMode.RegexReplace);
         SetButtonChecked(_jsonRadio, _mode == DisplayParserMode.Json);
         if (_initialStage is null)
         {
@@ -208,14 +212,24 @@ internal sealed class ParserStageEditorWindow
         int id = NativeMethods.LowWord(wParam);
         int notification = NativeMethods.HighWord(wParam);
 
-        if (notification == NativeMethods.BN_CLICKED && id is IdRegexMode or IdJsonMode)
+        if (notification == NativeMethods.BN_CLICKED && id is IdRegexMode or IdJsonMode or IdRegexReplaceMode)
         {
-            _mode = id == IdRegexMode ? DisplayParserMode.Regex : DisplayParserMode.Json;
+            _mode = id switch
+            {
+                IdRegexMode => DisplayParserMode.Regex,
+                IdRegexReplaceMode => DisplayParserMode.RegexReplace,
+                _ => DisplayParserMode.Json
+            };
             SetButtonChecked(_regexRadio, _mode == DisplayParserMode.Regex);
+            SetButtonChecked(_regexReplaceRadio, _mode == DisplayParserMode.RegexReplace);
             SetButtonChecked(_jsonRadio, _mode == DisplayParserMode.Json);
             if (_mode == DisplayParserMode.Json)
             {
                 SetDefaultJsonStage();
+            }
+            else if (_mode == DisplayParserMode.RegexReplace)
+            {
+                SetDefaultRegexReplaceStage();
             }
             else
             {
@@ -241,13 +255,14 @@ internal sealed class ParserStageEditorWindow
     private void SaveStage()
     {
         string rule = GetWindowText(_ruleEdit).Trim();
-        string template = GetWindowText(_templateEdit).Trim();
+        string rawTemplate = GetWindowText(_templateEdit);
+        string template = _mode == DisplayParserMode.RegexReplace ? rawTemplate : rawTemplate.Trim();
 
         DisplayParserStage stage = new()
         {
             Mode = _mode,
             Rule = rule,
-            Template = _mode == DisplayParserMode.Regex ? template : string.Empty
+            Template = _mode is DisplayParserMode.Regex or DisplayParserMode.RegexReplace ? template : string.Empty
         };
 
         try
@@ -288,20 +303,21 @@ internal sealed class ParserStageEditorWindow
         int inputLeft = margin + labelWidth + 12;
         int inputWidth = Math.Max(300, width - inputLeft - margin);
         int y = margin;
-        bool isRegex = _mode == DisplayParserMode.Regex;
-        int ruleHeight = isRegex ? 72 : Math.Max(90, height - margin - rowHeight - gap - rowHeight - margin - gap);
+        bool hasTemplate = _mode is DisplayParserMode.Regex or DisplayParserMode.RegexReplace;
+        int ruleHeight = hasTemplate ? 72 : Math.Max(90, height - margin - rowHeight - gap - rowHeight - margin - gap);
         int templateHeight = 56;
 
         Move(_typeLabel, margin, y + 4, labelWidth, rowHeight);
-        Move(_regexRadio, inputLeft, y, 88, rowHeight);
-        Move(_jsonRadio, inputLeft + 96, y, 88, rowHeight);
+        Move(_regexRadio, inputLeft, y, 76, rowHeight);
+        Move(_regexReplaceRadio, inputLeft + 84, y, 126, rowHeight);
+        Move(_jsonRadio, inputLeft + 218, y, 88, rowHeight);
 
         y += rowHeight + gap;
         Move(_ruleLabel, margin, y + 4, labelWidth, rowHeight);
         Move(_ruleEdit, inputLeft, y, inputWidth, ruleHeight);
 
         y += ruleHeight + gap;
-        if (isRegex)
+        if (hasTemplate)
         {
             Move(_templateLabel, margin, y + 4, labelWidth, rowHeight);
             Move(_templateEdit, inputLeft, y, inputWidth, templateHeight);
@@ -329,12 +345,19 @@ internal sealed class ParserStageEditorWindow
         NativeMethods.SetWindowTextW(_templateEdit, "{json}");
     }
 
+    private void SetDefaultRegexReplaceStage()
+    {
+        NativeMethods.SetWindowTextW(_ruleEdit, @"\u0001");
+        NativeMethods.SetWindowTextW(_templateEdit, "|");
+    }
+
     private void UpdateModeUi()
     {
-        bool isRegex = _mode == DisplayParserMode.Regex;
-        NativeMethods.SetWindowTextW(_ruleLabel, isRegex ? "Regex" : "Template");
-        NativeMethods.ShowWindow(_templateLabel, isRegex ? NativeMethods.SW_SHOW : NativeMethods.SW_HIDE);
-        NativeMethods.ShowWindow(_templateEdit, isRegex ? NativeMethods.SW_SHOW : NativeMethods.SW_HIDE);
+        bool hasTemplate = _mode is DisplayParserMode.Regex or DisplayParserMode.RegexReplace;
+        NativeMethods.SetWindowTextW(_ruleLabel, _mode == DisplayParserMode.Json ? "Template" : "Regex");
+        NativeMethods.SetWindowTextW(_templateLabel, _mode == DisplayParserMode.RegexReplace ? "Replacement" : "Display");
+        NativeMethods.ShowWindow(_templateLabel, hasTemplate ? NativeMethods.SW_SHOW : NativeMethods.SW_HIDE);
+        NativeMethods.ShowWindow(_templateEdit, hasTemplate ? NativeMethods.SW_SHOW : NativeMethods.SW_HIDE);
         Layout();
     }
 

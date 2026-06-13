@@ -20,6 +20,14 @@ internal static class Program
             RunDisplayParserFallbackOriginal();
             RunDisplayParserRegexThenJsonTemplate();
             RunDisplayParserSecondStageFailureReturnsFirstOutput();
+            RunDisplayParserRegexReplaceSimple();
+            RunDisplayParserRegexReplaceGlobal();
+            RunDisplayParserRegexReplaceEmptyReplacement();
+            RunDisplayParserRegexReplacePreservesSpaces();
+            RunDisplayParserRegexReplaceGroups();
+            RunDisplayParserRegexReplaceNoMatchAllowsNextStage();
+            RunDisplayParserRegexReplaceThenJsonTemplate();
+            RunDisplayParserRegexReplaceInvalidRegexValidation();
             RunSearchUsesDisplayParserLiteral(tempRoot);
             RunSearchUsesDisplayParserRegexCaptures(tempRoot);
             RunAppendSearchUsesDisplayParser(tempRoot);
@@ -175,6 +183,73 @@ internal static class Program
             JsonStage("{Key}"));
 
         AssertEqual("display parser second stage failure", DisplayParserEvaluator.EvaluateOrOriginal(rule, "payload=not-json"), "not-json");
+    }
+
+    private static void RunDisplayParserRegexReplaceSimple()
+    {
+        DisplayParserRule rule = ParserRule(RegexReplaceStage(@"\u0001", "|"));
+
+        AssertEqual("display parser regex replace simple", DisplayParserEvaluator.EvaluateOrOriginal(rule, "a\u0001b"), "a|b");
+    }
+
+    private static void RunDisplayParserRegexReplaceGlobal()
+    {
+        DisplayParserRule rule = ParserRule(RegexReplaceStage(@"\u0001", "|"));
+
+        AssertEqual("display parser regex replace global", DisplayParserEvaluator.EvaluateOrOriginal(rule, "a\u0001b\u0001c"), "a|b|c");
+    }
+
+    private static void RunDisplayParserRegexReplaceEmptyReplacement()
+    {
+        DisplayParserRule rule = ParserRule(RegexReplaceStage(@"[0-9]+", string.Empty));
+
+        AssertEqual("display parser regex replace empty", DisplayParserEvaluator.EvaluateOrOriginal(rule, "task-123-ready"), "task--ready");
+    }
+
+    private static void RunDisplayParserRegexReplacePreservesSpaces()
+    {
+        DisplayParserRule rule = ParserRule(RegexReplaceStage(@"-", " | "));
+
+        AssertEqual("display parser regex replace preserves spaces", DisplayParserEvaluator.EvaluateOrOriginal(rule, "a-b"), "a | b");
+    }
+
+    private static void RunDisplayParserRegexReplaceGroups()
+    {
+        DisplayParserRule rule = ParserRule(RegexReplaceStage(@"(\w+)=(\w+)", "$1:$2"));
+
+        AssertEqual("display parser regex replace groups", DisplayParserEvaluator.EvaluateOrOriginal(rule, "user=ana id=42"), "user:ana id:42");
+    }
+
+    private static void RunDisplayParserRegexReplaceNoMatchAllowsNextStage()
+    {
+        DisplayParserRule rule = ParserRule(
+            RegexReplaceStage(@"missing", "replacement"),
+            RegexStage(@"abc", "{0}"));
+
+        AssertEqual("display parser regex replace no match allows next stage", DisplayParserEvaluator.EvaluateOrOriginal(rule, "abc"), "abc");
+    }
+
+    private static void RunDisplayParserRegexReplaceThenJsonTemplate()
+    {
+        DisplayParserRule rule = ParserRule(
+            RegexReplaceStage(@"\u0001", "|"),
+            JsonStage("{Key}"));
+
+        AssertEqual("display parser regex replace then json", DisplayParserEvaluator.EvaluateOrOriginal(rule, "{\"Key\":\"A\u0001B\"}"), "A|B");
+    }
+
+    private static void RunDisplayParserRegexReplaceInvalidRegexValidation()
+    {
+        try
+        {
+            DisplayParserEvaluator.ValidateStage(RegexReplaceStage(@"(", "|"));
+        }
+        catch (ArgumentException)
+        {
+            return;
+        }
+
+        throw new InvalidOperationException("display parser regex replace invalid regex: expected validation failure.");
     }
 
     private static void RunSearchUsesDisplayParserLiteral(string tempRoot)
@@ -1633,6 +1708,16 @@ internal static class Program
             Mode = DisplayParserMode.Regex,
             Rule = pattern,
             Template = template
+        };
+    }
+
+    private static DisplayParserStage RegexReplaceStage(string pattern, string replacement)
+    {
+        return new DisplayParserStage
+        {
+            Mode = DisplayParserMode.RegexReplace,
+            Rule = pattern,
+            Template = replacement
         };
     }
 
