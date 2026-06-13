@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -9,10 +10,13 @@ internal sealed class ParserStageEditorWindow
     private const int IdRegexReplaceMode = 103;
     private const int IdRuleEdit = 104;
     private const int IdTemplateEdit = 105;
+    private const int IdPreviewEdit = 106;
     private const int IdSaveButton = 201;
     private const int IdCancelButton = 202;
 
     private readonly DisplayParserStage? _initialStage;
+    private readonly List<DisplayParserStage> _previousStages;
+    private readonly string _sample;
     private IntPtr _hwnd;
     private IntPtr _owner;
     private IntPtr _font;
@@ -25,23 +29,38 @@ internal sealed class ParserStageEditorWindow
     private IntPtr _ruleEdit;
     private IntPtr _templateLabel;
     private IntPtr _templateEdit;
+    private IntPtr _previewLabel;
+    private IntPtr _previewEdit;
     private IntPtr _saveButton;
     private IntPtr _cancelButton;
     private DisplayParserMode _mode;
     private bool _closed;
+    private bool _updatingPreview;
 
     private static readonly NativeMethods.WindowProc s_wndProc = WindowProc;
     private static bool s_registered;
 
     public ParserStageEditorWindow()
-        : this(initialStage: null)
+        : this(initialStage: null, Array.Empty<DisplayParserStage>(), string.Empty, stageIndex: 0)
     {
     }
 
     public ParserStageEditorWindow(DisplayParserStage? initialStage)
+        : this(initialStage, Array.Empty<DisplayParserStage>(), string.Empty, stageIndex: 0)
+    {
+    }
+
+    public ParserStageEditorWindow(IReadOnlyList<DisplayParserStage> stages, string sample, int stageIndex)
+        : this(GetInitialStage(stages, stageIndex), stages, sample, stageIndex)
+    {
+    }
+
+    private ParserStageEditorWindow(DisplayParserStage? initialStage, IReadOnlyList<DisplayParserStage> stages, string sample, int stageIndex)
     {
         _initialStage = initialStage;
         _mode = initialStage?.Mode ?? DisplayParserMode.Json;
+        _sample = sample;
+        _previousStages = ClonePreviousStages(stages, stageIndex);
     }
 
     public DisplayParserStage? SavedStage { get; private set; }
@@ -113,7 +132,7 @@ internal sealed class ParserStageEditorWindow
             NativeMethods.CW_USEDEFAULT,
             NativeMethods.CW_USEDEFAULT,
             720,
-            330,
+            520,
             _owner,
             IntPtr.Zero,
             NativeMethods.GetModuleHandleW(null),
@@ -188,6 +207,8 @@ internal sealed class ParserStageEditorWindow
         _ruleEdit = CreateEdit(IdRuleEdit, multiline: true, readOnly: false);
         _templateLabel = CreateLabel("Display");
         _templateEdit = CreateEdit(IdTemplateEdit, multiline: true, readOnly: false);
+        _previewLabel = CreateLabel("Preview");
+        _previewEdit = CreateEdit(IdPreviewEdit, multiline: true, readOnly: true);
         _saveButton = CreateButton("Save", IdSaveButton);
         _cancelButton = CreateButton("Cancel", IdCancelButton);
 
@@ -205,6 +226,7 @@ internal sealed class ParserStageEditorWindow
         }
 
         UpdateModeUi();
+        UpdatePreview();
     }
 
     private void OnCommand(IntPtr wParam)
@@ -237,6 +259,13 @@ internal sealed class ParserStageEditorWindow
             }
 
             UpdateModeUi();
+            UpdatePreview();
+            return;
+        }
+
+        if (notification == NativeMethods.EN_CHANGE && id is IdRuleEdit or IdTemplateEdit)
+        {
+            UpdatePreview();
             return;
         }
 
@@ -254,16 +283,7 @@ internal sealed class ParserStageEditorWindow
 
     private void SaveStage()
     {
-        string rule = GetWindowText(_ruleEdit).Trim();
-        string rawTemplate = GetWindowText(_templateEdit);
-        string template = _mode == DisplayParserMode.RegexReplace ? rawTemplate : rawTemplate.Trim();
-
-        DisplayParserStage stage = new()
-        {
-            Mode = _mode,
-            Rule = rule,
-            Template = _mode is DisplayParserMode.Regex or DisplayParserMode.RegexReplace ? template : string.Empty
-        };
+        DisplayParserStage stage = CreateStageFromControls();
 
         try
         {
@@ -295,7 +315,7 @@ internal sealed class ParserStageEditorWindow
         }
 
         int width = Math.Max(520, client.right - client.left);
-        int height = Math.Max(240, client.bottom - client.top);
+        int height = Math.Max(420, client.bottom - client.top);
         const int margin = 16;
         const int labelWidth = 78;
         const int rowHeight = 26;
@@ -304,7 +324,7 @@ internal sealed class ParserStageEditorWindow
         int inputWidth = Math.Max(300, width - inputLeft - margin);
         int y = margin;
         bool hasTemplate = _mode is DisplayParserMode.Regex or DisplayParserMode.RegexReplace;
-        int ruleHeight = hasTemplate ? 72 : Math.Max(90, height - margin - rowHeight - gap - rowHeight - margin - gap);
+        int ruleHeight = hasTemplate ? 72 : 90;
         int templateHeight = 56;
 
         Move(_typeLabel, margin, y + 4, labelWidth, rowHeight);
@@ -328,6 +348,11 @@ internal sealed class ParserStageEditorWindow
             Move(_templateLabel, 0, 0, 0, 0);
             Move(_templateEdit, 0, 0, 0, 0);
         }
+
+        int previewHeight = Math.Max(90, height - y - gap - rowHeight - margin);
+        Move(_previewLabel, margin, y + 4, labelWidth, rowHeight);
+        Move(_previewEdit, inputLeft, y, inputWidth, previewHeight);
+        y += previewHeight + gap;
 
         Move(_cancelButton, width - margin - 90, y, 90, rowHeight);
         Move(_saveButton, width - margin - 190, y, 90, rowHeight);
@@ -359,6 +384,93 @@ internal sealed class ParserStageEditorWindow
         NativeMethods.ShowWindow(_templateLabel, hasTemplate ? NativeMethods.SW_SHOW : NativeMethods.SW_HIDE);
         NativeMethods.ShowWindow(_templateEdit, hasTemplate ? NativeMethods.SW_SHOW : NativeMethods.SW_HIDE);
         Layout();
+    }
+
+    private void UpdatePreview()
+    {
+        if (_updatingPreview || _previewEdit == IntPtr.Zero)
+        {
+            return;
+        }
+
+        _updatingPreview = true;
+        try
+        {
+            string input = _previousStages.Count == 0
+                ? _sample
+                : EvaluateLines(_sample, new DisplayParserRule { Stages = CloneStages(_previousStages) });
+            string output = EvaluateLines(input, new DisplayParserRule { Stages = new List<DisplayParserStage> { CreateStageFromControls() } });
+            NativeMethods.SetWindowTextW(_previewEdit, output);
+        }
+        finally
+        {
+            _updatingPreview = false;
+        }
+    }
+
+    private DisplayParserStage CreateStageFromControls()
+    {
+        string rule = GetWindowText(_ruleEdit).Trim();
+        string rawTemplate = GetWindowText(_templateEdit);
+        string template = _mode == DisplayParserMode.RegexReplace ? rawTemplate : rawTemplate.Trim();
+
+        return new DisplayParserStage
+        {
+            Mode = _mode,
+            Rule = rule,
+            Template = _mode is DisplayParserMode.Regex or DisplayParserMode.RegexReplace ? template : string.Empty
+        };
+    }
+
+    private static string EvaluateLines(string text, DisplayParserRule rule)
+    {
+        if (text.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        string normalized = text.Replace("\r\n", "\n").Replace('\r', '\n');
+        string[] lines = normalized.Split('\n');
+        string[] output = new string[lines.Length];
+        for (int i = 0; i < lines.Length; i++)
+        {
+            string line = lines[i];
+            output[i] = line.Length == 0
+                ? string.Empty
+                : DisplayParserEvaluator.EvaluateOrOriginal(rule, line);
+        }
+
+        return string.Join(Environment.NewLine, output);
+    }
+
+    private static DisplayParserStage? GetInitialStage(IReadOnlyList<DisplayParserStage> stages, int stageIndex)
+    {
+        return stageIndex >= 0 && stageIndex < stages.Count
+            ? stages[stageIndex].Clone()
+            : null;
+    }
+
+    private static List<DisplayParserStage> ClonePreviousStages(IReadOnlyList<DisplayParserStage> stages, int stageIndex)
+    {
+        int count = Math.Clamp(stageIndex, 0, stages.Count);
+        List<DisplayParserStage> previous = new(count);
+        for (int i = 0; i < count; i++)
+        {
+            previous.Add(stages[i].Clone());
+        }
+
+        return previous;
+    }
+
+    private static List<DisplayParserStage> CloneStages(IReadOnlyList<DisplayParserStage> stages)
+    {
+        List<DisplayParserStage> copy = new(stages.Count);
+        for (int i = 0; i < stages.Count; i++)
+        {
+            copy.Add(stages[i].Clone());
+        }
+
+        return copy;
     }
 
     private void ShowError(string message)

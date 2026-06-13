@@ -290,7 +290,7 @@ internal sealed class RuleEditorWindow
 
     private void AddStage()
     {
-        ParserStageEditorWindow editor = new();
+        ParserStageEditorWindow editor = new(_stages, GetWindowText(_sampleEdit), _stages.Count);
         DisplayParserStage? saved = editor.ShowModal(_hwnd);
         if (saved is null)
         {
@@ -311,7 +311,7 @@ internal sealed class RuleEditorWindow
             return;
         }
 
-        ParserStageEditorWindow editor = new(_stages[index].Clone());
+        ParserStageEditorWindow editor = new(_stages, GetWindowText(_sampleEdit), index);
         DisplayParserStage? saved = editor.ShowModal(_hwnd);
         if (saved is null)
         {
