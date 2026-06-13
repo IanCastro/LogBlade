@@ -147,7 +147,7 @@ internal sealed class ViewerWindow
     public ViewerWindow(string path)
     {
         _path = path;
-        _titleSuffix = Path.GetFileName(path);
+        _titleSuffix = path;
     }
 
     public void Run()
