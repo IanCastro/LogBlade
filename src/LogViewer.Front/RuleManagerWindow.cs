@@ -12,6 +12,7 @@ internal sealed class RuleManagerWindow
     private const int IdCloseButton = 205;
 
     private readonly List<DisplayParserRule> _rules;
+    private readonly string _defaultRuleSample;
     private string? _activeRuleName;
     private IntPtr _hwnd;
     private IntPtr _owner;
@@ -30,9 +31,15 @@ internal sealed class RuleManagerWindow
     private static bool s_registered;
 
     public RuleManagerWindow(IReadOnlyList<DisplayParserRule> rules, string? activeRuleName)
+        : this(rules, activeRuleName, defaultRuleSample: string.Empty)
+    {
+    }
+
+    public RuleManagerWindow(IReadOnlyList<DisplayParserRule> rules, string? activeRuleName, string defaultRuleSample)
     {
         _rules = new List<DisplayParserRule>(rules);
         _activeRuleName = activeRuleName;
+        _defaultRuleSample = defaultRuleSample;
     }
 
     public string? ShowModal(IntPtr owner)
@@ -221,7 +228,7 @@ internal sealed class RuleManagerWindow
 
     private void AddRule()
     {
-        RuleEditorWindow editor = new(_rules);
+        RuleEditorWindow editor = new(_rules, _defaultRuleSample);
         DisplayParserRule? saved = editor.ShowModal(_hwnd);
         if (saved is null)
         {

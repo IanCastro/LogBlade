@@ -20,6 +20,7 @@ internal sealed class RuleEditorWindow
     private readonly IReadOnlyList<DisplayParserRule> _existingRules;
     private readonly DisplayParserRule? _initialRule;
     private readonly string? _originalName;
+    private readonly string _defaultSample;
     private readonly List<DisplayParserStage> _stages;
     private IntPtr _hwnd;
     private IntPtr _owner;
@@ -48,15 +49,26 @@ internal sealed class RuleEditorWindow
     private static bool s_registered;
 
     public RuleEditorWindow(IReadOnlyList<DisplayParserRule> existingRules)
-        : this(existingRules, initialRule: null)
+        : this(existingRules, initialRule: null, defaultSample: string.Empty)
+    {
+    }
+
+    public RuleEditorWindow(IReadOnlyList<DisplayParserRule> existingRules, string defaultSample)
+        : this(existingRules, initialRule: null, defaultSample)
     {
     }
 
     public RuleEditorWindow(IReadOnlyList<DisplayParserRule> existingRules, DisplayParserRule? initialRule)
+        : this(existingRules, initialRule, defaultSample: string.Empty)
+    {
+    }
+
+    private RuleEditorWindow(IReadOnlyList<DisplayParserRule> existingRules, DisplayParserRule? initialRule, string defaultSample)
     {
         _existingRules = existingRules;
         _initialRule = initialRule;
         _originalName = initialRule?.Name;
+        _defaultSample = defaultSample;
         _stages = initialRule is null
             ? new List<DisplayParserStage> { CreateDefaultJsonStage() }
             : initialRule.Stages.ConvertAll(stage => stage.Clone());
@@ -216,7 +228,7 @@ internal sealed class RuleEditorWindow
 
         if (_initialRule is null)
         {
-            NativeMethods.SetWindowTextW(_sampleEdit, DefaultJsonSample());
+            NativeMethods.SetWindowTextW(_sampleEdit, _defaultSample.Length == 0 ? DefaultJsonSample() : _defaultSample);
         }
         else
         {

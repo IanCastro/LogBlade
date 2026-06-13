@@ -557,10 +557,46 @@ internal sealed class ViewerWindow
     private void OpenRuleManager()
     {
         string? activeRuleName = GetSelectedParserRule()?.Name;
-        RuleManagerWindow manager = new(_parserRules, activeRuleName);
+        RuleManagerWindow manager = new(_parserRules, activeRuleName, CreateDefaultParserRuleSample());
         string? selectedRuleName = manager.ShowModal(_hwnd);
         ReloadParserRules(selectedRuleName);
         ApplyParserRuleChange();
+    }
+
+    private string CreateDefaultParserRuleSample()
+    {
+        if (_detectedEncoding is not DetectedEncodingInfo detected)
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            using FileStream fs = new(_path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 16, FileOptions.SequentialScan);
+            if (detected.DataOffset > 0)
+            {
+                fs.Seek(Math.Min(detected.DataOffset, fs.Length), SeekOrigin.Begin);
+            }
+
+            using StreamReader reader = new(fs, detected.Encoding, detectEncodingFromByteOrderMarks: false, bufferSize: 1 << 16);
+            List<string> lines = new(capacity: 3);
+            while (lines.Count < 3)
+            {
+                string? line = reader.ReadLine();
+                if (line is null)
+                {
+                    break;
+                }
+
+                lines.Add(line);
+            }
+
+            return lines.Count == 0 ? string.Empty : string.Join(Environment.NewLine, lines);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or DecoderFallbackException)
+        {
+            return string.Empty;
+        }
     }
 
     private void ApplyParserRuleChange()
