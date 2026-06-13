@@ -8,7 +8,8 @@ internal sealed class RuleManagerWindow
     private const int IdAddButton = 201;
     private const int IdEditButton = 202;
     private const int IdRemoveButton = 203;
-    private const int IdCloseButton = 204;
+    private const int IdDuplicateButton = 204;
+    private const int IdCloseButton = 205;
 
     private readonly List<DisplayParserRule> _rules;
     private string? _activeRuleName;
@@ -20,6 +21,7 @@ internal sealed class RuleManagerWindow
     private IntPtr _addButton;
     private IntPtr _editButton;
     private IntPtr _removeButton;
+    private IntPtr _duplicateButton;
     private IntPtr _closeButton;
     private bool _closed;
     private bool _updatingList;
@@ -170,6 +172,7 @@ internal sealed class RuleManagerWindow
         _addButton = CreateButton("Add", IdAddButton);
         _editButton = CreateButton("Edit", IdEditButton);
         _removeButton = CreateButton("Remove", IdRemoveButton);
+        _duplicateButton = CreateButton("Duplicate", IdDuplicateButton);
         _closeButton = CreateButton("Close", IdCloseButton);
         ReloadList(_activeRuleName);
         Layout();
@@ -201,6 +204,12 @@ internal sealed class RuleManagerWindow
         if (notification == NativeMethods.BN_CLICKED && id == IdRemoveButton)
         {
             RemoveSelectedRule();
+            return;
+        }
+
+        if (notification == NativeMethods.BN_CLICKED && id == IdDuplicateButton)
+        {
+            DuplicateSelectedRule();
             return;
         }
 
@@ -285,6 +294,24 @@ internal sealed class RuleManagerWindow
         ReloadList(nextSelection);
     }
 
+    private void DuplicateSelectedRule()
+    {
+        int index = GetSelectedRuleIndex();
+        if (index < 0)
+        {
+            ShowError("Select a rule to duplicate.");
+            return;
+        }
+
+        DisplayParserRule duplicate = CopyRule(_rules[index]);
+        duplicate.Name = CreateDuplicateName(duplicate.Name);
+
+        _rules.Add(duplicate);
+        _activeRuleName = duplicate.Name;
+        SaveRules();
+        ReloadList(duplicate.Name);
+    }
+
     private void ReloadList(string? selectRuleName)
     {
         _updatingList = true;
@@ -359,6 +386,8 @@ internal sealed class RuleManagerWindow
         y += buttonHeight + gap;
         Move(_editButton, buttonLeft, y, buttonWidth, buttonHeight);
         y += buttonHeight + gap;
+        Move(_duplicateButton, buttonLeft, y, buttonWidth, buttonHeight);
+        y += buttonHeight + gap;
         Move(_removeButton, buttonLeft, y, buttonWidth, buttonHeight);
         Move(_closeButton, buttonLeft, height - margin - buttonHeight, buttonWidth, buttonHeight);
     }
@@ -425,5 +454,24 @@ internal sealed class RuleManagerWindow
     private static DisplayParserRule CopyRule(DisplayParserRule source)
     {
         return source.Clone();
+    }
+
+    private string CreateDuplicateName(string name)
+    {
+        string baseName = string.IsNullOrWhiteSpace(name) ? "Rule" : name.Trim();
+        string candidate = baseName + " Copy";
+        if (FindRuleIndex(candidate) < 0)
+        {
+            return candidate;
+        }
+
+        for (int suffix = 2; ; suffix++)
+        {
+            candidate = baseName + " Copy " + suffix.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (FindRuleIndex(candidate) < 0)
+            {
+                return candidate;
+            }
+        }
     }
 }
