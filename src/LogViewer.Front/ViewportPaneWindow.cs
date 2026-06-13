@@ -11,7 +11,8 @@ internal enum ViewportRequestKind
     ScrollByLines,
     JumpHome,
     JumpEnd,
-    RefreshTailIfAtEnd
+    RefreshTailIfAtEnd,
+    ReloadAfterFileChange
 }
 
 internal readonly record struct ViewportRequest(long Id, ViewportRequestKind Kind, int DeltaLines, double RequestedPercentage, long RequestedOffset, long RequestedRowOrdinal, int VisibleLines, bool SelectRowAfterLoad);
@@ -300,7 +301,7 @@ internal sealed class ViewportPaneWindow : IDisposable
                 return;
             }
 
-            RefreshKnownFileSize();
+            QueueViewportRequest(ViewportRequestKind.ReloadAfterFileChange, visibleLines: VisibleDataLineCount);
             return;
         }
 
@@ -400,40 +401,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         _fileSizeRefreshPending = false;
-        RefreshKnownFileSize();
-    }
-
-    private void RefreshKnownFileSize()
-    {
-        if (_reader is not VisualRowReader visualReader)
-        {
-            _fileSizeRefreshPending = false;
-            return;
-        }
-
-        if (!visualReader.RefreshFileSize(out long previousSize, out long currentSize, out bool wasAtEnd))
-        {
-            return;
-        }
-
-        UpdateScrollBar();
-        NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
-        if (currentSize < previousSize)
-        {
-            _tailRefreshPending = false;
-            _fileSizeRefreshPending = false;
-            _tailFollowSuspended = false;
-            QueueViewportRequest(
-                ViewportRequestKind.LoadAtPercentage,
-                requestedPercentage: 0d,
-                visibleLines: VisibleDataLineCount);
-            return;
-        }
-
-        if (wasAtEnd && !_tailFollowSuspended)
-        {
-            _tailRefreshPending = true;
-        }
+        QueueViewportRequest(ViewportRequestKind.ReloadAfterFileChange, visibleLines: VisibleDataLineCount);
     }
 
     private void SuspendTailFollow()
@@ -545,6 +513,13 @@ internal sealed class ViewportPaneWindow : IDisposable
                         if (workerReader is VisualRowReader visualReader)
                         {
                             visualReader.RefreshTail(request.VisibleLines);
+                        }
+
+                        break;
+                    case ViewportRequestKind.ReloadAfterFileChange:
+                        if (workerReader is VisualRowReader changedReader)
+                        {
+                            changedReader.ReloadAfterFileChange(request.VisibleLines);
                         }
 
                         break;

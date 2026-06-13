@@ -416,6 +416,12 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
 
         if (!RefreshFileSize(out long previousSize, out long currentSize, out bool wasAtEnd))
         {
+            if (wasAtEnd)
+            {
+                _viewportLoaded = false;
+                ReadFromPercentage(100d, visibleLines);
+            }
+
             return CurrentRows;
         }
 
@@ -432,6 +438,34 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
             ReadFromPercentage(100d, visibleLines);
         }
 
+        return CurrentRows;
+    }
+
+    public IReadOnlyList<string> ReloadAfterFileChange(int visibleLines)
+    {
+        if (visibleLines <= 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        long previousTopOffset = TopOffset;
+        bool wasAtEnd = IsAtKnownEnd;
+        bool fileSizeChanged = RefreshFileSize(out long previousSize, out long currentSize, out _);
+        _viewportLoaded = false;
+
+        if (fileSizeChanged && currentSize < previousSize)
+        {
+            ReadFromPercentage(0d, visibleLines);
+            return CurrentRows;
+        }
+
+        if (wasAtEnd)
+        {
+            ReadFromPercentage(100d, visibleLines);
+            return CurrentRows;
+        }
+
+        ReadFromOffset(Math.Min(previousTopOffset, _fileSize), visibleLines);
         return CurrentRows;
     }
 

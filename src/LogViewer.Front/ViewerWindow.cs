@@ -952,6 +952,9 @@ internal sealed class ViewerWindow
 
         _mainPane?.QueueTailRefreshIfAtEnd();
         QueueAppendSearchIfNeeded();
+        RecalculateLayout();
+        ApplyLayout();
+        InvalidateHost();
     }
 
     private void OnSize()

@@ -86,6 +86,9 @@ internal static class Program
             RunPageUpNearStartClampsToTop(tempRoot);
             RunPageUpInsideWrappedFirstLineClampsToTop(tempRoot);
             RunRefreshTailAtEndShowsAppendedRows(tempRoot);
+            RunRefreshTailAtEndReloadsSameSizeChange(tempRoot);
+            RunReloadAfterFileChangeSameSizeReloadsCurrentViewport(tempRoot);
+            RunReloadAfterFileChangePreservesViewportPosition(tempRoot);
             RunRefreshTailSmallInitialFileShowsAppendedRows(tempRoot);
             RunRefreshFileSizeAwayFromEndLetsJumpEndSeeAppendedRows(tempRoot);
             RunRefreshTailAwayFromEndDoesNotMove(tempRoot);
@@ -1471,6 +1474,43 @@ internal static class Program
         reader.RefreshTail(2);
 
         AssertSequence("tail at end rows", reader.CurrentRows, "line-1", "line-2");
+    }
+
+    private static void RunRefreshTailAtEndReloadsSameSizeChange(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "tail-same-size-change.log", "line-0\r\nline-1\r\nline-2\r\n");
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        reader.ReadFromPercentage(100d, 2);
+        File.WriteAllText(path, "line-0\r\nline-1\r\nLINE-2\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        reader.RefreshTail(2);
+
+        AssertSequence("tail same-size change rows", reader.CurrentRows, "line-1", "LINE-2");
+    }
+
+    private static void RunReloadAfterFileChangeSameSizeReloadsCurrentViewport(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "reload-same-size-current.log", "line-0\r\nline-1\r\nline-2\r\n");
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        reader.ReadFromPercentage(0d, 2);
+        File.WriteAllText(path, "LINE-0\r\nline-1\r\nline-2\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        reader.ReloadAfterFileChange(2);
+
+        AssertSequence("reload same-size current rows", reader.CurrentRows, "LINE-0", "line-1");
+    }
+
+    private static void RunReloadAfterFileChangePreservesViewportPosition(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "reload-preserve-position.log", "line-0\r\nline-1\r\nline-2\r\nline-3\r\nline-4\r\n");
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        reader.ReadFromOffset(16L, 2);
+        File.WriteAllText(path, "LINE-0\r\nline-1\r\nline-2\r\nLINE-3\r\nline-4\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        reader.ReloadAfterFileChange(2);
+
+        AssertEqual("reload preserve position top offset", reader.TopOffset, 16L);
+        AssertSequence("reload preserve position rows", reader.CurrentRows, "line-2", "LINE-3");
     }
 
     private static void RunRefreshTailSmallInitialFileShowsAppendedRows(string tempRoot)
