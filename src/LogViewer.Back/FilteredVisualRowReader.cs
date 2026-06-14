@@ -306,6 +306,54 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
         return CurrentRows;
     }
 
+    public IReadOnlyList<string> ReloadAfterFileChange(int visibleLines)
+    {
+        ThrowIfDisposed();
+        if (visibleLines <= 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        long previousTopRowOrdinal = _topRowOrdinal;
+        bool wasAtEnd = IsAtEnd;
+        try
+        {
+            _fileSize = new FileInfo(_filePath).Length;
+        }
+        catch (IOException)
+        {
+            return CurrentRows;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return CurrentRows;
+        }
+
+        _viewportLoaded = false;
+        if (!HasContent)
+        {
+            _viewportVisibleLines = Math.Max(1, visibleLines);
+            _topRowOrdinal = 0;
+            _viewportBytes = 0;
+            _currentRows.Clear();
+            _currentCells.Clear();
+            _currentRowSelectionKeys.Clear();
+            _viewportLoaded = true;
+            return CurrentRows;
+        }
+
+        if (wasAtEnd)
+        {
+            ReadFromPercentage(100d, visibleLines);
+        }
+        else
+        {
+            ReadFromRowOrdinal(previousTopRowOrdinal, visibleLines);
+        }
+
+        return CurrentRows;
+    }
+
     public bool TryGetRowStartOffset(long rowOrdinal, out long startOffset)
     {
         ThrowIfDisposed();

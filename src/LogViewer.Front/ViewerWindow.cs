@@ -1136,6 +1136,7 @@ internal sealed class ViewerWindow
         }
 
         _mainPane?.QueueTailRefreshIfAtEnd();
+        QueueSearchReloadAfterSameSizeChange();
         QueueAppendSearchIfNeeded();
         RecalculateLayout();
         ApplyLayout();
@@ -2273,6 +2274,38 @@ internal sealed class ViewerWindow
         }
 
         DispatchAppendSearch(currentReaders, currentFileSize, options);
+    }
+
+    private void QueueSearchReloadAfterSameSizeChange()
+    {
+        if (_closing || !HasActiveSearch || _searchStale)
+        {
+            return;
+        }
+
+        if (!TryGetCurrentFileSize(out long currentFileSize))
+        {
+            return;
+        }
+
+        FilteredVisualRowReader[]? currentReaders = GetActiveFilteredReaders();
+        if (currentReaders is null || currentReaders.Length == 0)
+        {
+            return;
+        }
+
+        if (currentFileSize != currentReaders[0].FileSize)
+        {
+            return;
+        }
+
+        for (int i = 0; i < _activeSearchLevelCount && i < _searchLevels.Count; i++)
+        {
+            if (_searchLevels[i].ResultsPane?.Reader is FilteredVisualRowReader)
+            {
+                _searchLevels[i].ResultsPane!.QueueReloadAfterFileChange();
+            }
+        }
     }
 
     private bool TryGetCurrentFileSize(out long currentFileSize)

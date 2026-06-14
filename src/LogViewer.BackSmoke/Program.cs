@@ -97,6 +97,8 @@ internal static class Program
             RunRefreshTailAtEndReloadsSameSizeChange(tempRoot);
             RunReloadAfterFileChangeSameSizeReloadsCurrentViewport(tempRoot);
             RunReloadAfterFileChangePreservesViewportPosition(tempRoot);
+            RunFilteredReloadAfterFileChangeSameSizeReloadsCurrentViewport(tempRoot);
+            RunFilteredReloadAfterFileChangeStalesWhenLineBoundaryChanges(tempRoot);
             RunRefreshTailSmallInitialFileShowsAppendedRows(tempRoot);
             RunRefreshFileSizeAwayFromEndLetsJumpEndSeeAppendedRows(tempRoot);
             RunRefreshTailAwayFromEndDoesNotMove(tempRoot);
@@ -1586,6 +1588,41 @@ internal static class Program
 
         AssertEqual("reload preserve position top offset", reader.TopOffset, 16L);
         AssertSequence("reload preserve position rows", reader.CurrentRows, "line-2", "LINE-3");
+    }
+
+    private static void RunFilteredReloadAfterFileChangeSameSizeReloadsCurrentViewport(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "filtered-reload-same-size.log", "alpha\r\nplain\r\n");
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
+        reader.ReadFromPercentage(0d, 10);
+
+        File.WriteAllText(path, "bravo\r\nplain\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        reader.ReloadAfterFileChange(10);
+
+        AssertSequence("filtered reload same-size rows", reader.CurrentRows, "bravo");
+        AssertSequence("filtered reload same-size cells", ((IColumnViewportReader)reader).CurrentCells[0], "1", "bravo");
+    }
+
+    private static void RunFilteredReloadAfterFileChangeStalesWhenLineBoundaryChanges(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "filtered-reload-stale-boundary.log", "alpha\r\nplain\r\n");
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
+        reader.ReadFromPercentage(0d, 10);
+
+        File.WriteAllText(path, "alphax\nplain\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        AssertThrows<FilteredLineStaleException>(
+            "filtered reload stale line boundary",
+            () => reader.ReloadAfterFileChange(10));
     }
 
     private static void RunRefreshTailSmallInitialFileShowsAppendedRows(string tempRoot)

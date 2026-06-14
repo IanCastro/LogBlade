@@ -324,6 +324,24 @@ internal sealed class ViewportPaneWindow : IDisposable
         QueueViewportRequest(ViewportRequestKind.RefreshTailIfAtEnd, visibleLines: VisibleDataLineCount);
     }
 
+    public void QueueReloadAfterFileChange()
+    {
+        if (_reader is not VisualRowReader and not FilteredVisualRowReader || _hwnd == IntPtr.Zero)
+        {
+            _fileSizeRefreshPending = false;
+            return;
+        }
+
+        _tailRefreshPending = false;
+        if (_viewportWorkerRunning || _pendingViewportRequest is not null)
+        {
+            _fileSizeRefreshPending = true;
+            return;
+        }
+
+        QueueViewportRequest(ViewportRequestKind.ReloadAfterFileChange, visibleLines: VisibleDataLineCount);
+    }
+
     public void Dispose()
     {
         ResetColumnResizeState(clearManualWidths: true);
@@ -523,6 +541,10 @@ internal sealed class ViewportPaneWindow : IDisposable
                         if (workerReader is VisualRowReader changedReader)
                         {
                             changedReader.ReloadAfterFileChange(request.VisibleLines);
+                        }
+                        else if (workerReader is FilteredVisualRowReader filteredChangedReader)
+                        {
+                            filteredChangedReader.ReloadAfterFileChange(request.VisibleLines);
                         }
 
                         break;
