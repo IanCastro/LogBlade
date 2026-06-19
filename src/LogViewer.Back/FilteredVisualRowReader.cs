@@ -17,6 +17,7 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
     private readonly List<string> _currentRows = new();
     private readonly List<IReadOnlyList<string>> _currentCells = new();
     private readonly List<ViewportRowSelectionKey> _currentRowSelectionKeys = new();
+    private bool _observedZeroFileSize;
     private int _captureGroupCount;
     private string[] _captureGroupHeaders = Array.Empty<string>();
     private long _totalVisualRows;
@@ -87,16 +88,30 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
         _ => "Windows-1252"
     };
     public long DataOffset => _dataOffset;
-    public long FileSize => _fileSize;
+    public long FileSize => _observedZeroFileSize ? 0 : _fileSize;
+    public long ConfirmedFileSize => _fileSize;
     public long TopOffset => HasContent ? _descriptors[_topDescriptorIndex].StartOffset : _dataOffset;
     public long TopRowOrdinal => _topRowOrdinal;
-    public long MatchedLineCount => _descriptors.Length;
-    public long ViewportBytes => _viewportBytes;
+    public long MatchedLineCount => _observedZeroFileSize ? 0 : _descriptors.Length;
+    public long ViewportBytes => _observedZeroFileSize ? 0 : _viewportBytes;
     public bool IsAtEnd
     {
         get
         {
             if (!HasContent)
+            {
+                return true;
+            }
+
+            long maxTopRow = Math.Max(0, _totalVisualRows - Math.Max(1, _viewportVisibleLines));
+            return _viewportLoaded && _topRowOrdinal >= maxTopRow;
+        }
+    }
+    public bool IsAtConfirmedEnd
+    {
+        get
+        {
+            if (_descriptors.Length == 0)
             {
                 return true;
             }
@@ -123,7 +138,7 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
             return (_topRowOrdinal * 100d) / maxTopRow;
         }
     }
-    public bool HasContent => _descriptors.Length > 0;
+    public bool HasContent => !_observedZeroFileSize && _descriptors.Length > 0;
     public IReadOnlyList<string> ColumnHeaders
     {
         get
@@ -138,6 +153,11 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
     {
         get
         {
+            if (_observedZeroFileSize)
+            {
+                return Array.Empty<IReadOnlyList<string>>();
+            }
+
             IReadOnlyList<string>[] cells = new IReadOnlyList<string>[_currentCells.Count];
             for (int i = 0; i < _currentCells.Count; i++)
             {
@@ -161,6 +181,11 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
     {
         get
         {
+            if (_observedZeroFileSize)
+            {
+                return Array.Empty<string>();
+            }
+
             string[] rows = new string[_currentRows.Count];
             for (int i = 0; i < _currentRows.Count; i++)
             {
@@ -175,6 +200,11 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
     {
         get
         {
+            if (_observedZeroFileSize)
+            {
+                return Array.Empty<ViewportRowSelectionKey>();
+            }
+
             ViewportRowSelectionKey[] keys = new ViewportRowSelectionKey[_currentRowSelectionKeys.Count];
             _currentRowSelectionKeys.CopyTo(keys);
             return keys;
@@ -222,6 +252,11 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
             return Array.Empty<string>();
         }
 
+        if (_observedZeroFileSize)
+        {
+            return CurrentRows;
+        }
+
         if (!_viewportLoaded)
         {
             LoadViewportAtRow(0, count);
@@ -243,6 +278,11 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
             return Array.Empty<string>();
         }
 
+        if (_observedZeroFileSize)
+        {
+            return CurrentRows;
+        }
+
         if (!_viewportLoaded)
         {
             LoadViewportAtRow(0, count);
@@ -261,6 +301,11 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
         if (count <= 0)
         {
             return Array.Empty<string>();
+        }
+
+        if (_observedZeroFileSize)
+        {
+            return CurrentRows;
         }
 
         if (!HasContent)
@@ -291,6 +336,11 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
             return Array.Empty<string>();
         }
 
+        if (_observedZeroFileSize)
+        {
+            return CurrentRows;
+        }
+
         if (!HasContent)
         {
             _viewportVisibleLines = Math.Max(1, visibleLines);
@@ -315,10 +365,18 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
         }
 
         long previousTopRowOrdinal = _topRowOrdinal;
-        bool wasAtEnd = IsAtEnd;
+        bool wasAtEnd = IsAtConfirmedEnd;
         try
         {
-            _fileSize = new FileInfo(_filePath).Length;
+            long currentSize = new FileInfo(_filePath).Length;
+            if (currentSize == 0)
+            {
+                MarkObservedZeroFileSize();
+                return CurrentRows;
+            }
+
+            _observedZeroFileSize = false;
+            _fileSize = currentSize;
         }
         catch (IOException)
         {
@@ -352,6 +410,18 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
         }
 
         return CurrentRows;
+    }
+
+    public void MarkObservedZeroFileSize()
+    {
+        ThrowIfDisposed();
+        _observedZeroFileSize = true;
+    }
+
+    public void ClearObservedZeroFileSize()
+    {
+        ThrowIfDisposed();
+        _observedZeroFileSize = false;
     }
 
     public bool TryGetRowStartOffset(long rowOrdinal, out long startOffset)
@@ -425,7 +495,8 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
             _viewportBytes = _viewportBytes,
             _viewportVisibleLines = _viewportVisibleLines,
             _topDescriptorIndex = _topDescriptorIndex,
-            _viewportLoaded = _viewportLoaded
+            _viewportLoaded = _viewportLoaded,
+            _observedZeroFileSize = _observedZeroFileSize
         };
         clone._currentRows.AddRange(_currentRows);
         clone._currentRowSelectionKeys.AddRange(_currentRowSelectionKeys);

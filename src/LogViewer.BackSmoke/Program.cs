@@ -91,6 +91,15 @@ internal static class Program
             RunAppendSearchPreservesNamedCaptureGroups(tempRoot);
             RunAppendSearchInvertMatch(tempRoot);
             RunAppendSearchStalesWhenEarlierLineGrows(tempRoot);
+            RunPausedStagedSearchPublishesCheckpointWithoutMatches(tempRoot);
+            RunPausedAppendStagedSearchPublishesCheckpointWhenAlreadyCancelled(tempRoot);
+            RunPausedResumeStagedSearchPublishesCheckpointWhenAlreadyCancelled(tempRoot);
+            RunPausedStagedSearchPublishesCheckpointAfterCallbackCancellation(tempRoot);
+            RunPausedStagedSearchResumesFromProcessedOffset(tempRoot);
+            RunPartialStagedSearchReaderResumesFromProcessedOffset(tempRoot);
+            RunResumeStagedSearchReprocessesIncompleteLastLine(tempRoot);
+            RunResumeStagedSearchContinuesAfterLineBreak(tempRoot);
+            RunResumeStagedSearchPreservesCascadeReaders(tempRoot);
             RunPageUpNearStartClampsToTop(tempRoot);
             RunPageUpInsideWrappedFirstLineClampsToTop(tempRoot);
             RunRefreshTailAtEndShowsAppendedRows(tempRoot);
@@ -104,6 +113,23 @@ internal static class Program
             RunRefreshTailAwayFromEndDoesNotMove(tempRoot);
             RunRefreshTailAfterTruncateReloadsFromStart(tempRoot);
             RunRefreshTailAfterTruncateToEmptyClearsRows(tempRoot);
+            RunObservedZeroRepeatedKeepsConfirmedSize(tempRoot);
+            RunObservedZeroThenLargerComparesWithConfirmedSize(tempRoot);
+            RunObservedZeroThenSmallerNonZeroTruncates(tempRoot);
+            RunObservedZeroThenSameSizeReloadsVisualRows(tempRoot);
+            RunObservedZeroPreservesViewportRowsInternally(tempRoot);
+            RunObservedZeroRefreshTailPreservesViewportRowsInternally(tempRoot);
+            RunObservedZeroReloadPreservesViewportRowsInternally(tempRoot);
+            RunObservedZeroReloadFromEndFollowsRestoredTail(tempRoot);
+            RunObservedZeroNavigationPreservesViewportRowsInternally(tempRoot);
+            RunFilteredObservedZeroRepeatedKeepsConfirmedSize(tempRoot);
+            RunFilteredObservedZeroPreservesViewportRowsInternally(tempRoot);
+            RunFilteredObservedZeroPreservesConfirmedEndState(tempRoot);
+            RunFilteredObservedZeroReloadAwayFromEndPreservesPosition(tempRoot);
+            RunFilteredObservedZeroNavigationPreservesViewportRowsInternally(tempRoot);
+            RunFilteredObservedZeroThenSameSizeReloadsRows(tempRoot);
+            RunFilteredObservedZeroThenSmallerKeepsConfirmedForStaleDecision(tempRoot);
+            RunAppendAfterFilteredObservedZeroUsesConfirmedSize(tempRoot);
             RunRefreshFileSizeAfterTruncateLetsJumpEndSeeAppendedRows(tempRoot);
 
             Console.WriteLine("Back smoke tests passed.");
@@ -1448,6 +1474,398 @@ internal static class Program
             });
     }
 
+    private static void RunPausedStagedSearchPublishesCheckpointWithoutMatches(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "paused-search-no-matches.log", "plain-0\r\nplain-1\r\n");
+        using CancellationTokenSource cancellation = new();
+        cancellation.Cancel();
+        List<StagedSearchProgressUpdate> updates = new();
+
+        AssertThrows<OperationCanceledException>(
+            "paused staged search cancellation",
+            () => LogSearchBuilder.BuildStagedFilteredReadersIncremental(
+                path,
+                Encoding.UTF8,
+                dataOffset: 0,
+                new[] { new SearchOptions("alpha", UseRegex: false, IgnoreCase: false) },
+                new[] { 10 },
+                update => updates.Add(update),
+                cancellation.Token));
+
+        StagedSearchProgressUpdate paused = FindPausedUpdate(updates);
+        AssertEqual("paused no-match is paused", paused.IsPaused, true);
+        AssertEqual("paused no-match processed offset", paused.ProcessedOffset, 0L);
+        AssertEqual("paused no-match target size", paused.TargetFileSize, new FileInfo(path).Length);
+        AssertEqual("paused no-match reader exists", paused.Readers[0] is not null, true);
+        AssertEqual("paused no-match reader confirmed size", paused.Readers[0]!.ConfirmedFileSize, 0L);
+        DisposeNullableReaders(paused.Readers);
+    }
+
+    private static void RunPausedAppendStagedSearchPublishesCheckpointWhenAlreadyCancelled(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "paused-append-search-pre-cancel.log", "alpha-0\r\nplain-1\r\n");
+        SearchOptions[] options = { new("alpha", UseRegex: false, IgnoreCase: false) };
+        FilteredVisualRowReader[] initial = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, options);
+        try
+        {
+            File.AppendAllText(path, "alpha-2\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            long newFileSize = new FileInfo(path).Length;
+            using CancellationTokenSource cancellation = new();
+            cancellation.Cancel();
+            List<StagedSearchProgressUpdate> updates = new();
+
+            AssertThrows<OperationCanceledException>(
+                "paused append staged search pre-cancel",
+                () => LogSearchBuilder.BuildAppendedStagedFilteredReadersIncremental(
+                    initial,
+                    options,
+                    newFileSize,
+                    new[] { 10 },
+                    update => updates.Add(update),
+                    cancellation.Token));
+
+            StagedSearchProgressUpdate paused = FindPausedUpdate(updates);
+            AssertEqual("paused append pre-cancel is paused", paused.IsPaused, true);
+            AssertEqual("paused append pre-cancel target size", paused.TargetFileSize, newFileSize);
+            AssertEqual("paused append pre-cancel progress global lower bound", paused.ProgressPercentage > 0d, true);
+            AssertEqual("paused append pre-cancel progress global upper bound", paused.ProgressPercentage < 100d, true);
+            AssertEqual("paused append pre-cancel reader exists", paused.Readers[0] is not null, true);
+            AssertEqual("paused append pre-cancel reader confirmed size", paused.Readers[0]!.ConfirmedFileSize, paused.ProcessedOffset);
+            DisposeNullableReaders(paused.Readers);
+        }
+        finally
+        {
+            DisposeReaders(initial);
+        }
+    }
+
+    private static void RunPausedResumeStagedSearchPublishesCheckpointWhenAlreadyCancelled(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "paused-resume-search-pre-cancel.log", "alpha-0\r\nplain-1\r\n");
+        SearchOptions[] options = { new("alpha", UseRegex: false, IgnoreCase: false) };
+        FilteredVisualRowReader[] pausedReaders = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, options);
+        try
+        {
+            long processedOffset = new FileInfo(path).Length;
+            File.AppendAllText(path, "alpha-2\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            long newFileSize = new FileInfo(path).Length;
+            using CancellationTokenSource cancellation = new();
+            cancellation.Cancel();
+            List<StagedSearchProgressUpdate> updates = new();
+
+            AssertThrows<OperationCanceledException>(
+                "paused resume staged search pre-cancel",
+                () => LogSearchBuilder.ResumeStagedFilteredReadersIncremental(
+                    pausedReaders,
+                    options,
+                    processedOffset,
+                    newFileSize,
+                    new[] { 10 },
+                    update => updates.Add(update),
+                    cancellation.Token));
+
+            StagedSearchProgressUpdate paused = FindPausedUpdate(updates);
+            AssertEqual("paused resume pre-cancel is paused", paused.IsPaused, true);
+            AssertEqual("paused resume pre-cancel target size", paused.TargetFileSize, newFileSize);
+            AssertEqual("paused resume pre-cancel reader exists", paused.Readers[0] is not null, true);
+            AssertEqual("paused resume pre-cancel reader confirmed size", paused.Readers[0]!.ConfirmedFileSize, paused.ProcessedOffset);
+            DisposeNullableReaders(paused.Readers);
+        }
+        finally
+        {
+            DisposeReaders(pausedReaders);
+        }
+    }
+
+    private static void RunPausedStagedSearchPublishesCheckpointAfterCallbackCancellation(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "paused-search-callback-cancel.log", "alpha-0\r\nplain-1\r\n");
+        SearchOptions[] options = { new("alpha", UseRegex: false, IgnoreCase: false) };
+        using CancellationTokenSource cancellation = new();
+        List<StagedSearchProgressUpdate> updates = new();
+
+        AssertThrows<OperationCanceledException>(
+            "paused staged search callback cancellation",
+            () => LogSearchBuilder.BuildStagedFilteredReadersIncremental(
+                path,
+                Encoding.UTF8,
+                dataOffset: 0,
+                options,
+                new[] { 10 },
+                update =>
+                {
+                    if (!update.IsPaused && update.MatchedLineCounts.Length > 0 && update.MatchedLineCounts[0] > 0)
+                    {
+                        cancellation.Cancel();
+                    }
+
+                    if (!update.IsPaused && cancellation.IsCancellationRequested)
+                    {
+                        DisposeNullableReaders(update.Readers);
+                        cancellation.Token.ThrowIfCancellationRequested();
+                    }
+
+                    updates.Add(update);
+                },
+                cancellation.Token));
+
+        StagedSearchProgressUpdate paused = FindPausedUpdate(updates);
+        AssertEqual("paused callback cancel is paused", paused.IsPaused, true);
+        AssertEqual("paused callback cancel reader exists", paused.Readers[0] is not null, true);
+        AssertEqual("paused callback cancel processed positive", paused.ProcessedOffset > 0, true);
+        DisposeNullableReaders(paused.Readers);
+    }
+
+    private static void RunPausedStagedSearchResumesFromProcessedOffset(string tempRoot)
+    {
+        string original = "alpha-0\r\nplain-1\r\nalpha-2\r\nalpha-3\r\n";
+        string modifiedPrefix = "bravo-0\r\nplain-1\r\nalpha-2\r\nalpha-3\r\n";
+        string path = WriteLog(tempRoot, "paused-search-resume.log", original);
+        SearchOptions[] options = { new("alpha", UseRegex: false, IgnoreCase: false) };
+        using CancellationTokenSource cancellation = new();
+        List<StagedSearchProgressUpdate> updates = new();
+
+        AssertThrows<OperationCanceledException>(
+            "paused staged search resume cancellation",
+            () => LogSearchBuilder.BuildStagedFilteredReadersIncremental(
+                path,
+                Encoding.UTF8,
+                dataOffset: 0,
+                options,
+                new[] { 10 },
+                update =>
+                {
+                    updates.Add(update);
+                    if (!update.IsPaused && !update.IsFinal && update.MatchedLineCounts.Length > 0 && update.MatchedLineCounts[0] > 0)
+                    {
+                        cancellation.Cancel();
+                    }
+                },
+                cancellation.Token));
+
+        StagedSearchProgressUpdate paused = FindPausedUpdate(updates);
+        AssertEqual("paused resume has reader", paused.Readers[0] is not null, true);
+        AssertEqual("paused resume processed positive", paused.ProcessedOffset > 0, true);
+        AssertEqual("paused resume partial confirmed size", paused.Readers[0]!.ConfirmedFileSize, paused.ProcessedOffset);
+        File.WriteAllText(path, modifiedPrefix, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+        FilteredVisualRowReader? resumed = null;
+        try
+        {
+            LogSearchBuilder.ResumeStagedFilteredReadersIncremental(
+                new[] { paused.Readers[0]! },
+                options,
+                paused.ProcessedOffset,
+                new FileInfo(path).Length,
+                new[] { 10 },
+                update =>
+                {
+                    if (update.Readers.Length > 0 && update.Readers[0] is not null)
+                    {
+                        resumed?.Dispose();
+                        resumed = update.Readers[0];
+                        update.Readers[0] = null;
+                    }
+                },
+                CancellationToken.None);
+
+            if (resumed is null)
+            {
+                throw new InvalidOperationException("Resume did not publish a reader.");
+            }
+
+            resumed.ReadFromPercentage(0d, 10);
+            AssertEqual("paused resume keeps processed descriptor count", resumed.MatchedLineCount, 3L);
+            AssertSequence("paused resume rows", resumed.CurrentRows, "bravo-0", "alpha-2", "alpha-3");
+        }
+        finally
+        {
+            resumed?.Dispose();
+            DisposeNullableReaders(paused.Readers);
+        }
+    }
+
+    private static void RunPartialStagedSearchReaderResumesFromProcessedOffset(string tempRoot)
+    {
+        string original = "alpha-0\r\nplain-1\r\nalpha-2\r\n";
+        string path = WriteLog(tempRoot, "partial-search-resume.log", original);
+        long targetFileSize = new FileInfo(path).Length;
+        SearchOptions[] options = { new("alpha", UseRegex: false, IgnoreCase: false) };
+        FilteredVisualRowReader? partialReader = null;
+        long partialProcessedOffset = 0;
+        long partialTargetFileSize = 0;
+
+        LogSearchBuilder.BuildStagedFilteredReadersIncremental(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            options,
+            new[] { 10 },
+            update =>
+            {
+                if (partialReader is null &&
+                    !update.IsFinal &&
+                    !update.IsPaused &&
+                    update.Readers.Length > 0 &&
+                    update.Readers[0] is FilteredVisualRowReader reader)
+                {
+                    partialReader = reader;
+                    partialProcessedOffset = update.ProcessedOffset;
+                    partialTargetFileSize = update.TargetFileSize;
+                    update.Readers[0] = null;
+                }
+
+                DisposeNullableReaders(update.Readers);
+            },
+            CancellationToken.None);
+
+        if (partialReader is null)
+        {
+            throw new InvalidOperationException("Partial search did not publish a resumable reader.");
+        }
+
+        FilteredVisualRowReader? resumed = null;
+        try
+        {
+            AssertEqual("partial resume target file size", partialTargetFileSize, targetFileSize);
+            AssertEqual("partial resume reader confirmed processed", partialReader.ConfirmedFileSize, partialProcessedOffset);
+            AssertEqual("partial resume processed before target", partialProcessedOffset < partialTargetFileSize, true);
+
+            LogSearchBuilder.ResumeStagedFilteredReadersIncremental(
+                new[] { partialReader },
+                options,
+                partialProcessedOffset,
+                targetFileSize,
+                new[] { 10 },
+                update =>
+                {
+                    if (update.Readers.Length > 0 && update.Readers[0] is not null)
+                    {
+                        resumed?.Dispose();
+                        resumed = update.Readers[0];
+                        update.Readers[0] = null;
+                    }
+
+                    DisposeNullableReaders(update.Readers);
+                },
+                CancellationToken.None);
+
+            if (resumed is null)
+            {
+                throw new InvalidOperationException("Resume from partial search did not publish a reader.");
+            }
+
+            resumed.ReadFromPercentage(0d, 10);
+            AssertEqual("partial resume count", resumed.MatchedLineCount, 2L);
+            AssertSequence("partial resume rows", resumed.CurrentRows, "alpha-0", "alpha-2");
+        }
+        finally
+        {
+            resumed?.Dispose();
+            partialReader.Dispose();
+        }
+    }
+
+    private static void RunResumeStagedSearchReprocessesIncompleteLastLine(string tempRoot)
+    {
+        string original = "alpha-0\r\nalpha-last";
+        string replacement = "alpha-0\r\nbravo-last-tail\r\nalpha-new\r\n";
+        string path = WriteLog(tempRoot, "resume-incomplete-last-line.log", original);
+        SearchOptions[] options = { new("alpha", UseRegex: false, IgnoreCase: false) };
+        FilteredVisualRowReader[] paused = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, options);
+        try
+        {
+            long processedOffset = new FileInfo(path).Length;
+            File.WriteAllText(path, replacement, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            FilteredVisualRowReader[] resumed = ResumeStagedReaders(paused, options, processedOffset, new FileInfo(path).Length);
+            try
+            {
+                resumed[0].ReadFromPercentage(0d, 10);
+                AssertEqual("resume incomplete count", resumed[0].MatchedLineCount, 2L);
+                AssertSequence("resume incomplete rows", resumed[0].CurrentRows, "alpha-0", "alpha-new");
+                IColumnViewportReader columns = resumed[0];
+                AssertSequence("resume incomplete first cells", columns.CurrentCells[0], "1", "alpha-0");
+                AssertSequence("resume incomplete second cells", columns.CurrentCells[1], "3", "alpha-new");
+            }
+            finally
+            {
+                DisposeReaders(resumed);
+            }
+        }
+        finally
+        {
+            DisposeReaders(paused);
+        }
+    }
+
+    private static void RunResumeStagedSearchContinuesAfterLineBreak(string tempRoot)
+    {
+        string original = "alpha-0\r\nalpha-1\r\n";
+        string path = WriteLog(tempRoot, "resume-after-line-break.log", original);
+        SearchOptions[] options = { new("alpha", UseRegex: false, IgnoreCase: false) };
+        FilteredVisualRowReader[] paused = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, options);
+        try
+        {
+            long processedOffset = new FileInfo(path).Length;
+            File.AppendAllText(path, "alpha-2\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            FilteredVisualRowReader[] resumed = ResumeStagedReaders(paused, options, processedOffset, new FileInfo(path).Length);
+            try
+            {
+                resumed[0].ReadFromPercentage(0d, 10);
+                AssertEqual("resume line-break count", resumed[0].MatchedLineCount, 3L);
+                AssertSequence("resume line-break rows", resumed[0].CurrentRows, "alpha-0", "alpha-1", "alpha-2");
+                IColumnViewportReader columns = resumed[0];
+                AssertSequence("resume line-break first cells", columns.CurrentCells[0], "1", "alpha-0");
+                AssertSequence("resume line-break second cells", columns.CurrentCells[1], "2", "alpha-1");
+                AssertSequence("resume line-break third cells", columns.CurrentCells[2], "3", "alpha-2");
+            }
+            finally
+            {
+                DisposeReaders(resumed);
+            }
+        }
+        finally
+        {
+            DisposeReaders(paused);
+        }
+    }
+
+    private static void RunResumeStagedSearchPreservesCascadeReaders(string tempRoot)
+    {
+        string original = "alpha beta\r\nalpha beta-last";
+        string replacement = "alpha beta\r\nalpha plain-tail\r\nalpha beta-new\r\n";
+        string path = WriteLog(tempRoot, "resume-cascade-incomplete.log", original);
+        SearchOptions[] options =
+        {
+            new("alpha", UseRegex: false, IgnoreCase: false),
+            new("beta", UseRegex: false, IgnoreCase: false)
+        };
+        FilteredVisualRowReader[] paused = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, options);
+        try
+        {
+            long processedOffset = new FileInfo(path).Length;
+            File.WriteAllText(path, replacement, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            FilteredVisualRowReader[] resumed = ResumeStagedReaders(paused, options, processedOffset, new FileInfo(path).Length);
+            try
+            {
+                resumed[0].ReadFromPercentage(0d, 10);
+                resumed[1].ReadFromPercentage(0d, 10);
+                AssertEqual("resume cascade first count", resumed[0].MatchedLineCount, 3L);
+                AssertSequence("resume cascade first rows", resumed[0].CurrentRows, "alpha beta", "alpha plain-tail", "alpha beta-new");
+                AssertEqual("resume cascade second count", resumed[1].MatchedLineCount, 2L);
+                AssertSequence("resume cascade second rows", resumed[1].CurrentRows, "alpha beta", "alpha beta-new");
+            }
+            finally
+            {
+                DisposeReaders(resumed);
+            }
+        }
+        finally
+        {
+            DisposeReaders(paused);
+        }
+    }
+
     private static FilteredVisualRowReader BuildAppendedReader(FilteredVisualRowReader initial, SearchOptions options)
     {
         return BuildAppendedReader(initial, new[] { options });
@@ -1505,6 +1923,38 @@ internal static class Program
         for (int i = 0; i < latest.Length; i++)
         {
             readers[i] = latest[i] ?? throw new InvalidOperationException("Append staged search did not publish every reader.");
+        }
+
+        return readers;
+    }
+
+    private static FilteredVisualRowReader[] ResumeStagedReaders(IReadOnlyList<FilteredVisualRowReader> paused, IReadOnlyList<SearchOptions> options, long processedOffset, long newFileSize)
+    {
+        FilteredVisualRowReader?[] latest = new FilteredVisualRowReader?[paused.Count];
+        LogSearchBuilder.ResumeStagedFilteredReadersIncremental(
+            paused,
+            options,
+            processedOffset,
+            newFileSize,
+            CreateFilledArray(paused.Count, 10),
+            update =>
+            {
+                for (int i = 0; i < update.Readers.Length; i++)
+                {
+                    if (update.Readers[i] is not null)
+                    {
+                        latest[i]?.Dispose();
+                        latest[i] = update.Readers[i];
+                        update.Readers[i] = null;
+                    }
+                }
+            },
+            CancellationToken.None);
+
+        FilteredVisualRowReader[] readers = new FilteredVisualRowReader[latest.Length];
+        for (int i = 0; i < latest.Length; i++)
+        {
+            readers[i] = latest[i] ?? throw new InvalidOperationException("Resume staged search did not publish every reader.");
         }
 
         return readers;
@@ -1683,12 +2133,394 @@ internal static class Program
 
         using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
         reader.ReadFromPercentage(100d, 2);
+        long confirmedSize = reader.FileSize;
         File.WriteAllText(path, string.Empty, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         _ = reader.IsAtKnownEnd;
         reader.RefreshTail(2);
 
         AssertEqual("tail truncate empty count", reader.CurrentRows.Count, 0);
         AssertEqual("tail truncate empty size", reader.FileSize, 0L);
+        File.WriteAllText(path, "line-0\r\nline-1\r\nline-2\r\nline-3\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        AssertEqual("tail truncate empty compares with confirmed size", reader.RefreshFileSize(out long previousSize, out long currentSize), true);
+        AssertEqual("tail truncate empty previous confirmed size", previousSize, confirmedSize);
+        AssertEqual("tail truncate empty current size", currentSize, new FileInfo(path).Length);
+    }
+
+    private static void RunObservedZeroRepeatedKeepsConfirmedSize(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "observed-zero-repeated.log", "line-0\r\nline-1\r\nline-2\r\n");
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        long confirmedSize = reader.FileSize;
+        reader.ReadFromPercentage(100d, 2);
+        File.WriteAllText(path, string.Empty, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+        AssertEqual("observed zero first refresh changed", reader.RefreshFileSize(out long firstPrevious, out long firstCurrent), true);
+        AssertEqual("observed zero first previous confirmed", firstPrevious, confirmedSize);
+        AssertEqual("observed zero first current", firstCurrent, 0L);
+        AssertEqual("observed zero file size", reader.FileSize, 0L);
+        AssertEqual("observed zero has content", reader.HasContent, false);
+        AssertEqual("observed zero rows", reader.CurrentRows.Count, 0);
+        AssertEqual("observed zero repeated refresh unchanged", reader.RefreshFileSize(out long secondPrevious, out long secondCurrent), false);
+        AssertEqual("observed zero repeated previous confirmed", secondPrevious, confirmedSize);
+        AssertEqual("observed zero repeated current", secondCurrent, 0L);
+        AssertEqual("observed zero repeated file size", reader.FileSize, 0L);
+    }
+
+    private static void RunObservedZeroThenLargerComparesWithConfirmedSize(string tempRoot)
+    {
+        string initial = "line-0\r\nline-1\r\n";
+        string path = WriteLog(tempRoot, "observed-zero-larger.log", initial);
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        long confirmedSize = reader.FileSize;
+        File.WriteAllText(path, string.Empty, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        reader.RefreshFileSize();
+        File.WriteAllText(path, initial + "line-2\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+        AssertEqual("observed zero larger refresh changed", reader.RefreshFileSize(out long previousSize, out long currentSize), true);
+        AssertEqual("observed zero larger previous confirmed", previousSize, confirmedSize);
+        AssertEqual("observed zero larger current size", currentSize, new FileInfo(path).Length);
+        AssertEqual("observed zero larger visible size", reader.FileSize, currentSize);
+    }
+
+    private static void RunObservedZeroThenSmallerNonZeroTruncates(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "observed-zero-smaller.log", "line-0\r\nline-1\r\nline-2\r\nline-3\r\n");
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        long confirmedSize = reader.FileSize;
+        File.WriteAllText(path, string.Empty, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        reader.RefreshFileSize();
+        File.WriteAllText(path, "short\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+        AssertEqual("observed zero smaller refresh changed", reader.RefreshFileSize(out long previousSize, out long currentSize), true);
+        AssertEqual("observed zero smaller previous confirmed", previousSize, confirmedSize);
+        AssertEqual("observed zero smaller current size", currentSize, new FileInfo(path).Length);
+        AssertEqual("observed zero smaller is truncate", currentSize < previousSize, true);
+    }
+
+    private static void RunObservedZeroThenSameSizeReloadsVisualRows(string tempRoot)
+    {
+        string initial = "line-0\r\nline-1\r\n";
+        string replacement = "neww-0\r\nneww-1\r\n";
+        string path = WriteLog(tempRoot, "observed-zero-same-size.log", initial);
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        long confirmedSize = reader.FileSize;
+        AssertEqual("observed zero same size setup", replacement.Length, initial.Length);
+        File.WriteAllText(path, string.Empty, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        reader.RefreshFileSize();
+        File.WriteAllText(path, replacement, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+        AssertEqual("observed zero same size refresh changed", reader.RefreshFileSize(out long previousSize, out long currentSize), true);
+        AssertEqual("observed zero same size previous confirmed", previousSize, confirmedSize);
+        AssertEqual("observed zero same size current size", currentSize, confirmedSize);
+        reader.ReadFromPercentage(0d, 2);
+        AssertSequence("observed zero same size rows", reader.CurrentRows, "neww-0", "neww-1");
+    }
+
+    private static void RunObservedZeroPreservesViewportRowsInternally(string tempRoot)
+    {
+        string initial = "line-0\r\nline-1\r\n";
+        string path = WriteLog(tempRoot, "observed-zero-preserve-viewport.log", initial);
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        reader.ReadFromPercentage(0d, 2);
+        AssertSequence("observed zero preserve setup rows", reader.CurrentRows, "line-0", "line-1");
+        File.WriteAllText(path, string.Empty, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        reader.RefreshFileSize();
+        AssertEqual("observed zero preserve hidden rows", reader.CurrentRows.Count, 0);
+        File.WriteAllText(path, initial, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        reader.RefreshFileSize();
+
+        AssertSequence("observed zero preserve restored rows", reader.CurrentRows, "line-0", "line-1");
+    }
+
+    private static void RunObservedZeroRefreshTailPreservesViewportRowsInternally(string tempRoot)
+    {
+        string initial = "line-0\r\nline-1\r\n";
+        string path = WriteLog(tempRoot, "observed-zero-refresh-tail-preserve-viewport.log", initial);
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        reader.ReadFromPercentage(0d, 2);
+        AssertSequence("observed zero refresh tail setup rows", reader.CurrentRows, "line-0", "line-1");
+        File.WriteAllText(path, string.Empty, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        reader.RefreshTail(2);
+        AssertEqual("observed zero refresh tail hidden rows", reader.CurrentRows.Count, 0);
+        File.WriteAllText(path, initial, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        reader.RefreshFileSize();
+
+        AssertSequence("observed zero refresh tail restored rows", reader.CurrentRows, "line-0", "line-1");
+    }
+
+    private static void RunObservedZeroReloadPreservesViewportRowsInternally(string tempRoot)
+    {
+        string initial = "line-0\r\nline-1\r\n";
+        string path = WriteLog(tempRoot, "observed-zero-reload-preserve-viewport.log", initial);
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        reader.ReadFromPercentage(0d, 2);
+        AssertSequence("observed zero reload setup rows", reader.CurrentRows, "line-0", "line-1");
+        File.WriteAllText(path, string.Empty, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        reader.ReloadAfterFileChange(2);
+        AssertEqual("observed zero reload hidden rows", reader.CurrentRows.Count, 0);
+        File.WriteAllText(path, initial, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        reader.RefreshFileSize();
+
+        AssertSequence("observed zero reload restored rows", reader.CurrentRows, "line-0", "line-1");
+    }
+
+    private static void RunObservedZeroReloadFromEndFollowsRestoredTail(string tempRoot)
+    {
+        string initial = "line-0\r\nline-1\r\nline-2\r\n";
+        string path = WriteLog(tempRoot, "observed-zero-reload-end-tail.log", initial);
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        reader.ReadFromPercentage(100d, 2);
+        AssertSequence("observed zero reload end setup rows", reader.CurrentRows, "line-1", "line-2");
+        File.WriteAllText(path, string.Empty, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        reader.ReloadAfterFileChange(2);
+        AssertEqual("observed zero reload end hidden rows", reader.CurrentRows.Count, 0);
+        File.WriteAllText(path, initial + "line-3\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        reader.ReloadAfterFileChange(2);
+
+        AssertSequence("observed zero reload end restored tail rows", reader.CurrentRows, "line-2", "line-3");
+    }
+
+    private static void RunObservedZeroNavigationPreservesViewportRowsInternally(string tempRoot)
+    {
+        AssertVisualObservedZeroNavigationPreservesRows(
+            tempRoot,
+            "read-percentage",
+            reader => reader.ReadFromPercentage(100d, 2));
+        AssertVisualObservedZeroNavigationPreservesRows(
+            tempRoot,
+            "read-offset",
+            reader => reader.ReadFromOffset(0, 2));
+        AssertVisualObservedZeroNavigationPreservesRows(
+            tempRoot,
+            "read-next",
+            reader => reader.ReadNext(1));
+        AssertVisualObservedZeroNavigationPreservesRows(
+            tempRoot,
+            "read-previous",
+            reader => reader.ReadPrevious(1));
+    }
+
+    private static void AssertVisualObservedZeroNavigationPreservesRows(
+        string tempRoot,
+        string name,
+        Action<VisualRowReader> action)
+    {
+        string initial = "line-0\r\nline-1\r\n";
+        string path = WriteLog(tempRoot, "observed-zero-navigation-" + name + ".log", initial);
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        reader.ReadFromPercentage(0d, 2);
+        File.WriteAllText(path, string.Empty, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        reader.RefreshFileSize();
+
+        action(reader);
+        AssertEqual("observed zero navigation " + name + " hidden rows", reader.CurrentRows.Count, 0);
+        File.WriteAllText(path, initial, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        reader.RefreshFileSize();
+
+        AssertSequence("observed zero navigation " + name + " restored rows", reader.CurrentRows, "line-0", "line-1");
+    }
+
+    private static void RunFilteredObservedZeroRepeatedKeepsConfirmedSize(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "filtered-observed-zero-repeated.log", "line-0\r\nline-1\r\nline-2\r\n");
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("line", UseRegex: false, IgnoreCase: false));
+        long confirmedSize = reader.ConfirmedFileSize;
+        reader.ReadFromPercentage(100d, 10);
+        File.WriteAllText(path, string.Empty, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+        reader.ReloadAfterFileChange(10);
+        AssertEqual("filtered observed zero file size", reader.FileSize, 0L);
+        AssertEqual("filtered observed zero confirmed size", reader.ConfirmedFileSize, confirmedSize);
+        AssertEqual("filtered observed zero has content", reader.HasContent, false);
+        AssertEqual("filtered observed zero rows", reader.CurrentRows.Count, 0);
+        AssertEqual("filtered observed zero cells", reader.CurrentCells.Count, 0);
+        reader.ReloadAfterFileChange(10);
+        AssertEqual("filtered observed zero repeated file size", reader.FileSize, 0L);
+        AssertEqual("filtered observed zero repeated confirmed size", reader.ConfirmedFileSize, confirmedSize);
+    }
+
+    private static void RunFilteredObservedZeroPreservesViewportRowsInternally(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "filtered-observed-zero-preserve-viewport.log", "line-0\r\nline-1\r\n");
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("line", UseRegex: false, IgnoreCase: false));
+        reader.ReadFromPercentage(0d, 10);
+        AssertSequence("filtered observed zero preserve setup rows", reader.CurrentRows, "line-0", "line-1");
+        AssertEqual("filtered observed zero preserve setup cells", reader.CurrentCells.Count, 2);
+
+        reader.MarkObservedZeroFileSize();
+        AssertEqual("filtered observed zero preserve hidden rows", reader.CurrentRows.Count, 0);
+        AssertEqual("filtered observed zero preserve hidden cells", reader.CurrentCells.Count, 0);
+        reader.ClearObservedZeroFileSize();
+
+        AssertSequence("filtered observed zero preserve restored rows", reader.CurrentRows, "line-0", "line-1");
+        AssertEqual("filtered observed zero preserve restored cells", reader.CurrentCells.Count, 2);
+    }
+
+    private static void RunFilteredObservedZeroPreservesConfirmedEndState(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "filtered-observed-zero-confirmed-end.log", "line-0\r\nline-1\r\nline-2\r\nline-3\r\n");
+        using FilteredVisualRowReader endReader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("line", UseRegex: false, IgnoreCase: false));
+        endReader.ReadFromPercentage(100d, 2);
+        AssertEqual("filtered observed zero end setup confirmed end", endReader.IsAtConfirmedEnd, true);
+        endReader.MarkObservedZeroFileSize();
+        AssertEqual("filtered observed zero end visual end", endReader.IsAtEnd, true);
+        AssertEqual("filtered observed zero end confirmed end", endReader.IsAtConfirmedEnd, true);
+
+        using FilteredVisualRowReader topReader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("line", UseRegex: false, IgnoreCase: false));
+        topReader.ReadFromPercentage(0d, 2);
+        AssertEqual("filtered observed zero top setup confirmed end", topReader.IsAtConfirmedEnd, false);
+        topReader.MarkObservedZeroFileSize();
+        AssertEqual("filtered observed zero top visual end", topReader.IsAtEnd, true);
+        AssertEqual("filtered observed zero top confirmed end", topReader.IsAtConfirmedEnd, false);
+    }
+
+    private static void RunFilteredObservedZeroReloadAwayFromEndPreservesPosition(string tempRoot)
+    {
+        string initial = "line-0\r\nline-1\r\nline-2\r\nline-3\r\n";
+        string path = WriteLog(tempRoot, "filtered-observed-zero-reload-away.log", initial);
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("line", UseRegex: false, IgnoreCase: false));
+        reader.ReadFromPercentage(0d, 2);
+        AssertSequence("filtered observed zero reload away setup rows", reader.CurrentRows, "line-0", "line-1");
+        AssertEqual("filtered observed zero reload away setup confirmed end", reader.IsAtConfirmedEnd, false);
+        File.WriteAllText(path, string.Empty, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        reader.ReloadAfterFileChange(2);
+        AssertEqual("filtered observed zero reload away hidden rows", reader.CurrentRows.Count, 0);
+        File.WriteAllText(path, initial + "line-4\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        reader.ReloadAfterFileChange(2);
+
+        AssertSequence("filtered observed zero reload away restored rows", reader.CurrentRows, "line-0", "line-1");
+    }
+
+    private static void RunFilteredObservedZeroNavigationPreservesViewportRowsInternally(string tempRoot)
+    {
+        AssertFilteredObservedZeroNavigationPreservesRows(
+            tempRoot,
+            "read-percentage",
+            reader => reader.ReadFromPercentage(100d, 10));
+        AssertFilteredObservedZeroNavigationPreservesRows(
+            tempRoot,
+            "read-row-ordinal",
+            reader => reader.ReadFromRowOrdinal(1, 10));
+        AssertFilteredObservedZeroNavigationPreservesRows(
+            tempRoot,
+            "read-next",
+            reader => reader.ReadNext(1));
+        AssertFilteredObservedZeroNavigationPreservesRows(
+            tempRoot,
+            "read-previous",
+            reader => reader.ReadPrevious(1));
+    }
+
+    private static void AssertFilteredObservedZeroNavigationPreservesRows(
+        string tempRoot,
+        string name,
+        Action<FilteredVisualRowReader> action)
+    {
+        string path = WriteLog(tempRoot, "filtered-observed-zero-navigation-" + name + ".log", "line-0\r\nline-1\r\n");
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("line", UseRegex: false, IgnoreCase: false));
+        reader.ReadFromPercentage(0d, 10);
+        File.WriteAllText(path, string.Empty, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        reader.ReloadAfterFileChange(10);
+
+        action(reader);
+        AssertEqual("filtered observed zero navigation " + name + " hidden rows", reader.CurrentRows.Count, 0);
+        AssertEqual("filtered observed zero navigation " + name + " hidden cells", reader.CurrentCells.Count, 0);
+        reader.ClearObservedZeroFileSize();
+
+        AssertSequence("filtered observed zero navigation " + name + " restored rows", reader.CurrentRows, "line-0", "line-1");
+        AssertEqual("filtered observed zero navigation " + name + " restored cells", reader.CurrentCells.Count, 2);
+    }
+
+    private static void RunFilteredObservedZeroThenSameSizeReloadsRows(string tempRoot)
+    {
+        string initial = "line-0\r\nline-1\r\n";
+        string replacement = "neww-0\r\nneww-1\r\n";
+        string path = WriteLog(tempRoot, "filtered-observed-zero-same-size.log", initial);
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("line", UseRegex: false, IgnoreCase: false));
+        long confirmedSize = reader.ConfirmedFileSize;
+        AssertEqual("filtered observed zero same size setup", replacement.Length, initial.Length);
+        File.WriteAllText(path, string.Empty, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        reader.ReloadAfterFileChange(10);
+        File.WriteAllText(path, replacement, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+        reader.ReloadAfterFileChange(10);
+        AssertEqual("filtered observed zero same size visible size", reader.FileSize, confirmedSize);
+        AssertEqual("filtered observed zero same size confirmed size", reader.ConfirmedFileSize, confirmedSize);
+        AssertSequence("filtered observed zero same size rows", reader.CurrentRows, "neww-0", "neww-1");
+    }
+
+    private static void RunFilteredObservedZeroThenSmallerKeepsConfirmedForStaleDecision(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "filtered-observed-zero-smaller.log", "line-0\r\nline-1\r\nline-2\r\n");
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("line", UseRegex: false, IgnoreCase: false));
+        long confirmedSize = reader.ConfirmedFileSize;
+        File.WriteAllText(path, string.Empty, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        reader.ReloadAfterFileChange(10);
+        File.WriteAllText(path, "short\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+        long currentSize = new FileInfo(path).Length;
+        AssertEqual("filtered observed zero smaller visible size", reader.FileSize, 0L);
+        AssertEqual("filtered observed zero smaller confirmed size", reader.ConfirmedFileSize, confirmedSize);
+        AssertEqual("filtered observed zero smaller is stale candidate", currentSize < reader.ConfirmedFileSize, true);
+    }
+
+    private static void RunAppendAfterFilteredObservedZeroUsesConfirmedSize(string tempRoot)
+    {
+        string initial = "alpha-0\r\nalpha-1\r\n";
+        string path = WriteLog(tempRoot, "filtered-observed-zero-append.log", initial);
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
+        File.WriteAllText(path, string.Empty, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        reader.ReloadAfterFileChange(10);
+        File.WriteAllText(path, initial + "alpha-2\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+        using FilteredVisualRowReader appended = BuildAppendedReader(reader, new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
+        AssertEqual("filtered observed zero append match count", appended.MatchedLineCount, 3L);
+        AssertSequence("filtered observed zero append rows", appended.CurrentRows, "alpha-0", "alpha-1", "alpha-2");
     }
 
     private static void RunRefreshFileSizeAfterTruncateLetsJumpEndSeeAppendedRows(string tempRoot)
@@ -1719,6 +2551,27 @@ internal static class Program
         {
             reader.Dispose();
         }
+    }
+
+    private static void DisposeNullableReaders(IReadOnlyList<FilteredVisualRowReader?> readers)
+    {
+        foreach (FilteredVisualRowReader? reader in readers)
+        {
+            reader?.Dispose();
+        }
+    }
+
+    private static StagedSearchProgressUpdate FindPausedUpdate(IReadOnlyList<StagedSearchProgressUpdate> updates)
+    {
+        foreach (StagedSearchProgressUpdate update in updates)
+        {
+            if (update.IsPaused)
+            {
+                return update;
+            }
+        }
+
+        throw new InvalidOperationException("Paused update was not published.");
     }
 
     private static DisplayParserRule ParserRule(params DisplayParserStage[] stages)

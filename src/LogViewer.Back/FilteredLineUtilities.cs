@@ -15,7 +15,7 @@ public sealed class FilteredLineStaleException : IOException
     }
 }
 
-internal readonly record struct RealLineData(long StartOffset, long EndOffset, string Text, long LineNumber = 0);
+internal readonly record struct RealLineData(long StartOffset, long EndOffset, string Text, long LineNumber = 0, long NextOffset = -1);
 
 internal static class FilteredLineUtilities
 {

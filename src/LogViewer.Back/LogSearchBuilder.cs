@@ -8,7 +8,16 @@ using System.Threading;
 
 public readonly record struct SearchProgressUpdate(double ProgressPercentage, long MatchedLineCount, long ElapsedMilliseconds, FilteredVisualRowReader? Reader, bool IsFinal);
 
-public readonly record struct StagedSearchProgressUpdate(double ProgressPercentage, long[] MatchedLineCounts, long ElapsedMilliseconds, FilteredVisualRowReader?[] Readers, bool IsFinal);
+public readonly record struct StagedSearchProgressUpdate(
+    double ProgressPercentage,
+    long[] MatchedLineCounts,
+    long ElapsedMilliseconds,
+    FilteredVisualRowReader?[] Readers,
+    bool IsFinal,
+    bool IsPaused,
+    long ProcessedOffset,
+    long TargetFileSize,
+    long TotalLineCount);
 
 public readonly record struct SearchOptions(string Query, bool UseRegex, bool IgnoreCase, bool InvertMatch = false);
 
@@ -99,7 +108,6 @@ public static class LogSearchBuilder
         long fileSize = new FileInfo(fullPath).Length;
         LogEncodingKind kind = VisualRowReader.InferKind(encoding, dataOffset);
         List<FilteredLineDescriptor> descriptors = new();
-        long searchableBytes = Math.Max(1, fileSize - dataOffset);
         long lastPublishedTick = Environment.TickCount64;
         int lastPublishedDescriptorCount = -1;
         bool partialPublished = false;
@@ -132,7 +140,7 @@ public static class LogSearchBuilder
         void PublishSnapshot(bool isFinal)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            double progress = Math.Clamp(((scannedOffset - dataOffset) * 100d) / searchableBytes, 0d, 100d);
+            double progress = CalculateProgressPercentage(dataOffset, scannedOffset, fileSize);
             if (isFinal)
             {
                 progress = 100d;
@@ -164,12 +172,10 @@ public static class LogSearchBuilder
         CancellationToken cancellationToken,
         DisplayParserRule? displayParserRule = null)
     {
-        cancellationToken.ThrowIfCancellationRequested();
         string fullPath = Path.GetFullPath(filePath);
         long fileSize = new FileInfo(fullPath).Length;
         LogEncodingKind kind = VisualRowReader.InferKind(encoding, dataOffset);
         List<FilteredLineDescriptor>[] descriptors = CreateDescriptorLists(options.Count);
-        long searchableBytes = Math.Max(1, fileSize - dataOffset);
         long lastPublishedTick = Environment.TickCount64;
         int[] lastPublishedDescriptorCounts = CreateFilledArray(options.Count, -1);
         bool partialPublished = false;
@@ -179,30 +185,44 @@ public static class LogSearchBuilder
 
         long scannedOffset = dataOffset;
         long totalLineCount = 0;
-        foreach (RealLineData line in SearchRealLineScanner.Enumerate(fullPath, encoding, kind, dataOffset, fileSize, cancellationToken))
+        try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            scannedOffset = line.EndOffset;
-            totalLineCount = line.LineNumber;
-            AddDescriptorsByStage(descriptors, line, matcher, parserRule);
-
-            long now = Environment.TickCount64;
-            bool firstPartialWithMatches = !partialPublished && HasAnyDescriptors(descriptors);
-            bool intervalElapsed = now - lastPublishedTick >= ProgressPublishIntervalMs;
-            if (firstPartialWithMatches || intervalElapsed)
+            foreach (RealLineData line in SearchRealLineScanner.Enumerate(fullPath, encoding, kind, dataOffset, fileSize, cancellationToken))
             {
-                PublishSnapshot(isFinal: false);
+                cancellationToken.ThrowIfCancellationRequested();
+                scannedOffset = GetProcessedOffset(line);
+                totalLineCount = line.LineNumber;
+                AddDescriptorsByStage(descriptors, line, matcher, parserRule);
+
+                long now = Environment.TickCount64;
+                bool firstPartialWithMatches = !partialPublished && HasAnyDescriptors(descriptors);
+                bool intervalElapsed = now - lastPublishedTick >= ProgressPublishIntervalMs;
+                if (firstPartialWithMatches || intervalElapsed)
+                {
+                    PublishSnapshot(isFinal: false, isPaused: false);
+                }
             }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            PublishSnapshot(isFinal: true, isPaused: false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            PublishSnapshot(isFinal: false, isPaused: true);
+            throw;
         }
 
-        cancellationToken.ThrowIfCancellationRequested();
-        PublishSnapshot(isFinal: true);
         return;
 
-        void PublishSnapshot(bool isFinal)
+        void PublishSnapshot(bool isFinal, bool isPaused)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            double progress = Math.Clamp(((scannedOffset - dataOffset) * 100d) / searchableBytes, 0d, 100d);
+            if (!isPaused)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            double progress = CalculateProgressPercentage(dataOffset, scannedOffset, fileSize);
             if (isFinal)
             {
                 progress = 100d;
@@ -210,20 +230,43 @@ public static class LogSearchBuilder
 
             FilteredVisualRowReader?[] readers = new FilteredVisualRowReader?[descriptors.Length];
             bool publishedReader = false;
+            long readerFileSize = isFinal ? fileSize : scannedOffset;
             for (int i = 0; i < descriptors.Length; i++)
             {
-                bool shouldBuildReader = isFinal || descriptors[i].Count != lastPublishedDescriptorCounts[i];
+                bool shouldBuildReader = isFinal || isPaused || descriptors[i].Count != lastPublishedDescriptorCounts[i];
                 if (shouldBuildReader && (descriptors[i].Count > 0 || isFinal))
                 {
-                    readers[i] = new FilteredVisualRowReader(fullPath, kind, encoding, dataOffset, fileSize, descriptors[i], totalLineCount, parserRule);
-                    readers[i]!.ReadFromPercentage(0d, GetPreloadedVisibleLines(preloadedVisibleLines, i));
+                    readers[i] = new FilteredVisualRowReader(fullPath, kind, encoding, dataOffset, readerFileSize, descriptors[i], totalLineCount, parserRule);
+                    if (!isPaused)
+                    {
+                        readers[i]!.ReadFromPercentage(0d, GetPreloadedVisibleLines(preloadedVisibleLines, i));
+                    }
+
                     lastPublishedDescriptorCounts[i] = descriptors[i].Count;
+                    publishedReader = true;
+                }
+                else if (isPaused)
+                {
+                    readers[i] = new FilteredVisualRowReader(fullPath, kind, encoding, dataOffset, readerFileSize, descriptors[i], totalLineCount, parserRule);
                     publishedReader = true;
                 }
             }
 
-            onProgress(new StagedSearchProgressUpdate(progress, CopyDescriptorCounts(descriptors), stopwatch.ElapsedMilliseconds, readers, isFinal));
-            cancellationToken.ThrowIfCancellationRequested();
+            onProgress(new StagedSearchProgressUpdate(
+                progress,
+                CopyDescriptorCounts(descriptors),
+                stopwatch.ElapsedMilliseconds,
+                readers,
+                isFinal,
+                isPaused,
+                scannedOffset,
+                fileSize,
+                totalLineCount));
+            if (!isPaused)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
             lastPublishedTick = Environment.TickCount64;
             partialPublished = partialPublished || publishedReader;
         }
@@ -250,7 +293,7 @@ public static class LogSearchBuilder
     {
         cancellationToken.ThrowIfCancellationRequested();
         string fullPath = previousReader.FilePath;
-        long oldFileSize = previousReader.FileSize;
+        long oldFileSize = previousReader.ConfirmedFileSize;
         DisplayParserRule? parserRule = DisplayParserEvaluator.CloneRule(displayParserRule);
         if (newFileSize <= oldFileSize)
         {
@@ -277,7 +320,6 @@ public static class LogSearchBuilder
             ? previousReader.TotalLineCount + 1
             : Math.Max(1, previousReader.TotalLineCount);
         long totalLineCount = previousReader.TotalLineCount;
-        long searchableBytes = Math.Max(1, newFileSize - rescanStartOffset);
         long scannedOffset = rescanStartOffset;
         long lastPublishedTick = Environment.TickCount64;
         int lastPublishedDescriptorCount = descriptors.Count;
@@ -305,7 +347,7 @@ public static class LogSearchBuilder
         void PublishSnapshot(bool isFinal)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            double progress = Math.Clamp(((scannedOffset - rescanStartOffset) * 100d) / searchableBytes, 0d, 100d);
+            double progress = CalculateProgressPercentage(dataOffset, scannedOffset, newFileSize);
             if (isFinal)
             {
                 progress = 100d;
@@ -335,7 +377,6 @@ public static class LogSearchBuilder
         CancellationToken cancellationToken,
         DisplayParserRule? displayParserRule = null)
     {
-        cancellationToken.ThrowIfCancellationRequested();
         if (previousReaders.Count != options.Count)
         {
             throw new ArgumentException("Previous reader count must match search option count.", nameof(previousReaders));
@@ -343,13 +384,22 @@ public static class LogSearchBuilder
 
         if (previousReaders.Count == 0)
         {
-            onProgress(new StagedSearchProgressUpdate(100d, Array.Empty<long>(), 0, Array.Empty<FilteredVisualRowReader?>(), IsFinal: true));
+            onProgress(new StagedSearchProgressUpdate(
+                100d,
+                Array.Empty<long>(),
+                0,
+                Array.Empty<FilteredVisualRowReader?>(),
+                IsFinal: true,
+                IsPaused: false,
+                ProcessedOffset: 0,
+                TargetFileSize: 0,
+                TotalLineCount: 0));
             return;
         }
 
         FilteredVisualRowReader firstReader = previousReaders[0];
         string fullPath = firstReader.FilePath;
-        long oldFileSize = firstReader.FileSize;
+        long oldFileSize = firstReader.ConfirmedFileSize;
         LogEncodingKind kind = firstReader.Kind;
         Encoding encoding = firstReader.SourceEncoding;
         long dataOffset = firstReader.DataOffset;
@@ -371,7 +421,16 @@ public static class LogSearchBuilder
                 unchangedReaders[i]!.ReadFromPercentage(0d, GetPreloadedVisibleLines(preloadedVisibleLines, i));
             }
 
-            onProgress(new StagedSearchProgressUpdate(100d, CopyMatchedLineCounts(unchangedReaders), 0, unchangedReaders, IsFinal: true));
+            onProgress(new StagedSearchProgressUpdate(
+                100d,
+                CopyMatchedLineCounts(unchangedReaders),
+                0,
+                unchangedReaders,
+                IsFinal: true,
+                IsPaused: false,
+                ProcessedOffset: oldFileSize,
+                TargetFileSize: newFileSize,
+                TotalLineCount: firstReader.TotalLineCount));
             return;
         }
 
@@ -386,7 +445,6 @@ public static class LogSearchBuilder
             ? firstReader.TotalLineCount + 1
             : Math.Max(1, firstReader.TotalLineCount);
         long totalLineCount = firstReader.TotalLineCount;
-        long searchableBytes = Math.Max(1, newFileSize - rescanStartOffset);
         long scannedOffset = rescanStartOffset;
         long lastPublishedTick = Environment.TickCount64;
         int[] lastPublishedDescriptorCounts = new int[descriptors.Length];
@@ -398,49 +456,284 @@ public static class LogSearchBuilder
         Stopwatch stopwatch = Stopwatch.StartNew();
         SearchMatcherCascade matcher = SearchMatcherCascade.Create(options);
 
-        foreach (RealLineData line in SearchRealLineScanner.Enumerate(fullPath, encoding, kind, rescanStartOffset, newFileSize, cancellationToken, firstLineNumber))
+        try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            scannedOffset = line.EndOffset;
-            totalLineCount = line.LineNumber;
-            AddDescriptorsByStage(descriptors, line, matcher, parserRule);
-
-            long now = Environment.TickCount64;
-            if (now - lastPublishedTick >= ProgressPublishIntervalMs)
+            foreach (RealLineData line in SearchRealLineScanner.Enumerate(fullPath, encoding, kind, rescanStartOffset, newFileSize, cancellationToken, firstLineNumber))
             {
-                PublishSnapshot(isFinal: false);
+                cancellationToken.ThrowIfCancellationRequested();
+                scannedOffset = GetProcessedOffset(line);
+                totalLineCount = line.LineNumber;
+                AddDescriptorsByStage(descriptors, line, matcher, parserRule);
+
+                long now = Environment.TickCount64;
+                if (now - lastPublishedTick >= ProgressPublishIntervalMs)
+                {
+                    PublishSnapshot(isFinal: false, isPaused: false);
+                }
             }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            PublishSnapshot(isFinal: true, isPaused: false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            PublishSnapshot(isFinal: false, isPaused: true);
+            throw;
         }
 
-        cancellationToken.ThrowIfCancellationRequested();
-        PublishSnapshot(isFinal: true);
         return;
 
-        void PublishSnapshot(bool isFinal)
+        void PublishSnapshot(bool isFinal, bool isPaused)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            double progress = Math.Clamp(((scannedOffset - rescanStartOffset) * 100d) / searchableBytes, 0d, 100d);
+            if (!isPaused)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            double progress = CalculateProgressPercentage(dataOffset, scannedOffset, newFileSize);
             if (isFinal)
             {
                 progress = 100d;
             }
 
             FilteredVisualRowReader?[] readers = new FilteredVisualRowReader?[descriptors.Length];
+            long readerFileSize = isFinal ? newFileSize : scannedOffset;
             for (int i = 0; i < descriptors.Length; i++)
             {
-                bool shouldBuildReader = isFinal || descriptors[i].Count != lastPublishedDescriptorCounts[i];
+                bool shouldBuildReader = isFinal || isPaused || descriptors[i].Count != lastPublishedDescriptorCounts[i];
                 if (shouldBuildReader)
                 {
-                    readers[i] = new FilteredVisualRowReader(fullPath, kind, encoding, dataOffset, newFileSize, descriptors[i], totalLineCount, parserRule);
-                    readers[i]!.ReadFromPercentage(0d, GetPreloadedVisibleLines(preloadedVisibleLines, i));
+                    readers[i] = new FilteredVisualRowReader(fullPath, kind, encoding, dataOffset, readerFileSize, descriptors[i], totalLineCount, parserRule);
+                    if (!isPaused)
+                    {
+                        readers[i]!.ReadFromPercentage(0d, GetPreloadedVisibleLines(preloadedVisibleLines, i));
+                    }
+
                     lastPublishedDescriptorCounts[i] = descriptors[i].Count;
                 }
             }
 
-            onProgress(new StagedSearchProgressUpdate(progress, CopyDescriptorCounts(descriptors), stopwatch.ElapsedMilliseconds, readers, isFinal));
-            cancellationToken.ThrowIfCancellationRequested();
+            onProgress(new StagedSearchProgressUpdate(
+                progress,
+                CopyDescriptorCounts(descriptors),
+                stopwatch.ElapsedMilliseconds,
+                readers,
+                isFinal,
+                isPaused,
+                scannedOffset,
+                newFileSize,
+                totalLineCount));
+            if (!isPaused)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
             lastPublishedTick = Environment.TickCount64;
         }
+    }
+
+    public static void ResumeStagedFilteredReadersIncremental(
+        IReadOnlyList<FilteredVisualRowReader> pausedReaders,
+        IReadOnlyList<SearchOptions> options,
+        long processedOffset,
+        long newFileSize,
+        IReadOnlyList<int> preloadedVisibleLines,
+        Action<StagedSearchProgressUpdate> onProgress,
+        CancellationToken cancellationToken,
+        DisplayParserRule? displayParserRule = null)
+    {
+        if (pausedReaders.Count != options.Count)
+        {
+            throw new ArgumentException("Paused reader count must match search option count.", nameof(pausedReaders));
+        }
+
+        if (pausedReaders.Count == 0)
+        {
+            onProgress(new StagedSearchProgressUpdate(
+                100d,
+                Array.Empty<long>(),
+                0,
+                Array.Empty<FilteredVisualRowReader?>(),
+                IsFinal: true,
+                IsPaused: false,
+                ProcessedOffset: 0,
+                TargetFileSize: newFileSize,
+                TotalLineCount: 0));
+            return;
+        }
+
+        FilteredVisualRowReader firstReader = pausedReaders[0];
+        string fullPath = firstReader.FilePath;
+        LogEncodingKind kind = firstReader.Kind;
+        Encoding encoding = firstReader.SourceEncoding;
+        long dataOffset = firstReader.DataOffset;
+        long boundedProcessedOffset = Math.Clamp(processedOffset, dataOffset, newFileSize);
+        long normalizedProcessedOffset = NormalizeResumeStartOffset(fullPath, kind, dataOffset, boundedProcessedOffset, newFileSize);
+        bool processedCompleteLine = EndsWithLineBreakAt(fullPath, kind, dataOffset, normalizedProcessedOffset);
+        long resumeStartOffset = processedCompleteLine
+            ? normalizedProcessedOffset
+            : GetAppendRescanStart(fullPath, kind, dataOffset, normalizedProcessedOffset);
+        long firstLineNumber = processedCompleteLine
+            ? firstReader.TotalLineCount + 1
+            : Math.Max(1, firstReader.TotalLineCount);
+        long totalLineCount = firstLineNumber - 1;
+        DisplayParserRule? parserRule = DisplayParserEvaluator.CloneRule(displayParserRule);
+        List<FilteredLineDescriptor>[] descriptors = new List<FilteredLineDescriptor>[pausedReaders.Count];
+        for (int i = 0; i < pausedReaders.Count; i++)
+        {
+            descriptors[i] = new List<FilteredLineDescriptor>(pausedReaders[i].CopyDescriptorsBefore(resumeStartOffset));
+        }
+
+        long scannedOffset = resumeStartOffset;
+        long lastPublishedTick = Environment.TickCount64;
+        int[] lastPublishedDescriptorCounts = new int[descriptors.Length];
+        for (int i = 0; i < descriptors.Length; i++)
+        {
+            lastPublishedDescriptorCounts[i] = descriptors[i].Count;
+        }
+
+        Stopwatch stopwatch = Stopwatch.StartNew();
+        SearchMatcherCascade matcher = SearchMatcherCascade.Create(options);
+
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            foreach (RealLineData line in SearchRealLineScanner.Enumerate(fullPath, encoding, kind, resumeStartOffset, newFileSize, cancellationToken, firstLineNumber))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                scannedOffset = GetProcessedOffset(line);
+                totalLineCount = line.LineNumber;
+                AddDescriptorsByStage(descriptors, line, matcher, parserRule);
+
+                long now = Environment.TickCount64;
+                if (now - lastPublishedTick >= ProgressPublishIntervalMs)
+                {
+                    PublishSnapshot(isFinal: false, isPaused: false);
+                }
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            PublishSnapshot(isFinal: true, isPaused: false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            PublishSnapshot(isFinal: false, isPaused: true);
+            throw;
+        }
+
+        return;
+
+        void PublishSnapshot(bool isFinal, bool isPaused)
+        {
+            if (!isPaused)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            double progress = CalculateProgressPercentage(dataOffset, scannedOffset, newFileSize);
+            if (isFinal)
+            {
+                progress = 100d;
+            }
+
+            FilteredVisualRowReader?[] readers = new FilteredVisualRowReader?[descriptors.Length];
+            long readerFileSize = isFinal ? newFileSize : scannedOffset;
+            for (int i = 0; i < descriptors.Length; i++)
+            {
+                bool shouldBuildReader = isFinal || isPaused || descriptors[i].Count != lastPublishedDescriptorCounts[i];
+                if (shouldBuildReader)
+                {
+                    readers[i] = new FilteredVisualRowReader(fullPath, kind, encoding, dataOffset, readerFileSize, descriptors[i], totalLineCount, parserRule);
+                    if (!isPaused)
+                    {
+                        readers[i]!.ReadFromPercentage(0d, GetPreloadedVisibleLines(preloadedVisibleLines, i));
+                    }
+
+                    lastPublishedDescriptorCounts[i] = descriptors[i].Count;
+                }
+            }
+
+            onProgress(new StagedSearchProgressUpdate(
+                progress,
+                CopyDescriptorCounts(descriptors),
+                stopwatch.ElapsedMilliseconds,
+                readers,
+                isFinal,
+                isPaused,
+                scannedOffset,
+                newFileSize,
+                totalLineCount));
+            if (!isPaused)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            lastPublishedTick = Environment.TickCount64;
+        }
+    }
+
+    private static double CalculateProgressPercentage(long dataOffset, long processedOffset, long targetFileSize)
+    {
+        return Math.Clamp(((processedOffset - dataOffset) * 100d) / Math.Max(1, targetFileSize - dataOffset), 0d, 100d);
+    }
+
+    private static long GetProcessedOffset(RealLineData line)
+        => line.NextOffset >= 0 ? line.NextOffset : line.EndOffset;
+
+    private static long NormalizeResumeStartOffset(string filePath, LogEncodingKind kind, long dataOffset, long processedOffset, long fileSize)
+    {
+        if (processedOffset <= dataOffset || processedOffset >= fileSize)
+        {
+            return processedOffset;
+        }
+
+        using FileStream fs = VisualRowReader.OpenSourceStream(filePath);
+        if (kind is LogEncodingKind.Utf16Le or LogEncodingKind.Utf16Be)
+        {
+            if (processedOffset - dataOffset < 2 || processedOffset + 2 > fileSize)
+            {
+                return processedOffset;
+            }
+
+            long aligned = processedOffset - ((processedOffset - dataOffset) % 2);
+            if (aligned != processedOffset)
+            {
+                return processedOffset;
+            }
+
+            Span<byte> bytes = stackalloc byte[4];
+            fs.Position = processedOffset - 2;
+            fs.ReadExactly(bytes);
+            bool littleEndian = kind == LogEncodingKind.Utf16Le;
+            ushort previous = littleEndian
+                ? (ushort)(bytes[0] | (bytes[1] << 8))
+                : (ushort)((bytes[0] << 8) | bytes[1]);
+            ushort current = littleEndian
+                ? (ushort)(bytes[2] | (bytes[3] << 8))
+                : (ushort)((bytes[2] << 8) | bytes[3]);
+            return previous == 0x000D && current == 0x000A
+                ? processedOffset + 2
+                : processedOffset;
+        }
+
+        if (processedOffset - dataOffset < 1 || processedOffset + 1 > fileSize)
+        {
+            return processedOffset;
+        }
+
+        fs.Position = processedOffset - 1;
+        int previousByte = fs.ReadByte();
+        int currentByte = fs.ReadByte();
+        return previousByte == 0x0D && currentByte == 0x0A
+            ? processedOffset + 1
+            : processedOffset;
+    }
+
+    private static bool EndsWithLineBreakAt(string filePath, LogEncodingKind kind, long dataOffset, long offset)
+    {
+        using FileStream fs = VisualRowReader.OpenSourceStream(filePath);
+        return EndsWithLineBreak(fs, kind, dataOffset, offset);
     }
 
     private static long GetAppendRescanStart(string filePath, LogEncodingKind kind, long dataOffset, long oldFileSize)

@@ -267,6 +267,45 @@ internal sealed class ViewportPaneWindow : IDisposable
         NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
     }
 
+    public void RefreshReaderDisplayState()
+    {
+        UpdateScrollBar();
+        NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
+    }
+
+    public void MarkReaderObservedZero()
+    {
+        if (_reader is VisualRowReader visualReader)
+        {
+            visualReader.MarkObservedZeroFileSize();
+        }
+        else if (_reader is FilteredVisualRowReader filteredReader)
+        {
+            filteredReader.MarkObservedZeroFileSize();
+        }
+
+        _statusText = string.Empty;
+        InvalidatePendingViewportRequests();
+        UpdateScrollBar();
+        NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
+    }
+
+    public void ClearReaderObservedZero()
+    {
+        if (_reader is VisualRowReader visualReader)
+        {
+            visualReader.ClearObservedZeroFileSize();
+        }
+        else if (_reader is FilteredVisualRowReader filteredReader)
+        {
+            filteredReader.ClearObservedZeroFileSize();
+        }
+
+        _statusText = string.Empty;
+        UpdateScrollBar();
+        NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
+    }
+
     public void Focus()
     {
         if (_hwnd != IntPtr.Zero)
@@ -394,6 +433,15 @@ internal sealed class ViewportPaneWindow : IDisposable
         _fileSizeRefreshPending = false;
         _tailFollowSuspended = false;
         _pendingViewportRequest = null;
+        ClearPendingSearchKeyboardSelection();
+    }
+
+    private void InvalidatePendingViewportRequests()
+    {
+        _latestViewportRequestId = ++_nextViewportRequestId;
+        _pendingViewportRequest = null;
+        _tailRefreshPending = false;
+        _fileSizeRefreshPending = false;
         ClearPendingSearchKeyboardSelection();
     }
 
@@ -587,8 +635,9 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         _viewportWorkerRunning = false;
+        bool isCurrentRequest = result.RequestId == _latestViewportRequestId;
 
-        if (result.RequestId == _latestViewportRequestId && result.Success && result.Reader is not null)
+        if (isCurrentRequest && result.Success && result.Reader is not null)
         {
             _reader?.Dispose();
             _reader = result.Reader;
@@ -609,7 +658,7 @@ internal sealed class ViewportPaneWindow : IDisposable
                 ClearPendingSearchKeyboardSelection();
             }
 
-            if (result.IsStale)
+            if (isCurrentRequest && result.IsStale)
             {
                 _onStale?.Invoke(this);
             }

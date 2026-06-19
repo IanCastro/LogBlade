@@ -75,10 +75,16 @@ internal static class SearchRealLineScanner
                 }
 
                 long breakOffset = bufferStart + index;
+                long nextOffset = bufferStart + index + 1;
                 cancellationToken.ThrowIfCancellationRequested();
                 string text = DecodeCurrentLine(encoding, buffer.AsSpan(segmentStart, index - segmentStart), pendingLine);
                 pendingLine = null;
-                yield return new RealLineData(lineStart, breakOffset, text, lineNumber++);
+                if (value == 0x0D && index + 1 < read && buffer[index + 1] == 0x0A)
+                {
+                    nextOffset = bufferStart + index + 2;
+                }
+
+                yield return new RealLineData(lineStart, breakOffset, text, lineNumber++, nextOffset);
                 cancellationToken.ThrowIfCancellationRequested();
 
                 if (value == 0x0D)
@@ -107,12 +113,12 @@ internal static class SearchRealLineScanner
         if (pendingLine is not null && pendingLine.WrittenCount > 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            yield return new RealLineData(lineStart, fileSize, encoding.GetString(pendingLine.WrittenSpan), lineNumber);
+                yield return new RealLineData(lineStart, fileSize, encoding.GetString(pendingLine.WrittenSpan), lineNumber, fileSize);
         }
         else if (lineStart < fileSize)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            yield return new RealLineData(lineStart, fileSize, string.Empty, lineNumber);
+            yield return new RealLineData(lineStart, fileSize, string.Empty, lineNumber, fileSize);
         }
     }
 
@@ -164,10 +170,16 @@ internal static class SearchRealLineScanner
                 }
 
                 long breakOffset = bufferStart + index;
+                long nextOffset = bufferStart + index + 2;
                 cancellationToken.ThrowIfCancellationRequested();
                 string text = DecodeCurrentLine(encoding, buffer.AsSpan(segmentStart, index - segmentStart), pendingLine);
                 pendingLine = null;
-                yield return new RealLineData(lineStart, breakOffset, text, lineNumber++);
+                if (unit == 0x000D && index + 3 < processLength && ReadCodeUnit(buffer, index + 2, littleEndian) == 0x000A)
+                {
+                    nextOffset = bufferStart + index + 4;
+                }
+
+                yield return new RealLineData(lineStart, breakOffset, text, lineNumber++, nextOffset);
                 cancellationToken.ThrowIfCancellationRequested();
 
                 if (unit == 0x000D)
@@ -203,12 +215,12 @@ internal static class SearchRealLineScanner
         if (pendingLine is not null && pendingLine.WrittenCount > 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            yield return new RealLineData(lineStart, fileSize, encoding.GetString(pendingLine.WrittenSpan), lineNumber);
+                yield return new RealLineData(lineStart, fileSize, encoding.GetString(pendingLine.WrittenSpan), lineNumber, fileSize);
         }
         else if (lineStart < fileSize)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            yield return new RealLineData(lineStart, fileSize, string.Empty, lineNumber);
+            yield return new RealLineData(lineStart, fileSize, string.Empty, lineNumber, fileSize);
         }
     }
 

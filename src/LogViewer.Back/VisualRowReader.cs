@@ -73,6 +73,7 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
     private readonly long _dataOffset;
     private readonly DisplayParserRule? _displayParserRule;
     private long _fileSize;
+    private bool _observedZeroFileSize;
     private readonly List<ViewportRow> _viewportRows = new();
     private long _topOffset;
     private long _viewportEndOffset;
@@ -113,11 +114,12 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
         LogEncodingKind.Utf16Be => "UTF-16 BE BOM",
         _ => "Windows-1252"
     };
-    public long FileSize => _fileSize;
+    public long FileSize => _observedZeroFileSize ? 0 : _fileSize;
+    public long ConfirmedFileSize => _fileSize;
     public long TopOffset => _topOffset;
     public long ViewportEndOffset => _viewportEndOffset;
-    public long ViewportBytes => _viewportEndOffset >= _topOffset ? _viewportEndOffset - _topOffset : 0;
-    public bool IsAtKnownEnd => _viewportLoaded && IsOffsetAtKnownEnd(_viewportEndOffset);
+    public long ViewportBytes => _observedZeroFileSize ? 0 : (_viewportEndOffset >= _topOffset ? _viewportEndOffset - _topOffset : 0);
+    public bool IsAtKnownEnd => !_observedZeroFileSize && IsAtConfirmedEnd;
     public double ScrollPercentage
     {
         get
@@ -132,11 +134,16 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
             return (topBytes * 100d) / contentBytes;
         }
     }
-    public bool HasContent => _fileSize > _dataOffset;
+    public bool HasContent => !_observedZeroFileSize && _fileSize > _dataOffset;
     public IReadOnlyList<string> CurrentRows
     {
         get
         {
+            if (_observedZeroFileSize)
+            {
+                return Array.Empty<string>();
+            }
+
             string[] rows = new string[_viewportRows.Count];
             for (int i = 0; i < _viewportRows.Count; i++)
             {
@@ -150,6 +157,11 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
     {
         get
         {
+            if (_observedZeroFileSize)
+            {
+                return Array.Empty<ViewportRowSelectionKey>();
+            }
+
             ViewportRowSelectionKey[] keys = new ViewportRowSelectionKey[_viewportRows.Count];
             for (int i = 0; i < _viewportRows.Count; i++)
             {
@@ -159,6 +171,8 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
             return keys;
         }
     }
+
+    private bool IsAtConfirmedEnd => _viewportLoaded && IsOffsetAtKnownEnd(_viewportEndOffset);
 
     public IReadOnlyList<ViewportSelectedRow> ReadSelectedRows(bool selectAll, IReadOnlyList<ViewportRowSelectionRange> ranges, IReadOnlyList<ViewportRowSelectionKey> excludedKeys)
     {
@@ -263,6 +277,11 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
             return Array.Empty<string>();
         }
 
+        if (_observedZeroFileSize)
+        {
+            return CurrentRows;
+        }
+
         if (!_viewportLoaded || _viewportRows.Count == 0)
         {
             EnsureViewport(count);
@@ -280,6 +299,11 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
         if (count <= 0)
         {
             return Array.Empty<string>();
+        }
+
+        if (_observedZeroFileSize)
+        {
+            return CurrentRows;
         }
 
         if (!_viewportLoaded || _viewportRows.Count == 0)
@@ -303,6 +327,11 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
         if (count <= 0)
         {
             return Array.Empty<string>();
+        }
+
+        if (_observedZeroFileSize)
+        {
+            return CurrentRows;
         }
 
         double clamped = Math.Clamp(percentage, 0d, 100d);
@@ -341,6 +370,11 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
         }
 
         RefreshFileSize();
+        if (_observedZeroFileSize)
+        {
+            return CurrentRows;
+        }
+
         if (!HasContent)
         {
             _viewportVisibleLines = Math.Max(1, count);
@@ -375,36 +409,54 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
     public bool RefreshFileSize(out long previousSize, out long currentSize, out bool wasAtEndBeforeRefresh)
     {
         previousSize = _fileSize;
-        wasAtEndBeforeRefresh = false;
+        bool wasVisuallyZero = _observedZeroFileSize;
+        wasAtEndBeforeRefresh = IsAtConfirmedEnd;
         try
         {
             currentSize = new FileInfo(_filePath).Length;
         }
         catch (IOException)
         {
-            currentSize = previousSize;
+            currentSize = _observedZeroFileSize ? 0 : previousSize;
             return false;
         }
         catch (UnauthorizedAccessException)
         {
-            currentSize = previousSize;
+            currentSize = _observedZeroFileSize ? 0 : previousSize;
             return false;
         }
 
+        if (currentSize == 0)
+        {
+            bool changed = !_observedZeroFileSize;
+            _observedZeroFileSize = true;
+            return changed;
+        }
+
+        _observedZeroFileSize = false;
         if (currentSize < previousSize)
         {
             _fileSize = currentSize;
             return true;
         }
 
-        wasAtEndBeforeRefresh = IsAtKnownEnd;
         if (currentSize == previousSize)
         {
-            return false;
+            return wasVisuallyZero;
         }
 
         _fileSize = currentSize;
         return true;
+    }
+
+    public void MarkObservedZeroFileSize()
+    {
+        _observedZeroFileSize = true;
+    }
+
+    public void ClearObservedZeroFileSize()
+    {
+        _observedZeroFileSize = false;
     }
 
     public IReadOnlyList<string> RefreshTail(int visibleLines)
@@ -422,6 +474,11 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
                 ReadFromPercentage(100d, visibleLines);
             }
 
+            return CurrentRows;
+        }
+
+        if (_observedZeroFileSize)
+        {
             return CurrentRows;
         }
 
@@ -449,8 +506,13 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
         }
 
         long previousTopOffset = TopOffset;
-        bool wasAtEnd = IsAtKnownEnd;
+        bool wasAtEnd = IsAtConfirmedEnd;
         bool fileSizeChanged = RefreshFileSize(out long previousSize, out long currentSize, out _);
+        if (_observedZeroFileSize)
+        {
+            return CurrentRows;
+        }
+
         _viewportLoaded = false;
 
         if (fileSizeChanged && currentSize < previousSize)
@@ -645,7 +707,8 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
             _topOffset = _topOffset,
             _viewportEndOffset = _viewportEndOffset,
             _viewportVisibleLines = _viewportVisibleLines,
-            _viewportLoaded = _viewportLoaded
+            _viewportLoaded = _viewportLoaded,
+            _observedZeroFileSize = _observedZeroFileSize
         };
         clone._viewportRows.AddRange(_viewportRows);
         return clone;
