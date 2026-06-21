@@ -58,7 +58,7 @@ internal sealed class ViewerWindow
     private const int IgnoreCaseToggleWidth = 112;
     private const int InvertMatchToggleWidth = 120;
     private const int SearchResizeHitSlopPx = 4;
-    private const string SearchResizeGripClassName = "LogViewerSearchResizeGripWindow";
+    private const string SearchResizeGripClassName = "LogBladeSearchResizeGripWindow";
     private const string ConfigureParserText = "Configure";
 
     private readonly string _path;
@@ -168,7 +168,7 @@ internal sealed class ViewerWindow
     public void Run()
     {
         IntPtr hInstance = NativeMethods.GetModuleHandleW(null);
-        const string className = "LogViewerNativeAotWindow";
+        const string className = "LogBladeNativeAotWindow";
         AppLog.Instance.Info("window.create.begin", "begin", new LogField("class", className));
 
         string windowTitle = ComposeWindowTitle();
@@ -247,7 +247,7 @@ internal sealed class ViewerWindow
         AppLog.Instance.Info("shutdown", "normal_exit");
     }
 
-    private string ComposeWindowTitle() => "C# MVP - " + _titleSuffix;
+    private string ComposeWindowTitle() => "LogBlade - " + _titleSuffix;
 
     private static ViewerWindow? FromHandle(IntPtr hwnd)
     {
@@ -713,7 +713,7 @@ internal sealed class ViewerWindow
 
     private static bool TryCreatePastedTextDirectory(string basePath, out string directory)
     {
-        directory = Path.Combine(basePath, "LogReaderMvp", "mvp-csharp-nativeaot-win32", "pasted");
+        directory = Path.Combine(basePath, "LogBlade", "pasted");
         try
         {
             Directory.CreateDirectory(directory);

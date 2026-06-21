@@ -8,7 +8,7 @@ internal static class Program
 {
     private static int Main()
     {
-        string tempRoot = Path.Combine(Path.GetTempPath(), "LogViewerBackSmoke", Guid.NewGuid().ToString("N"));
+        string tempRoot = Path.Combine(Path.GetTempPath(), "LogBladeBackSmoke", Guid.NewGuid().ToString("N"));
         try
         {
             Directory.CreateDirectory(tempRoot);

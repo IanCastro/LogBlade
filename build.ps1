@@ -10,7 +10,7 @@ $nugetHttpCache = Join-Path $local 'nuget-http-cache'
 $src = Join-Path $root 'src'
 $artifacts = Join-Path $root 'artifacts'
 $build = Join-Path $artifacts 'build'
-$project = Join-Path $src 'LogViewer.Front\LogViewer.Front.csproj'
+$project = Join-Path $src 'LogBlade.Front\LogBlade.Front.csproj'
 
 New-Item -ItemType Directory -Force -Path $artifacts, $build, $dotnetHome, $dotnetTools, $appData, $nugetPackages, $nugetHttpCache | Out-Null
 
@@ -27,7 +27,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "dotnet build failed with exit code $LASTEXITCODE"
 }
 
-if (Test-Path (Join-Path $build 'LogViewer-CSharp.exe')) {
+if (Test-Path (Join-Path $build 'LogBlade.exe')) {
     Write-Host "Built to $build"
 } else {
     throw "No runnable artifact was produced in $build"

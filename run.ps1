@@ -6,8 +6,8 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$buildExe = Join-Path $root 'artifacts\build\LogViewer-CSharp.exe'
-$publishExe = Join-Path $root 'artifacts\publish\LogViewer-CSharp.exe'
+$buildExe = Join-Path $root 'artifacts\build\LogBlade.exe'
+$publishExe = Join-Path $root 'artifacts\publish\LogBlade.exe'
 $resolvedPath = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
 
 $exe = $null

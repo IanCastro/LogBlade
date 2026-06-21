@@ -11,7 +11,7 @@ $src = Join-Path $root 'src'
 $artifacts = Join-Path $root 'artifacts'
 $publish = Join-Path $artifacts 'publish'
 $aotPublish = Join-Path $artifacts 'publish-aot'
-$project = Join-Path $src 'LogViewer.Front\LogViewer.Front.csproj'
+$project = Join-Path $src 'LogBlade.Front\LogBlade.Front.csproj'
 
 New-Item -ItemType Directory -Force -Path $artifacts, $publish, $aotPublish, $dotnetHome, $dotnetTools, $appData, $nugetPackages, $nugetHttpCache | Out-Null
 
@@ -43,7 +43,7 @@ if (-not $nativeAotSucceeded) {
     }
 }
 
-if (Test-Path (Join-Path $publish 'LogViewer-CSharp.exe')) {
+if (Test-Path (Join-Path $publish 'LogBlade.exe')) {
     Write-Host "Packaged to $publish"
 } else {
     throw "No runnable distribution artifact was produced in $publish"

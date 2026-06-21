@@ -56,7 +56,7 @@ internal sealed class ViewportPaneWindow : IDisposable
     private const int GridCellPaddingPx = 4;
     private const int GridDividerThicknessPx = 1;
     private const int InactiveSelectionColor = 0x00FAF0E8;
-    private const string WindowClassName = "LogViewerViewportPaneWindow";
+    private const string WindowClassName = "LogBladeViewportPaneWindow";
 
     private static readonly object s_registrationSync = new();
     private static bool s_registered;

@@ -3,7 +3,7 @@ using System.IO;
 
 internal static class Program
 {
-    internal const string AppTitle = "Log Viewer";
+    internal const string AppTitle = "LogBlade";
 
     private static int Main(string[] args)
     {
@@ -13,7 +13,7 @@ internal static class Program
         if (args.Length != 1)
         {
             AppLog.Instance.Error("startup.args_invalid", "invalid_arguments", new LogField("argsCount", args.Length.ToString()));
-            ShowStartupError("Usage: viewer.exe <path>");
+            ShowStartupError("Usage: LogBlade.exe <path>");
             return 1;
         }
 

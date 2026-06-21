@@ -112,7 +112,7 @@ internal sealed class RuleEditorWindow
         }
 
         IntPtr hInstance = NativeMethods.GetModuleHandleW(null);
-        const string className = "LogViewerRuleEditorWindow";
+        const string className = "LogBladeRuleEditorWindow";
         NativeMethods.WNDCLASSEXW wc = new()
         {
             cbSize = (uint)Marshal.SizeOf<NativeMethods.WNDCLASSEXW>(),
@@ -137,7 +137,7 @@ internal sealed class RuleEditorWindow
         _selfHandle = GCHandle.Alloc(this);
         _hwnd = NativeMethods.CreateWindowExW(
             0,
-            "LogViewerRuleEditorWindow",
+            "LogBladeRuleEditorWindow",
             _initialRule is null ? "Add Parser Rule" : "Edit Parser Rule",
             NativeMethods.WS_OVERLAPPEDWINDOW | NativeMethods.WS_CLIPCHILDREN,
             NativeMethods.CW_USEDEFAULT,

@@ -9,7 +9,7 @@ internal readonly record struct LogField(string Key, string? Value);
 
 internal static class AppLog
 {
-    public static readonly SessionLog Instance = SessionLog.Create("mvp-csharp-nativeaot-win32");
+    public static readonly SessionLog Instance = SessionLog.Create("LogBlade");
 }
 
 internal sealed class SessionLog : IDisposable
@@ -43,7 +43,7 @@ internal sealed class SessionLog : IDisposable
                 continue;
             }
 
-            string logDir = Path.Combine(basePath, "LogReaderMvp", app, "logs");
+            string logDir = Path.Combine(basePath, app, "logs");
             try
             {
                 Directory.CreateDirectory(logDir);

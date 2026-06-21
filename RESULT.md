@@ -6,8 +6,8 @@
 
 ## Artifacts
 
-- Official launcher / bake-off artifact: `artifacts\build\LogViewer-CSharp.exe`
-- Distribution gate artifact: `artifacts\publish\LogViewer-CSharp.exe`
+- Official launcher artifact: `artifacts\build\LogBlade.exe`
+- Distribution gate artifact: `artifacts\publish\LogBlade.exe`
 
 ## Build contract
 
@@ -30,7 +30,7 @@
 ## NativeAOT
 
 - The final NativeAOT path is still not fully proved offline in this environment.
-- The self-contained distribution path is proved and produces `artifacts\publish\LogViewer-CSharp.exe`.
+- The self-contained distribution path is proved and produces `artifacts\publish\LogBlade.exe`.
 
 ## Validation
 

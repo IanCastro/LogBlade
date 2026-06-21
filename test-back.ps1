@@ -8,7 +8,7 @@ $appData = Join-Path $local 'appdata'
 $nugetPackages = Join-Path $local 'nuget-packages'
 $nugetHttpCache = Join-Path $local 'nuget-http-cache'
 $src = Join-Path $root 'src'
-$project = Join-Path $src 'LogViewer.BackSmoke\LogViewer.BackSmoke.csproj'
+$project = Join-Path $src 'LogBlade.BackSmoke\LogBlade.BackSmoke.csproj'
 
 New-Item -ItemType Directory -Force -Path $dotnetHome, $dotnetTools, $appData, $nugetPackages, $nugetHttpCache | Out-Null
 
@@ -19,5 +19,5 @@ $env:NUGET_HTTP_CACHE_PATH = $nugetHttpCache
 
 & dotnet run --project $project -c Release --nologo -p:RestoreIgnoreFailedSources=true
 if ($LASTEXITCODE -ne 0) {
-    throw "LogViewer.BackSmoke failed with exit code $LASTEXITCODE"
+    throw "LogBlade.BackSmoke failed with exit code $LASTEXITCODE"
 }

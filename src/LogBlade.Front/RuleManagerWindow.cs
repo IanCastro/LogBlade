@@ -78,7 +78,7 @@ internal sealed class RuleManagerWindow
         }
 
         IntPtr hInstance = NativeMethods.GetModuleHandleW(null);
-        const string className = "LogViewerRuleManagerWindow";
+        const string className = "LogBladeRuleManagerWindow";
         NativeMethods.WNDCLASSEXW wc = new()
         {
             cbSize = (uint)Marshal.SizeOf<NativeMethods.WNDCLASSEXW>(),
@@ -103,7 +103,7 @@ internal sealed class RuleManagerWindow
         _selfHandle = GCHandle.Alloc(this);
         _hwnd = NativeMethods.CreateWindowExW(
             0,
-            "LogViewerRuleManagerWindow",
+            "LogBladeRuleManagerWindow",
             "Configure Parser Rules",
             NativeMethods.WS_OVERLAPPEDWINDOW | NativeMethods.WS_CLIPCHILDREN,
             NativeMethods.CW_USEDEFAULT,

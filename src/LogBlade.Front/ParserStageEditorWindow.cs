@@ -101,7 +101,7 @@ internal sealed class ParserStageEditorWindow
         }
 
         IntPtr hInstance = NativeMethods.GetModuleHandleW(null);
-        const string className = "LogViewerParserStageEditorWindow";
+        const string className = "LogBladeParserStageEditorWindow";
         NativeMethods.WNDCLASSEXW wc = new()
         {
             cbSize = (uint)Marshal.SizeOf<NativeMethods.WNDCLASSEXW>(),
@@ -126,7 +126,7 @@ internal sealed class ParserStageEditorWindow
         _selfHandle = GCHandle.Alloc(this);
         _hwnd = NativeMethods.CreateWindowExW(
             0,
-            "LogViewerParserStageEditorWindow",
+            "LogBladeParserStageEditorWindow",
             _initialStage is null ? "Add Parser Stage" : "Edit Parser Stage",
             NativeMethods.WS_OVERLAPPEDWINDOW | NativeMethods.WS_CLIPCHILDREN,
             NativeMethods.CW_USEDEFAULT,

@@ -1,18 +1,15 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
-    <ProjectReference Include="..\LogViewer.Back\LogViewer.Back.csproj" />
+    <ProjectReference Include="..\LogBlade.Back\LogBlade.Back.csproj" />
   </ItemGroup>
 
   <PropertyGroup>
-    <AssemblyName>LogViewer-CSharp</AssemblyName>
-    <OutputType>WinExe</OutputType>
+    <AssemblyName>LogBlade.BackSmoke</AssemblyName>
+    <OutputType>Exe</OutputType>
     <TargetFramework>net8.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
     <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
-    <UseAppHost>true</UseAppHost>
     <InvariantGlobalization>true</InvariantGlobalization>
-    <StripSymbols>true</StripSymbols>
-    <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
   </PropertyGroup>
 </Project>

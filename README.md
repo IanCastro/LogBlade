@@ -1,10 +1,10 @@
-# C# NativeAOT Win32 Log Viewer MVP
+# LogBlade Win32
 
-Viewer Win32 direto em C# para o repo `mvp-csharp-nativeaot-win32`.
+LogBlade e um visualizador de logs Win32 direto em C#.
 
 ## O que ele faz
 
-- Abre um arquivo real pela linha de comando: `LogViewer.exe <path>`.
+- Abre um arquivo real pela linha de comando: `LogBlade.exe <path>`.
 - Cria a janela primeiro, mostra `Loading file...` e monta a primeira viewport em background.
 - Usa scroll offset-based: thumb grande por offset aproximado e navegacao fina por linha descoberta sob demanda.
 - Mantem somente a viewport visivel no caminho ativo; nao faz indice global por linha no startup.
@@ -20,7 +20,7 @@ Use este comando para iteracao rapida:
 
 Artefato gerado:
 
-`artifacts\build\LogViewer-CSharp.exe`
+`artifacts\build\LogBlade.exe`
 
 O launcher oficial do bake-off usa este artefato de build normal.
 
@@ -34,7 +34,7 @@ Use este comando so quando precisar validar o caminho distribuivel:
 
 Saida esperada:
 
-`artifacts\publish\LogViewer-CSharp.exe`
+`artifacts\publish\LogBlade.exe`
 
 O script tenta NativeAOT quando possivel e cai para publish self-contained quando o ambiente nao consegue fechar o pipeline AOT. Essa validacao e um gate arquitetural; nao precisa rodar em toda iteracao.
 
@@ -57,7 +57,7 @@ O `run.ps1` prefere o artefato do build normal e tambem aceita o publish de dist
 
 - Sem WPF, WinForms, Avalonia, MAUI ou WebView.
 - O viewer desenha direto com GDI via Win32 P/Invoke.
-- `Windows-1252` usa a implementacao local de [Windows1252Encoding.cs](/C:/Users/Ian/Documents/Code/LogReader/mvp-csharp-nativeaot-win32/src/Windows1252Encoding.cs), sem depender de provider global.
-- Cada execucao grava um log UTF-8 em `%LOCALAPPDATA%\LogReaderMvp\mvp-csharp-nativeaot-win32\logs`, com fallback para `%TEMP%\LogReaderMvp\mvp-csharp-nativeaot-win32\logs`.
+- `Windows-1252` usa a implementacao local de [Windows1252Encoding.cs](src/LogBlade.Back/Windows1252Encoding.cs), sem depender de provider global.
+- Cada execucao grava um log UTF-8 em `%LOCALAPPDATA%\LogBlade\logs`, com fallback para `%TEMP%\LogBlade\logs`.
 - Retencao de logs e best-effort e mantem os 20 mais recentes.
 - Falhas de startup e runtime sao fail-fast, visiveis e registradas antes do encerramento quando o log persistente esta disponivel.
