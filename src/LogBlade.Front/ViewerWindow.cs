@@ -178,9 +178,11 @@ internal sealed class ViewerWindow
             style = NativeMethods.CS_HREDRAW | NativeMethods.CS_VREDRAW,
             lpfnWndProc = s_wndProc,
             hInstance = hInstance,
+            hIcon = AppIcon.Big,
             hCursor = NativeMethods.LoadCursorW(IntPtr.Zero, NativeMethods.IDC_ARROW),
             hbrBackground = NativeMethods.GetSysColorBrush(NativeMethods.COLOR_WINDOW),
-            lpszClassName = className
+            lpszClassName = className,
+            hIconSm = AppIcon.Small
         };
 
         ushort atom = NativeMethods.RegisterClassExW(ref wc);
@@ -227,6 +229,7 @@ internal sealed class ViewerWindow
         }
 
         NativeMethods.SetWindowTextW(_hwnd, windowTitle);
+        AppIcon.ApplyToWindow(_hwnd);
         NativeMethods.ShowWindow(_hwnd, NativeMethods.SW_SHOWDEFAULT);
         NativeMethods.UpdateWindow(_hwnd);
         NativeMethods.PostMessageW(_hwnd, NativeMethods.WM_APP_BEGIN_OPEN, IntPtr.Zero, IntPtr.Zero);

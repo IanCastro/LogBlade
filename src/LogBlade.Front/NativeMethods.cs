@@ -47,6 +47,7 @@ internal static class NativeMethods
     public const int WM_SETFOCUS = 0x0007;
     public const int WM_KILLFOCUS = 0x0008;
     public const int WM_SETFONT = 0x0030;
+    public const int WM_SETICON = 0x0080;
     public const int WM_KEYDOWN = 0x0100;
     public const int WM_TIMER = 0x0113;
     public const int WM_HSCROLL = 0x0114;
@@ -146,12 +147,18 @@ internal static class NativeMethods
     public const int VK_CONTROL = 0x11;
     public const int VK_SHIFT = 0x10;
     public const int CF_UNICODETEXT = 13;
+    public const int ICON_SMALL = 0;
+    public const int ICON_BIG = 1;
+    public const int IMAGE_ICON = 1;
+    public const int LR_DEFAULTCOLOR = 0x00000000;
+    public const int LR_SHARED = 0x00008000;
     public const uint GMEM_MOVEABLE = 0x0002;
     public static readonly IntPtr IDC_ARROW = new(32512);
     public static readonly IntPtr IDC_SIZENS = new(32645);
     public static readonly IntPtr IDC_SIZEWE = new(32644);
     public static readonly IntPtr HWND_TOP = IntPtr.Zero;
     public const int DEFAULT_GUI_FONT = 17;
+    public static readonly IntPtr IDI_APPLICATION = new(32512);
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     public struct WNDCLASSEXW
@@ -351,6 +358,12 @@ internal static class NativeMethods
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern IntPtr LoadCursorW(IntPtr hInstance, IntPtr lpCursorName);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr LoadIconW(IntPtr hInstance, IntPtr lpIconName);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr LoadImageW(IntPtr hinst, IntPtr name, uint type, int cx, int cy, uint fuLoad);
 
     [DllImport("user32.dll")]
     public static extern IntPtr SetCursor(IntPtr hCursor);

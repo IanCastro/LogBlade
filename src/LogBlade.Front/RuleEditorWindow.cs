@@ -119,9 +119,11 @@ internal sealed class RuleEditorWindow
             style = NativeMethods.CS_HREDRAW | NativeMethods.CS_VREDRAW,
             lpfnWndProc = s_wndProc,
             hInstance = hInstance,
+            hIcon = AppIcon.Big,
             hCursor = NativeMethods.LoadCursorW(IntPtr.Zero, NativeMethods.IDC_ARROW),
             hbrBackground = NativeMethods.GetSysColorBrush(NativeMethods.COLOR_WINDOW),
-            lpszClassName = className
+            lpszClassName = className,
+            hIconSm = AppIcon.Small
         };
 
         if (NativeMethods.RegisterClassExW(ref wc) == 0)
@@ -158,6 +160,8 @@ internal sealed class RuleEditorWindow
 
             throw new InvalidOperationException("CreateWindowExW failed for rule editor.");
         }
+
+        AppIcon.ApplyToWindow(_hwnd);
     }
 
     private static RuleEditorWindow? FromHandle(IntPtr hwnd)

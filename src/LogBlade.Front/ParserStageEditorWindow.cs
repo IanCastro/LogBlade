@@ -108,9 +108,11 @@ internal sealed class ParserStageEditorWindow
             style = NativeMethods.CS_HREDRAW | NativeMethods.CS_VREDRAW,
             lpfnWndProc = s_wndProc,
             hInstance = hInstance,
+            hIcon = AppIcon.Big,
             hCursor = NativeMethods.LoadCursorW(IntPtr.Zero, NativeMethods.IDC_ARROW),
             hbrBackground = NativeMethods.GetSysColorBrush(NativeMethods.COLOR_WINDOW),
-            lpszClassName = className
+            lpszClassName = className,
+            hIconSm = AppIcon.Small
         };
 
         if (NativeMethods.RegisterClassExW(ref wc) == 0)
@@ -147,6 +149,8 @@ internal sealed class ParserStageEditorWindow
 
             throw new InvalidOperationException("CreateWindowExW failed for parser stage editor.");
         }
+
+        AppIcon.ApplyToWindow(_hwnd);
     }
 
     private static ParserStageEditorWindow? FromHandle(IntPtr hwnd)
