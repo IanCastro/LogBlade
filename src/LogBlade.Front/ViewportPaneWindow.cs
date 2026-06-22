@@ -4130,6 +4130,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         for (int rowIndex = 0; rowIndex < rows.Count; rowIndex++)
         {
             string row = rows[rowIndex];
+            string displayRow = NormalizeDisplayText(row);
             bool selected = IsDataRowSelected(rowIndex);
             if (selected)
             {
@@ -4156,14 +4157,14 @@ internal sealed class ViewportPaneWindow : IDisposable
                 NativeMethods.SetTextColor(hdc, NativeMethods.RGB(0, 0, 0));
             }
 
-            string visibleText = SliceVisibleText(row);
+            string visibleText = SliceVisibleText(displayRow);
             if (visibleText.Length > 0)
             {
                 NativeMethods.TextOutW(hdc, x, y, visibleText, visibleText.Length);
                 visibleNonEmptyLines++;
             }
 
-            PaintTextSelection(hdc, rowIndex, row, y, clientRect);
+            PaintTextSelection(hdc, rowIndex, displayRow, y, clientRect);
 
             y += _lineHeight;
             if (y >= clientRect.bottom)
@@ -4348,6 +4349,7 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private static string FitGridCellText(string value, int widthChars)
     {
+        value = NormalizeDisplayText(value);
         widthChars = Math.Max(0, widthChars);
         if (widthChars == 0 || value.Length == 0)
         {
@@ -4366,6 +4368,9 @@ internal sealed class ViewportPaneWindow : IDisposable
 
         return value.Substring(0, widthChars - 1) + ">";
     }
+
+    private static string NormalizeDisplayText(string value) =>
+        value.IndexOf('\t') >= 0 ? value.Replace('\t', ' ') : value;
 
     private static bool Intersects(NativeMethods.RECT a, NativeMethods.RECT b)
     {
@@ -4449,7 +4454,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         int[] widths = new int[columnCount];
         for (int i = 0; i < columnCount; i++)
         {
-            widths[i] = headers[i].Length;
+            widths[i] = NormalizeDisplayText(headers[i]).Length;
         }
 
         if (reader.ColumnHeaders.Count > 0)
@@ -4459,7 +4464,7 @@ internal sealed class ViewportPaneWindow : IDisposable
                 int count = Math.Min(columnCount, row.Count);
                 for (int i = 0; i < count; i++)
                 {
-                    widths[i] = Math.Max(widths[i], row[i].Length);
+                    widths[i] = Math.Max(widths[i], NormalizeDisplayText(row[i]).Length);
                 }
             }
         }
@@ -4467,7 +4472,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         {
             foreach (string row in reader.CurrentRows)
             {
-                widths[0] = Math.Max(widths[0], row.Length);
+                widths[0] = Math.Max(widths[0], NormalizeDisplayText(row).Length);
             }
         }
 
@@ -4820,7 +4825,8 @@ internal sealed class ViewportPaneWindow : IDisposable
             hdc,
             NativeMethods.GetSysColor(_hasFocus ? NativeMethods.COLOR_HIGHLIGHTTEXT : NativeMethods.COLOR_WINDOWTEXT));
 
-        string selectedText = text.Substring(paintStart, paintEnd - paintStart);
+        string displayText = NormalizeDisplayText(text);
+        string selectedText = displayText.Substring(paintStart, paintEnd - paintStart);
         if (selectedText.Length > 0)
         {
             int savedDc = NativeMethods.SaveDC(hdc);
