@@ -73,14 +73,20 @@ public static class DisplayParserEvaluator
 
     public static void ValidateStage(DisplayParserStage stage)
     {
+        if (stage.Mode is DisplayParserMode.Regex or DisplayParserMode.RegexReplace)
+        {
+            if (string.IsNullOrEmpty(stage.Rule))
+            {
+                throw new ArgumentException("Rule is required.", nameof(stage));
+            }
+
+            _ = new Regex(stage.Rule, RegexOptions.CultureInvariant);
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(stage.Rule))
         {
             throw new ArgumentException("Rule is required.", nameof(stage));
-        }
-
-        if (stage.Mode is DisplayParserMode.Regex or DisplayParserMode.RegexReplace)
-        {
-            _ = new Regex(stage.Rule, RegexOptions.CultureInvariant);
         }
     }
 

@@ -17,6 +17,7 @@ internal static class Program
             RunDisplayParserJsonWithTrailingText();
             RunDisplayParserRegexNamedDisplay();
             RunDisplayParserRegexDefaultFullMatch();
+            RunDisplayParserRegexPreservesPatternSpaces();
             RunDisplayParserFallbackOriginal();
             RunDisplayParserRegexThenJsonTemplate();
             RunDisplayParserSecondStageFailureReturnsFirstOutput();
@@ -24,6 +25,7 @@ internal static class Program
             RunDisplayParserRegexReplaceGlobal();
             RunDisplayParserRegexReplaceEmptyReplacement();
             RunDisplayParserRegexReplacePreservesSpaces();
+            RunDisplayParserRegexReplaceAllowsSpacePattern();
             RunDisplayParserRegexReplaceGroups();
             RunDisplayParserRegexReplaceNoMatchAllowsNextStage();
             RunDisplayParserRegexReplaceThenJsonTemplate();
@@ -188,6 +190,14 @@ internal static class Program
         AssertEqual("display parser regex default full match", DisplayParserEvaluator.EvaluateOrOriginal(rule, "prefix user-ana suffix"), "user-ana");
     }
 
+    private static void RunDisplayParserRegexPreservesPatternSpaces()
+    {
+        DisplayParserRule rule = ParserRule(RegexStage(" abc ", "hit"));
+
+        AssertEqual("display parser regex preserves pattern spaces match", DisplayParserEvaluator.EvaluateOrOriginal(rule, "x abc y"), "hit");
+        AssertEqual("display parser regex preserves pattern spaces no match", DisplayParserEvaluator.EvaluateOrOriginal(rule, "abc"), "abc");
+    }
+
     private static void RunDisplayParserFallbackOriginal()
     {
         DisplayParserRule rule = ParserRule(JsonStage("{Level} {Message}"));
@@ -239,6 +249,15 @@ internal static class Program
         DisplayParserRule rule = ParserRule(RegexReplaceStage(@"-", " | "));
 
         AssertEqual("display parser regex replace preserves spaces", DisplayParserEvaluator.EvaluateOrOriginal(rule, "a-b"), "a | b");
+    }
+
+    private static void RunDisplayParserRegexReplaceAllowsSpacePattern()
+    {
+        DisplayParserStage stage = RegexReplaceStage(" ", "|");
+        DisplayParserEvaluator.ValidateStage(stage);
+        DisplayParserRule rule = ParserRule(stage);
+
+        AssertEqual("display parser regex replace allows space pattern", DisplayParserEvaluator.EvaluateOrOriginal(rule, "a b c"), "a|b|c");
     }
 
     private static void RunDisplayParserRegexReplaceGroups()
