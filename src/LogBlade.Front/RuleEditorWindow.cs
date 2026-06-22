@@ -656,6 +656,7 @@ internal sealed class RuleEditorWindow
             NativeMethods.GetModuleHandleW(null),
             IntPtr.Zero);
         SetControlFont(hwnd);
+        EditControlShortcuts.AttachSelectAll(hwnd);
         return hwnd;
     }
 
