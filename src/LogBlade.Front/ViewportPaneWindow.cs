@@ -2656,7 +2656,9 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private void OnKeyDown(int key)
     {
-        if (key == NativeMethods.VK_A && IsControlKeyDown())
+        bool control = IsControlKeyDown();
+        bool shift = IsShiftKeyDown();
+        if (key == NativeMethods.VK_A && control)
         {
             if (IsSearchCellSelectionMode)
             {
@@ -2670,19 +2672,24 @@ internal sealed class ViewportPaneWindow : IDisposable
             return;
         }
 
-        if (key == NativeMethods.VK_C && IsControlKeyDown())
+        if (key == NativeMethods.VK_C && control)
         {
             CopySelectionToClipboard();
             return;
         }
 
-        if (key == NativeMethods.VK_V && IsControlKeyDown())
+        if (key == NativeMethods.VK_V && control)
         {
             _onPasteRequested?.Invoke();
             return;
         }
 
-        if (IsShiftKeyDown())
+        if (control && TryHandleControlArrowKey(key, extendSelection: shift))
+        {
+            return;
+        }
+
+        if (shift)
         {
             if (IsSearchCellSelectionMode)
             {
@@ -2740,6 +2747,129 @@ internal sealed class ViewportPaneWindow : IDisposable
                 SetHorizontalOffset(int.MaxValue);
                 break;
         }
+    }
+
+    private bool TryHandleControlArrowKey(int key, bool extendSelection)
+    {
+        if (_reader is null ||
+            (key != NativeMethods.VK_LEFT &&
+            key != NativeMethods.VK_RIGHT &&
+            key != NativeMethods.VK_UP &&
+            key != NativeMethods.VK_DOWN))
+        {
+            return false;
+        }
+
+        if (IsSearchCellSelectionMode && TryHandleControlCellArrowKey(key, extendSelection))
+        {
+            return true;
+        }
+
+        if (key == NativeMethods.VK_UP || key == NativeMethods.VK_DOWN)
+        {
+            return TryHandleControlVerticalArrowKey(key, extendSelection, selectedColumn: -1);
+        }
+
+        SetHorizontalOffset(key == NativeMethods.VK_LEFT ? 0 : int.MaxValue);
+        return true;
+    }
+
+    private bool TryHandleControlVerticalArrowKey(int key, bool extendSelection, int selectedColumn)
+    {
+        if (_reader is null || key is not (NativeMethods.VK_UP or NativeMethods.VK_DOWN))
+        {
+            return false;
+        }
+
+        ViewportRequestKind kind = key == NativeMethods.VK_UP
+            ? ViewportRequestKind.JumpHome
+            : ViewportRequestKind.JumpEnd;
+        PendingSearchKeyboardSelection pendingSelection = key == NativeMethods.VK_UP
+            ? PendingSearchKeyboardSelection.FirstVisibleRow
+            : PendingSearchKeyboardSelection.LastVisibleRow;
+
+        bool shouldSelectAfterLoad = extendSelection || _onRowActivated is not null || selectedColumn > 0;
+        if (!shouldSelectAfterLoad)
+        {
+            Scroll(key == NativeMethods.VK_UP ? NativeMethods.SB_TOP : NativeMethods.SB_BOTTOM, 0d);
+            return true;
+        }
+
+        if (extendSelection)
+        {
+            bool hasAnchor = selectedColumn > 0
+                ? EnsureCellSelectionAnchorFromCurrentFocus(selectedColumn)
+                : EnsureRowSelectionAnchorFromCurrentFocus();
+            if (!hasAnchor)
+            {
+                return false;
+            }
+        }
+
+        if (key == NativeMethods.VK_UP)
+        {
+            SuspendTailFollow();
+        }
+        else
+        {
+            _tailFollowSuspended = false;
+        }
+
+        bool activatePendingSelection = selectedColumn > 0 || (!extendSelection && _onRowActivated is not null);
+        return QueueSearchKeyboardSelectionRequest(
+            kind,
+            pendingSelection,
+            selectedColumn: selectedColumn,
+            extendSelection: extendSelection,
+            activate: activatePendingSelection);
+    }
+
+    private bool TryHandleControlCellArrowKey(int key, bool extendSelection)
+    {
+        if (_reader is not IColumnViewportReader columnReader ||
+            _reader is not ISelectableViewportReader ||
+            !_reader.HasContent ||
+            _reader.CurrentRows.Count == 0)
+        {
+            return false;
+        }
+
+        int columnCount = GetGridColumnCount(columnReader);
+        if (columnCount <= 1)
+        {
+            return false;
+        }
+
+        int currentColumn = ResolveKeyboardCellSelectionFocusColumn(columnCount);
+        if (key == NativeMethods.VK_UP || key == NativeMethods.VK_DOWN)
+        {
+            return TryHandleControlVerticalArrowKey(key, extendSelection, currentColumn);
+        }
+
+        if (key != NativeMethods.VK_LEFT && key != NativeMethods.VK_RIGHT)
+        {
+            return false;
+        }
+
+        int targetColumn = key == NativeMethods.VK_LEFT ? 1 : columnCount - 1;
+        if (extendSelection && !EnsureCellSelectionAnchorFromCurrentFocus(currentColumn))
+        {
+            return false;
+        }
+
+        if (TryGetOffscreenGridCellFocusOrdinal(out long rowOrdinal))
+        {
+            return QueueSearchKeyboardSelectionAtRowOrdinal(
+                rowOrdinal,
+                targetColumn,
+                extendSelection: extendSelection,
+                activate: false);
+        }
+
+        int currentRow = ResolveKeyboardCellSelectionFocusRow();
+        return extendSelection
+            ? ExtendGridCellSelectionTo(currentRow, targetColumn, activate: false)
+            : SelectSingleGridCell(currentRow, targetColumn, activate: false);
     }
 
     private bool TryHandleSearchResultKeyboardNavigation(int key)
@@ -2977,6 +3107,104 @@ internal sealed class ViewportPaneWindow : IDisposable
         return true;
     }
 
+    private bool EnsureRowSelectionAnchorFromCurrentFocus()
+    {
+        if (_reader is null ||
+            _reader.CurrentRows.Count == 0 ||
+            _reader is not ISelectableViewportReader)
+        {
+            return false;
+        }
+
+        if (_selectionAnchorKey is null)
+        {
+            int current = ResolveKeyboardSelectionFocusIndex();
+            _selectionAnchorDataIndex = current;
+            _selectionAnchorKey = GetCurrentRowSelectionKey(current);
+            return _selectionAnchorKey is not null;
+        }
+
+        TryFindCurrentRowIndex(_selectionAnchorKey, out _selectionAnchorDataIndex);
+        return true;
+    }
+
+    private bool EnsureCellSelectionAnchorFromCurrentFocus(int currentColumn)
+    {
+        if (_reader is null ||
+            _reader.CurrentRows.Count == 0 ||
+            _reader is not IColumnViewportReader columnReader ||
+            _reader is not ISelectableViewportReader)
+        {
+            return false;
+        }
+
+        int columnCount = GetGridColumnCount(columnReader);
+        currentColumn = Math.Clamp(currentColumn, 1, Math.Max(1, columnCount - 1));
+        if (_cellSelectionAnchorKey is null)
+        {
+            if (_cellSelectionFocusKey is GridCellKey focusKey)
+            {
+                _cellSelectionAnchorKey = focusKey;
+                TryFindCurrentRowIndex(focusKey.RowKey, out _cellSelectionAnchorDataIndex);
+                return true;
+            }
+
+            int currentRow = ResolveKeyboardCellSelectionFocusRow();
+            if (!TryGetCurrentRowSelection(currentRow, out ViewportRowSelectionKey currentRowKey, out _))
+            {
+                return false;
+            }
+
+            _cellSelectionAnchorDataIndex = currentRow;
+            _cellSelectionAnchorKey = new GridCellKey(currentRowKey, currentColumn);
+            return true;
+        }
+
+        TryFindCurrentRowIndex(_cellSelectionAnchorKey.Value.RowKey, out _cellSelectionAnchorDataIndex);
+        return true;
+    }
+
+    private bool ExtendRowSelectionTo(int target, bool activate)
+    {
+        if (_reader is null ||
+            !_reader.HasContent ||
+            _reader.CurrentRows.Count == 0 ||
+            _reader is not ISelectableViewportReader)
+        {
+            return false;
+        }
+
+        target = Math.Clamp(target, 0, _reader.CurrentRows.Count - 1);
+        if (!EnsureRowSelectionAnchorFromCurrentFocus())
+        {
+            return false;
+        }
+
+        _selectionFocusDataIndex = target;
+        _selectionFocusKey = GetCurrentRowSelectionKey(target);
+        if (_selectionAnchorKey is null || _selectionFocusKey is null)
+        {
+            return false;
+        }
+
+        bool control = IsControlKeyDown();
+        bool nextSelectAll = control && _selectionSelectAllRows;
+        List<ViewportRowSelectionRange> nextRanges = control
+            ? new List<ViewportRowSelectionRange>(_selectionRanges)
+            : new List<ViewportRowSelectionRange>();
+        HashSet<ViewportRowSelectionKey> nextExcluded = control
+            ? new HashSet<ViewportRowSelectionKey>(_selectionExcludedRows)
+            : new HashSet<ViewportRowSelectionKey>();
+        AddRangeSelection(nextRanges, nextExcluded, _selectionAnchorKey.Value, _selectionFocusKey.Value);
+        ReplaceSelection(nextSelectAll, nextRanges, nextExcluded);
+        if (activate)
+        {
+            ActivateRowAt(target);
+        }
+
+        return true;
+    }
+
     private void EnsureGridColumnVisible(int columnIndex)
     {
         if (_reader is not IColumnViewportReader columnReader || columnIndex <= 0)
@@ -3056,7 +3284,13 @@ internal sealed class ViewportPaneWindow : IDisposable
         return true;
     }
 
-    private bool QueueSearchKeyboardSelectionRequest(ViewportRequestKind kind, PendingSearchKeyboardSelection pendingSelection, int deltaLines = 0, int selectedColumn = -1)
+    private bool QueueSearchKeyboardSelectionRequest(
+        ViewportRequestKind kind,
+        PendingSearchKeyboardSelection pendingSelection,
+        int deltaLines = 0,
+        int selectedColumn = -1,
+        bool extendSelection = false,
+        bool activate = true)
     {
         ClearPendingSearchKeyboardSelection();
         long requestId = QueueViewportRequest(
@@ -3071,6 +3305,8 @@ internal sealed class ViewportPaneWindow : IDisposable
         _pendingSearchKeyboardSelection = pendingSelection;
         _pendingSearchKeyboardSelectionRequestId = requestId;
         _pendingSearchKeyboardSelectionColumn = selectedColumn;
+        _pendingSearchKeyboardSelectionExtend = extendSelection;
+        _pendingSearchKeyboardSelectionActivate = activate;
         return true;
     }
 
@@ -3127,7 +3363,14 @@ internal sealed class ViewportPaneWindow : IDisposable
             return;
         }
 
-        SelectSingleCurrentRow(rowIndex, activate: true);
+        if (extendSelection)
+        {
+            ExtendRowSelectionTo(rowIndex, activate);
+        }
+        else
+        {
+            SelectSingleCurrentRow(rowIndex, activate);
+        }
     }
 
     private void ClearPendingSearchKeyboardSelection()
@@ -3165,34 +3408,7 @@ internal sealed class ViewportPaneWindow : IDisposable
             return false;
         }
 
-        if (_selectionAnchorKey is null)
-        {
-            _selectionAnchorDataIndex = current;
-            _selectionAnchorKey = GetCurrentRowSelectionKey(current);
-        }
-        else
-        {
-            TryFindCurrentRowIndex(_selectionAnchorKey, out _selectionAnchorDataIndex);
-        }
-
-        _selectionFocusDataIndex = target;
-        _selectionFocusKey = GetCurrentRowSelectionKey(target);
-        if (_selectionAnchorKey is null || _selectionFocusKey is null)
-        {
-            return false;
-        }
-
-        bool control = IsControlKeyDown();
-        bool nextSelectAll = control && _selectionSelectAllRows;
-        List<ViewportRowSelectionRange> nextRanges = control
-            ? new List<ViewportRowSelectionRange>(_selectionRanges)
-            : new List<ViewportRowSelectionRange>();
-        HashSet<ViewportRowSelectionKey> nextExcluded = control
-            ? new HashSet<ViewportRowSelectionKey>(_selectionExcludedRows)
-            : new HashSet<ViewportRowSelectionKey>();
-        AddRangeSelection(nextRanges, nextExcluded, _selectionAnchorKey.Value, _selectionFocusKey.Value);
-        ReplaceSelection(nextSelectAll, nextRanges, nextExcluded);
-        return true;
+        return ExtendRowSelectionTo(target, activate: false);
     }
 
     private bool TryHandleShiftCellSelectionKey(int key)
