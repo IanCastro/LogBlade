@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 
 internal sealed class RuleManagerWindow
 {
@@ -239,9 +241,15 @@ internal sealed class RuleManagerWindow
             return;
         }
 
-        _rules.Add(saved);
+        List<DisplayParserRule> nextRules = new(_rules) { saved };
+        if (!TrySaveRules(nextRules))
+        {
+            return;
+        }
+
+        _rules.Clear();
+        _rules.AddRange(nextRules);
         _activeRuleName = saved.Name;
-        SaveRules();
         ReloadList(saved.Name);
     }
 
@@ -263,13 +271,19 @@ internal sealed class RuleManagerWindow
 
         bool editedActiveRule = _activeRuleName is not null &&
             string.Equals(_rules[index].Name, _activeRuleName, StringComparison.OrdinalIgnoreCase);
-        _rules[index] = saved;
-        if (editedActiveRule || _activeRuleName is null)
+        string? nextActiveRuleName = editedActiveRule || _activeRuleName is null
+            ? saved.Name
+            : _activeRuleName;
+        List<DisplayParserRule> nextRules = new(_rules);
+        nextRules[index] = saved;
+        if (!TrySaveRules(nextRules))
         {
-            _activeRuleName = saved.Name;
+            return;
         }
 
-        SaveRules();
+        _rules.Clear();
+        _rules.AddRange(nextRules);
+        _activeRuleName = nextActiveRuleName;
         ReloadList(saved.Name);
     }
 
@@ -293,14 +307,23 @@ internal sealed class RuleManagerWindow
             return;
         }
 
-        _rules.RemoveAt(index);
-        if (_activeRuleName is not null &&
-            string.Equals(_activeRuleName, removedName, StringComparison.OrdinalIgnoreCase))
+        string? nextActiveRuleName = _activeRuleName;
+        if (nextActiveRuleName is not null &&
+            string.Equals(nextActiveRuleName, removedName, StringComparison.OrdinalIgnoreCase))
         {
-            _activeRuleName = null;
+            nextActiveRuleName = null;
         }
 
-        SaveRules();
+        List<DisplayParserRule> nextRules = new(_rules);
+        nextRules.RemoveAt(index);
+        if (!TrySaveRules(nextRules))
+        {
+            return;
+        }
+
+        _rules.Clear();
+        _rules.AddRange(nextRules);
+        _activeRuleName = nextActiveRuleName;
         string? nextSelection = index < _rules.Count ? _rules[index].Name : _activeRuleName;
         ReloadList(nextSelection);
     }
@@ -317,9 +340,15 @@ internal sealed class RuleManagerWindow
         DisplayParserRule duplicate = CopyRule(_rules[index]);
         duplicate.Name = CreateDuplicateName(duplicate.Name);
 
-        _rules.Add(duplicate);
+        List<DisplayParserRule> nextRules = new(_rules) { duplicate };
+        if (!TrySaveRules(nextRules))
+        {
+            return;
+        }
+
+        _rules.Clear();
+        _rules.AddRange(nextRules);
         _activeRuleName = duplicate.Name;
-        SaveRules();
         ReloadList(duplicate.Name);
     }
 
@@ -361,9 +390,18 @@ internal sealed class RuleManagerWindow
         return -1;
     }
 
-    private void SaveRules()
+    private bool TrySaveRules(IReadOnlyList<DisplayParserRule> rules)
     {
-        DisplayParserRuleStore.Save(_rules);
+        try
+        {
+            DisplayParserRuleStore.Save(rules);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or NotSupportedException or ArgumentException)
+        {
+            ShowError("Failed to save parser rules: " + ex.Message);
+            return false;
+        }
     }
 
     private void Close()

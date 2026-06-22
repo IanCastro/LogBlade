@@ -80,6 +80,7 @@ internal sealed class ViewportPaneWindow : IDisposable
     private int _visibleLineCount = 1;
     private int _xOffsetChars;
     private bool _isVisible = true;
+    private bool _disposed;
     private bool _hasFocus;
     private string _statusText = string.Empty;
     private string _emptyContentText = "(empty file)";
@@ -383,10 +384,32 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     public void Dispose()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
+        if (_hwnd != IntPtr.Zero && NativeMethods.DestroyWindow(_hwnd))
+        {
+            return;
+        }
+
+        DisposeWindowResources();
+    }
+
+    private void DisposeWindowResources()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
         ResetColumnResizeState(clearManualWidths: true);
         ClearSelection(invalidate: false);
         _reader?.Dispose();
         _reader = null;
+        _pendingViewportRequest = null;
         if (_inactiveSelectionBrush != IntPtr.Zero)
         {
             NativeMethods.DeleteObject(_inactiveSelectionBrush);
@@ -5123,7 +5146,7 @@ internal sealed class ViewportPaneWindow : IDisposable
 
         if (msg == NativeMethods.WM_NCDESTROY)
         {
-            self.ResetColumnResizeState(clearManualWidths: true);
+            self.DisposeWindowResources();
             NativeMethods.SetWindowLongPtrW(hwnd, NativeMethods.GWLP_USERDATA, IntPtr.Zero);
             if (self._selfHandle.IsAllocated)
             {

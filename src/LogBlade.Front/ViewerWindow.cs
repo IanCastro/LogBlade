@@ -75,6 +75,7 @@ internal sealed class ViewerWindow
     private int _charWidth = 8;
     private bool _firstRenderLogged;
     private bool _closing;
+    private bool _resourcesDisposed;
     private bool _updatingParserCombo;
     private bool _updatingSearchControls;
     private List<DisplayParserRule> _parserRules = new();
@@ -415,6 +416,16 @@ internal sealed class ViewerWindow
                     self.DisposeResources();
                     NativeMethods.PostQuitMessage(0);
                     return IntPtr.Zero;
+                case NativeMethods.WM_NCDESTROY:
+                    self.DisposeResources();
+                    NativeMethods.SetWindowLongPtrW(hwnd, NativeMethods.GWLP_USERDATA, IntPtr.Zero);
+                    if (self._selfHandle.IsAllocated)
+                    {
+                        self._selfHandle.Free();
+                    }
+
+                    self._hwnd = IntPtr.Zero;
+                    return NativeMethods.DefWindowProcW(hwnd, msg, wParam, lParam);
                 default:
                     return NativeMethods.DefWindowProcW(hwnd, msg, wParam, lParam);
             }
@@ -4249,6 +4260,12 @@ internal sealed class ViewerWindow
 
     private void DisposeResources()
     {
+        if (_resourcesDisposed)
+        {
+            return;
+        }
+
+        _resourcesDisposed = true;
         NativeMethods.KillTimer(_hwnd, SearchDebounceTimerId);
         StopFileWatcher();
         CancelActiveSearch();
@@ -4288,11 +4305,6 @@ internal sealed class ViewerWindow
         if (_font != IntPtr.Zero && _font != NativeMethods.GetStockObject(NativeMethods.SYSTEM_FIXED_FONT))
         {
             NativeMethods.DeleteObject(_font);
-        }
-
-        if (_selfHandle.IsAllocated)
-        {
-            _selfHandle.Free();
         }
 
         _searchResizeGrip = IntPtr.Zero;
