@@ -767,31 +767,43 @@ internal sealed class ViewerWindow
 
     private void ApplyParserRuleChange()
     {
-        ReloadMainReaderWithSelectedParser();
+        if (!ReloadMainReaderWithSelectedParser())
+        {
+            return;
+        }
+
         if (HasActiveSearch)
         {
             RestartSearchAfterInputChange();
         }
     }
 
-    private void ReloadMainReaderWithSelectedParser()
+    private bool ReloadMainReaderWithSelectedParser()
     {
         if (_mainPane is null || _mainPane.Reader is null || _detectedEncoding is not DetectedEncodingInfo detected)
         {
-            return;
+            return true;
         }
 
         double scrollPercentage = _mainPane.Reader.ScrollPercentage;
         int visibleLines = _mainPane.VisibleLineCount;
         try
         {
-            VisualRowReader reader = new(_path, detected.Encoding, detected.DataOffset, GetSelectedParserRule());
+            DisplayParserRule? parserRule = GetSelectedParserRule();
+            if (parserRule is not null)
+            {
+                DisplayParserEvaluator.ValidateRule(parserRule);
+            }
+
+            VisualRowReader reader = new(_path, detected.Encoding, detected.DataOffset, parserRule);
             reader.ReadFromPercentage(scrollPercentage, visibleLines);
             _mainPane.SetReader(reader, visibleLines, preserveSelection: true);
+            return true;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
         {
             NativeMethods.MessageBoxW(_hwnd, "Failed to apply parser: " + ex.Message, Program.AppTitle, NativeMethods.MB_OK | NativeMethods.MB_ICONERROR);
+            return false;
         }
     }
 

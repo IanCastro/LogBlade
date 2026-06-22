@@ -80,7 +80,15 @@ public static class DisplayParserEvaluator
                 throw new ArgumentException("Rule is required.", nameof(stage));
             }
 
-            _ = new Regex(stage.Rule, RegexOptions.CultureInvariant);
+            try
+            {
+                _ = new Regex(stage.Rule, RegexOptions.CultureInvariant);
+            }
+            catch (ArgumentException ex)
+            {
+                throw new ArgumentException("Regex error: " + ex.Message, nameof(stage), ex);
+            }
+
             return;
         }
 

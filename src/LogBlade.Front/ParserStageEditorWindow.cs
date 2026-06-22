@@ -400,10 +400,21 @@ internal sealed class ParserStageEditorWindow
         _updatingPreview = true;
         try
         {
+            DisplayParserStage stage = CreateStageFromControls();
+            try
+            {
+                DisplayParserEvaluator.ValidateStage(stage);
+            }
+            catch (ArgumentException ex)
+            {
+                NativeMethods.SetWindowTextW(_previewEdit, ex.Message);
+                return;
+            }
+
             string input = _previousStages.Count == 0
                 ? _sample
                 : EvaluateLines(_sample, new DisplayParserRule { Stages = CloneStages(_previousStages) });
-            string output = EvaluateLines(input, new DisplayParserRule { Stages = new List<DisplayParserStage> { CreateStageFromControls() } });
+            string output = EvaluateLines(input, new DisplayParserRule { Stages = new List<DisplayParserStage> { stage } });
             NativeMethods.SetWindowTextW(_previewEdit, output);
         }
         finally

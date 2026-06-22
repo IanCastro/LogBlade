@@ -18,6 +18,7 @@ internal static class Program
             RunDisplayParserRegexNamedDisplay();
             RunDisplayParserRegexDefaultFullMatch();
             RunDisplayParserRegexPreservesPatternSpaces();
+            RunDisplayParserRegexInvalidRegexValidation();
             RunDisplayParserFallbackOriginal();
             RunDisplayParserRegexThenJsonTemplate();
             RunDisplayParserSecondStageFailureReturnsFirstOutput();
@@ -196,6 +197,20 @@ internal static class Program
 
         AssertEqual("display parser regex preserves pattern spaces match", DisplayParserEvaluator.EvaluateOrOriginal(rule, "x abc y"), "hit");
         AssertEqual("display parser regex preserves pattern spaces no match", DisplayParserEvaluator.EvaluateOrOriginal(rule, "abc"), "abc");
+    }
+
+    private static void RunDisplayParserRegexInvalidRegexValidation()
+    {
+        try
+        {
+            DisplayParserEvaluator.ValidateStage(RegexStage(@"("));
+        }
+        catch (ArgumentException ex) when (ex.Message.StartsWith("Regex error:", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        throw new InvalidOperationException("display parser regex invalid regex: expected regex validation failure.");
     }
 
     private static void RunDisplayParserFallbackOriginal()

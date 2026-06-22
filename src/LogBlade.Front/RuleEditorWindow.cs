@@ -522,6 +522,18 @@ internal sealed class RuleEditorWindow
 
     private static string EvaluateSample(DisplayParserRule rule)
     {
+        if (rule.Stages is not null && rule.Stages.Count > 0)
+        {
+            try
+            {
+                DisplayParserEvaluator.ValidateRule(rule);
+            }
+            catch (ArgumentException ex)
+            {
+                return ex.Message;
+            }
+        }
+
         if (rule.Sample.Length == 0)
         {
             return string.Empty;
