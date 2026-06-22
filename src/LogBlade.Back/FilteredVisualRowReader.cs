@@ -532,6 +532,14 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
         return copy;
     }
 
+    internal FilteredLineDescriptor[] CopyDescriptors()
+    {
+        ThrowIfDisposed();
+        FilteredLineDescriptor[] copy = new FilteredLineDescriptor[_descriptors.Length];
+        Array.Copy(_descriptors, copy, _descriptors.Length);
+        return copy;
+    }
+
     public void Dispose()
     {
         if (_disposed)

@@ -78,6 +78,7 @@ internal static class Program
             RunNonBacktrackingRegexLeadingDotStarNoMatchOnLongLine(tempRoot);
             RunNonBacktrackingRegexLeadingDotStarMatchesLongLine(tempRoot);
             RunCascadedLiteralSearchFiltersPrevious(tempRoot);
+            RunChangedCascadedSearchFiltersPreviousReader(tempRoot);
             RunCascadedInvertMatch(tempRoot);
             RunCascadedInvalidRegexValidation();
             RunCascadedCaptureGroupsUseLastCapturingRegex(tempRoot);
@@ -1130,6 +1131,49 @@ internal static class Program
         AssertEqual("cascade literal count", reader.MatchedLineCount, 1L);
         AssertSequence("cascade literal rows", reader.CurrentRows, "alpha beta");
         AssertSequence("cascade literal cells", ((IColumnViewportReader)reader).CurrentCells[0], "2", "alpha beta");
+    }
+
+    private static void RunChangedCascadedSearchFiltersPreviousReader(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "changed-cascade.log", "ERROR user=ana\r\nERROR user=bob\r\nINFO user=bob\r\n");
+        SearchOptions[] initialOptions =
+        {
+            new("ERROR", UseRegex: false, IgnoreCase: false),
+            new("user=ana", UseRegex: false, IgnoreCase: false)
+        };
+        SearchOptions[] changedOptions =
+        {
+            new("ERROR", UseRegex: false, IgnoreCase: false),
+            new("user=bob", UseRegex: false, IgnoreCase: false)
+        };
+
+        FilteredVisualRowReader[] initialReaders = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, initialOptions);
+        try
+        {
+            StagedSearchProgressUpdate finalUpdate = default;
+            LogSearchBuilder.BuildChangedStagedFilteredReadersIncremental(
+                initialReaders,
+                changedStageIndex: 1,
+                changedOptions,
+                new[] { 10, 10 },
+                update => finalUpdate = update,
+                CancellationToken.None);
+
+            AssertEqual("changed cascade prefix reader unchanged", finalUpdate.Readers[0] is null, true);
+            AssertEqual("changed cascade first stage count", finalUpdate.MatchedLineCounts[0], 2L);
+            AssertEqual("changed cascade second stage count", finalUpdate.MatchedLineCounts[1], 1L);
+            using FilteredVisualRowReader changedReader = finalUpdate.Readers[1] ?? throw new InvalidOperationException("changed cascade reader missing.");
+            IReadOnlyList<string> rows = changedReader.ReadFromPercentage(0d, 10);
+
+            AssertSequence("changed cascade rows", rows, "ERROR user=bob");
+        }
+        finally
+        {
+            foreach (FilteredVisualRowReader reader in initialReaders)
+            {
+                reader.Dispose();
+            }
+        }
     }
 
     private static void RunCascadedInvertMatch(string tempRoot)
