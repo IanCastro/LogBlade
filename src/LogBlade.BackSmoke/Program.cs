@@ -15,6 +15,12 @@ internal static class Program
 
             RunDisplayParserJsonTemplate();
             RunDisplayParserJsonWithTrailingText();
+            RunDisplayParserJsonSkipsInvalidPrefixCandidate();
+            RunDisplayParserGeneratesJsonTemplateFromSample();
+            RunDisplayParserGeneratesJsonTemplateFromMultipleSamples();
+            RunDisplayParserGeneratesNestedJsonTemplate();
+            RunDisplayParserIgnoresInvalidJsonTemplatePaths();
+            RunDisplayParserGeneratesEmptyTemplateWithoutJson();
             RunDisplayParserRegexNamedDisplay();
             RunDisplayParserRegexDefaultFullMatch();
             RunDisplayParserRegexPreservesPatternSpaces();
@@ -176,6 +182,78 @@ internal static class Program
 
         string input = "{ \"Level\": \"Info\", \"Logger\": \"EventScheduler\", \"Message\": \"running\" } 2025-09-12 [EventScheduler]";
         AssertEqual("display parser json trailing text", DisplayParserEvaluator.EvaluateOrOriginal(rule, input), "INFO EventScheduler - running");
+    }
+
+    private static void RunDisplayParserJsonSkipsInvalidPrefixCandidate()
+    {
+        DisplayParserRule rule = ParserRule(JsonStage("{Level}"));
+        string input = "2026-06-24 [Logger] {\"Level\":\"Info\"}";
+
+        AssertEqual(
+            "display parser json skips invalid prefix candidate",
+            DisplayParserEvaluator.EvaluateOrOriginal(rule, input),
+            "Info");
+    }
+
+    private static void RunDisplayParserGeneratesJsonTemplateFromSample()
+    {
+        string sample = "2026-06-24 [Logger] prefix {\"Timestamp\":\"2026-06-24\",\"Level\":\"Info\"} trailing";
+
+        AssertEqual(
+            "display parser generated json template",
+            DisplayParserEvaluator.GenerateJsonTemplateFromSample(sample),
+            "Timestamp - {Timestamp}, Level - {Level}");
+    }
+
+    private static void RunDisplayParserGeneratesJsonTemplateFromMultipleSamples()
+    {
+        string sample =
+            "{\"Key\":\"first\",\"Level\":\"Info\"}\r\n" +
+            "not json\r\n" +
+            "{\"key\":\"second\",\"Message\":\"running\"}";
+
+        AssertEqual(
+            "display parser generated distinct json template",
+            DisplayParserEvaluator.GenerateJsonTemplateFromSample(sample),
+            "Key - {Key}, Level - {Level}, Message - {Message}");
+    }
+
+    private static void RunDisplayParserGeneratesNestedJsonTemplate()
+    {
+        string sample =
+            "{\"State\":{\"Message\":\"running\",\"Code\":42}," +
+            "\"items\":[{\"name\":\"first\"},{\"name\":\"second\"}]}";
+        string generatedTemplate = DisplayParserEvaluator.GenerateJsonTemplateFromSample(sample);
+
+        AssertEqual(
+            "display parser generated nested json template",
+            generatedTemplate,
+            "State.Message - {State.Message}, State.Code - {State.Code}, " +
+            "items.0.name - {items.0.name}, items.1.name - {items.1.name}");
+        AssertEqual(
+            "display parser evaluates generated nested json template",
+            DisplayParserEvaluator.EvaluateOrOriginal(ParserRule(JsonStage(generatedTemplate)), sample),
+            "State.Message - running, State.Code - 42, items.0.name - first, items.1.name - second");
+    }
+
+    private static void RunDisplayParserIgnoresInvalidJsonTemplatePaths()
+    {
+        string sample =
+            "{\"Valid\":\"yes\",\"State\":{\"{OriginalFormat}\":\"ignored\",\"Message\":\"running\"}," +
+            "\"invalid.name\":\"ignored\",\"invalid{brace\":\"ignored\"}";
+
+        AssertEqual(
+            "display parser ignores invalid json template paths",
+            DisplayParserEvaluator.GenerateJsonTemplateFromSample(sample),
+            "Valid - {Valid}, State.Message - {State.Message}");
+    }
+
+    private static void RunDisplayParserGeneratesEmptyTemplateWithoutJson()
+    {
+        AssertEqual(
+            "display parser generated empty template",
+            DisplayParserEvaluator.GenerateJsonTemplateFromSample("plain text\r\n{invalid"),
+            string.Empty);
     }
 
     private static void RunDisplayParserRegexNamedDisplay()

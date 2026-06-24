@@ -41,6 +41,59 @@ public sealed class DisplayParserStage
 
 public static class DisplayParserEvaluator
 {
+    public static string GenerateJsonTemplateFromSample(string sample)
+    {
+        if (string.IsNullOrEmpty(sample))
+        {
+            return string.Empty;
+        }
+
+        List<string> paths = new();
+        HashSet<string> distinctPaths = new(StringComparer.OrdinalIgnoreCase);
+        string normalized = sample.Replace("\r\n", "\n").Replace('\r', '\n');
+        string[] lines = normalized.Split('\n');
+        for (int i = 0; i < lines.Length; i++)
+        {
+            string line = lines[i];
+            if (line.Length == 0)
+            {
+                continue;
+            }
+
+            try
+            {
+                string json = ExtractFirstJsonValue(line);
+                using JsonDocument document = JsonDocument.Parse(json);
+                CollectJsonLeafPaths(document.RootElement, string.Empty, paths, distinctPaths);
+            }
+            catch (JsonException)
+            {
+            }
+        }
+
+        if (paths.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        StringBuilder template = new();
+        for (int i = 0; i < paths.Count; i++)
+        {
+            if (i > 0)
+            {
+                template.Append(", ");
+            }
+
+            string path = paths[i];
+            template.Append(path);
+            template.Append(" - {");
+            template.Append(path);
+            template.Append('}');
+        }
+
+        return template.ToString();
+    }
+
     public static DisplayParserRule? CloneRule(DisplayParserRule? rule)
     {
         if (rule is null || rule.Stages is null || rule.Stages.Count == 0)
@@ -356,26 +409,91 @@ public static class DisplayParserEvaluator
         };
     }
 
-    private static string ExtractFirstJsonValue(string input)
+    private static void CollectJsonLeafPaths(
+        JsonElement element,
+        string currentPath,
+        List<string> paths,
+        HashSet<string> distinctPaths)
     {
-        int start = FindJsonStart(input);
-        if (start < 0)
+        if (element.ValueKind == JsonValueKind.Object)
         {
-            throw new JsonException("No JSON object or array found in line.");
+            foreach (JsonProperty property in element.EnumerateObject())
+            {
+                if (!IsCompatibleJsonPathPart(property.Name))
+                {
+                    continue;
+                }
+
+                string propertyPath = currentPath.Length == 0
+                    ? property.Name
+                    : currentPath + "." + property.Name;
+                CollectJsonLeafPaths(property.Value, propertyPath, paths, distinctPaths);
+            }
+
+            return;
         }
 
-        int end = FindJsonEnd(input, start);
-        if (end < 0)
+        if (element.ValueKind == JsonValueKind.Array)
         {
-            throw new JsonException("JSON is empty or incomplete.");
+            int index = 0;
+            foreach (JsonElement item in element.EnumerateArray())
+            {
+                string itemPath = currentPath.Length == 0
+                    ? index.ToString()
+                    : currentPath + "." + index;
+                CollectJsonLeafPaths(item, itemPath, paths, distinctPaths);
+                index++;
+            }
+
+            return;
         }
 
-        return input.Substring(start, end - start + 1);
+        if (currentPath.Length > 0 && distinctPaths.Add(currentPath))
+        {
+            paths.Add(currentPath);
+        }
     }
 
-    private static int FindJsonStart(string input)
+    private static bool IsCompatibleJsonPathPart(string value) =>
+        value.Length > 0 &&
+        value.IndexOf('.') < 0 &&
+        value.IndexOf('{') < 0 &&
+        value.IndexOf('}') < 0;
+
+    private static string ExtractFirstJsonValue(string input)
     {
-        for (int i = 0; i < input.Length; i++)
+        int searchStart = 0;
+        while (searchStart < input.Length)
+        {
+            int start = FindJsonStart(input, searchStart);
+            if (start < 0)
+            {
+                break;
+            }
+
+            int end = FindJsonEnd(input, start);
+            if (end >= 0)
+            {
+                string candidate = input.Substring(start, end - start + 1);
+                try
+                {
+                    using JsonDocument document = JsonDocument.Parse(candidate);
+                    return candidate;
+                }
+                catch (JsonException)
+                {
+                }
+            }
+
+            searchStart = start + 1;
+        }
+
+        throw new JsonException("No valid JSON object or array found in line.");
+    }
+
+    private static int FindJsonStart(string input, int start)
+    {
+        for (int i = Math.Max(0, start); i < input.Length; i++)
         {
             if (input[i] is '{' or '[')
             {

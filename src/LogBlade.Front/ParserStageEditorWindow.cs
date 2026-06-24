@@ -240,24 +240,26 @@ internal sealed class ParserStageEditorWindow
 
         if (notification == NativeMethods.BN_CLICKED && id is IdRegexMode or IdJsonMode or IdRegexReplaceMode)
         {
-            _mode = id switch
+            DisplayParserMode nextMode = id switch
             {
                 IdRegexMode => DisplayParserMode.Regex,
                 IdRegexReplaceMode => DisplayParserMode.RegexReplace,
                 _ => DisplayParserMode.Json
             };
+            bool modeChanged = nextMode != _mode;
+            _mode = nextMode;
             SetButtonChecked(_regexRadio, _mode == DisplayParserMode.Regex);
             SetButtonChecked(_regexReplaceRadio, _mode == DisplayParserMode.RegexReplace);
             SetButtonChecked(_jsonRadio, _mode == DisplayParserMode.Json);
-            if (_mode == DisplayParserMode.Json)
+            if (modeChanged && _mode == DisplayParserMode.Json)
             {
                 SetDefaultJsonStage();
             }
-            else if (_mode == DisplayParserMode.RegexReplace)
+            else if (modeChanged && _mode == DisplayParserMode.RegexReplace)
             {
                 SetDefaultRegexReplaceStage();
             }
-            else
+            else if (modeChanged)
             {
                 SetDefaultRegexStage();
             }
@@ -364,7 +366,12 @@ internal sealed class ParserStageEditorWindow
 
     private void SetDefaultJsonStage()
     {
-        NativeMethods.SetWindowTextW(_ruleEdit, "{Timestamp} [{Logger}] {upper:Level} {Logger} - {Message}");
+        string generatedTemplate = DisplayParserEvaluator.GenerateJsonTemplateFromSample(GetStageInput());
+        NativeMethods.SetWindowTextW(
+            _ruleEdit,
+            generatedTemplate.Length == 0
+                ? "{Timestamp} [{Logger}] {upper:Level} {Logger} - {Message}"
+                : generatedTemplate);
         NativeMethods.SetWindowTextW(_templateEdit, string.Empty);
     }
 
@@ -411,9 +418,7 @@ internal sealed class ParserStageEditorWindow
                 return;
             }
 
-            string input = _previousStages.Count == 0
-                ? _sample
-                : EvaluateLines(_sample, new DisplayParserRule { Stages = CloneStages(_previousStages) });
+            string input = GetStageInput();
             string output = EvaluateLines(input, new DisplayParserRule { Stages = new List<DisplayParserStage> { stage } });
             NativeMethods.SetWindowTextW(_previewEdit, output);
         }
@@ -460,6 +465,11 @@ internal sealed class ParserStageEditorWindow
 
         return string.Join(Environment.NewLine, output);
     }
+
+    private string GetStageInput() =>
+        _previousStages.Count == 0
+            ? _sample
+            : EvaluateLines(_sample, new DisplayParserRule { Stages = CloneStages(_previousStages) });
 
     private static DisplayParserStage? GetInitialStage(IReadOnlyList<DisplayParserStage> stages, int stageIndex)
     {
