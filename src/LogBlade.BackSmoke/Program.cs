@@ -63,6 +63,12 @@ internal static class Program
             RunDisplayParserMainViewerSkipsRawSegmentsAfterShortParse(tempRoot);
             RunDisplayParserMainViewerWrapsParsedOutput(tempRoot);
             RunDisplayParserMainViewerSelectionCopiesParsedLine(tempRoot);
+            RunDisplayParserMainViewerSplitsParsedNewlines(tempRoot);
+            RunDisplayParserMainViewerPreservesEmptyParsedLines(tempRoot);
+            RunDisplayParserMainViewerWrapsParsedLinesIndependently(tempRoot);
+            RunDisplayParserMainViewerSelectionPreservesParsedNewlines(tempRoot);
+            RunSearchFindsTextOnSecondParsedLine(tempRoot);
+            RunSearchRepeatsCapturesAcrossParsedLines(tempRoot);
             RunVisualSelectionRangeAcrossViewport(tempRoot);
             RunVisualSelectionSelectsAllRows(tempRoot);
             RunVisualSelectionWrappedRowCopiesOriginalLine(tempRoot);
@@ -655,11 +661,15 @@ internal static class Program
         IColumnViewportReader columns = reader;
 
         AssertSequence("wrapped headers", columns.ColumnHeaders, "#", "Text", "0", "1");
-        AssertEqual("wrapped row count", columns.CurrentCells.Count, 1);
+        AssertEqual("wrapped row count", columns.CurrentCells.Count, 2);
         AssertEqual("wrapped line number", columns.CurrentCells[0][0], "1");
-        AssertEqual("wrapped text", columns.CurrentCells[0][1], longText);
+        AssertEqual("wrapped first text", columns.CurrentCells[0][1], longText[..VisualRowReader.VisibleSegmentChars]);
         AssertEqual("wrapped first group 0", columns.CurrentCells[0][2], "aaa");
         AssertEqual("wrapped first group 1", columns.CurrentCells[0][3], "ccc");
+        AssertEqual("wrapped second line number", columns.CurrentCells[1][0], "1");
+        AssertEqual("wrapped second text", columns.CurrentCells[1][1], longText[VisualRowReader.VisibleSegmentChars..]);
+        AssertEqual("wrapped second group 0", columns.CurrentCells[1][2], "aaa");
+        AssertEqual("wrapped second group 1", columns.CurrentCells[1][3], "ccc");
     }
 
     private static void RunFilteredLineStaleWhenStartMoves(string tempRoot)
@@ -877,6 +887,121 @@ internal static class Program
             Array.Empty<ViewportRowSelectionKey>());
 
         AssertSelectedRows("display parser main selection", rows, message);
+    }
+
+    private static void RunDisplayParserMainViewerSplitsParsedNewlines(string tempRoot)
+    {
+        string[] separators = ["\n", "\r\n", "\r"];
+        for (int i = 0; i < separators.Length; i++)
+        {
+            string path = WriteLog(tempRoot, $"display-parser-main-newline-{i}.log", "{\"First\":\"a\",\"Second\":\"b\"}\r\n");
+            DisplayParserRule parser = ParserRule(JsonStage("{First}" + separators[i] + "{Second}"));
+
+            using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0, parser);
+            reader.ReadFromPercentage(0d, 3);
+
+            AssertSequence($"display parser main newline {i}", reader.CurrentRows, "a", "b");
+        }
+    }
+
+    private static void RunDisplayParserMainViewerPreservesEmptyParsedLines(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "display-parser-main-empty-lines.log", "{\"First\":\"a\",\"Second\":\"b\"}\r\n");
+        DisplayParserRule parser = ParserRule(JsonStage("{First}\n\n{Second}\n"));
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0, parser);
+        reader.ReadFromPercentage(0d, 5);
+
+        AssertSequence("display parser main empty lines", reader.CurrentRows, "a", string.Empty, "b", string.Empty);
+    }
+
+    private static void RunDisplayParserMainViewerWrapsParsedLinesIndependently(string tempRoot)
+    {
+        string first = new('x', VisualRowReader.VisibleSegmentChars + 1);
+        string path = WriteLog(tempRoot, "display-parser-main-newline-wrap.log", "{\"First\":\"" + first + "\",\"Second\":\"tail\"}\r\n");
+        DisplayParserRule parser = ParserRule(JsonStage("{First}\n{Second}"));
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0, parser);
+        reader.ReadFromPercentage(0d, 4);
+
+        AssertSequence(
+            "display parser main newline wrap",
+            reader.CurrentRows,
+            new string('x', VisualRowReader.VisibleSegmentChars),
+            "x",
+            "tail");
+    }
+
+    private static void RunDisplayParserMainViewerSelectionPreservesParsedNewlines(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "display-parser-main-newline-selection.log", "{\"First\":\"a\",\"Second\":\"b\"}\r\n");
+        DisplayParserRule parser = ParserRule(JsonStage("{First}\r\n{Second}"));
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0, parser);
+        reader.ReadFromPercentage(0d, 3);
+        ISelectableViewportReader selectable = reader;
+        ViewportRowSelectionKey secondVisualLine = selectable.CurrentRowSelectionKeys[1];
+
+        IReadOnlyList<ViewportSelectedRow> rows = selectable.ReadSelectedRows(
+            selectAll: false,
+            new[] { new ViewportRowSelectionRange(secondVisualLine, secondVisualLine) },
+            Array.Empty<ViewportRowSelectionKey>());
+
+        AssertSelectedRows("display parser main newline selection", rows, "a\r\nb");
+    }
+
+    private static void RunSearchFindsTextOnSecondParsedLine(string tempRoot)
+    {
+        string path = WriteLog(
+            tempRoot,
+            "display-parser-search-second-line.log",
+            "{\"Level\":\"Info\",\"Message\":\"ready\"}\r\n{\"Level\":\"Error\",\"Message\":\"failed\"}\r\n");
+        DisplayParserRule parser = ParserRule(JsonStage("{upper:Level}\n{Message}"));
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("failed", UseRegex: false, IgnoreCase: false),
+            parser);
+
+        reader.ReadFromPercentage(0d, 3);
+        IColumnViewportReader columns = reader;
+        AssertSequence("display parser search second line rows", reader.CurrentRows, "ERROR", "failed");
+        AssertSequence("display parser search second line first cells", columns.CurrentCells[0], "2", "ERROR");
+        AssertSequence("display parser search second line second cells", columns.CurrentCells[1], "2", "failed");
+
+        ISelectableViewportReader selectable = reader;
+        AssertEqual(
+            "display parser search second line ordinal",
+            ((IRowOrdinalViewportReader)reader).TryGetRowOrdinal(selectable.CurrentRowSelectionKeys[1], out long rowOrdinal),
+            true);
+        AssertEqual("display parser search second line ordinal value", rowOrdinal, 1L);
+
+        IReadOnlyList<ViewportSelectedRow> selectedRows = selectable.ReadSelectedRows(
+            selectAll: true,
+            Array.Empty<ViewportRowSelectionRange>(),
+            Array.Empty<ViewportRowSelectionKey>());
+        AssertSelectedRows("display parser search second line selection", selectedRows, "ERROR", "failed");
+    }
+
+    private static void RunSearchRepeatsCapturesAcrossParsedLines(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "display-parser-search-multiline-captures.log", "{\"Level\":\"Error\",\"Message\":\"failed\"}\r\n");
+        DisplayParserRule parser = ParserRule(JsonStage("{upper:Level}\n{Message}"));
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("(?<level>ERROR)\\n(?<message>failed)", UseRegex: true, IgnoreCase: false),
+            parser);
+
+        reader.ReadFromPercentage(0d, 3);
+        IColumnViewportReader columns = reader;
+        AssertSequence("display parser multiline capture headers", columns.ColumnHeaders, "#", "Text", "level", "message");
+        AssertSequence("display parser multiline capture first cells", columns.CurrentCells[0], "1", "ERROR", "ERROR", "failed");
+        AssertSequence("display parser multiline capture second cells", columns.CurrentCells[1], "1", "failed", "ERROR", "failed");
     }
 
     private static void RunVisualSelectionRangeAcrossViewport(string tempRoot)

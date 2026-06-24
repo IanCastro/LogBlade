@@ -250,6 +250,13 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
 
     private string ReadSelectedLogicalLineText(FileStream fs, ViewportRow firstRow, VisualPosition? nextPosition, out VisualPosition? nextLinePosition)
     {
+        string? parsedLineText = null;
+        if (_displayParserRule is not null &&
+            TryReadRealLine(fs, firstRow.RealLineStartOffset, out RealLineData line, out _))
+        {
+            parsedLineText = FormatDisplayText(line.Text);
+        }
+
         StringBuilder builder = new(firstRow.Text.Length);
         builder.Append(firstRow.Text);
 
@@ -262,7 +269,7 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
         }
 
         nextLinePosition = nextPosition;
-        return builder.ToString();
+        return parsedLineText ?? builder.ToString();
     }
 
     private static ViewportRowSelectionKey ToSelectionKey(ViewportRow row) =>
@@ -1441,16 +1448,16 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
 
     private bool TryGetPreviousVisualPosition(VisualPosition current, out VisualPosition previous)
     {
-        if (current.StartOffset <= _dataOffset)
-        {
-            previous = DefaultTopPosition();
-            return false;
-        }
-
         if (current.VisualStartKind == VisualStartKind.ForcedWrap && current.SegmentIndex > 0)
         {
             previous = GetVisualPositionForSegment(current.RealLineStartOffset, current.RealLineStartKind, current.SegmentIndex - 1);
             return true;
+        }
+
+        if (current.StartOffset <= _dataOffset)
+        {
+            previous = DefaultTopPosition();
+            return false;
         }
 
         current = NormalizePreviousNavigationStart(current);

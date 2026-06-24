@@ -67,8 +67,20 @@ internal static class FilteredLineUtilities
 
     public static int CountVisualRows(string text)
     {
-        int length = Math.Max(0, text.Length);
-        return Math.Max(1, (length + VisualRowReader.VisibleSegmentChars - 1) / VisualRowReader.VisibleSegmentChars);
+        int rowCount = 0;
+        int lineStart = 0;
+        while (true)
+        {
+            int lineEnd = FindLineEnd(text, lineStart);
+            int lineLength = lineEnd - lineStart;
+            rowCount += Math.Max(1, (lineLength + VisualRowReader.VisibleSegmentChars - 1) / VisualRowReader.VisibleSegmentChars);
+            if (lineEnd >= text.Length)
+            {
+                return rowCount;
+            }
+
+            lineStart = SkipLineBreak(text, lineEnd);
+        }
     }
 
     public static string GetVisualRowText(string text, int segmentIndex)
@@ -78,14 +90,56 @@ internal static class FilteredLineUtilities
             return string.Empty;
         }
 
-        int start = segmentIndex * VisualRowReader.VisibleSegmentChars;
-        if (start >= text.Length)
+        int lineStart = 0;
+        int remainingSegmentIndex = segmentIndex;
+        while (true)
         {
-            return string.Empty;
+            int lineEnd = FindLineEnd(text, lineStart);
+            int lineLength = lineEnd - lineStart;
+            int lineSegmentCount = Math.Max(1, (lineLength + VisualRowReader.VisibleSegmentChars - 1) / VisualRowReader.VisibleSegmentChars);
+            if (remainingSegmentIndex < lineSegmentCount)
+            {
+                int start = lineStart + (remainingSegmentIndex * VisualRowReader.VisibleSegmentChars);
+                int count = Math.Min(VisualRowReader.VisibleSegmentChars, lineEnd - start);
+                return text.Substring(start, count);
+            }
+
+            remainingSegmentIndex -= lineSegmentCount;
+            if (lineEnd >= text.Length)
+            {
+                return string.Empty;
+            }
+
+            lineStart = SkipLineBreak(text, lineEnd);
+        }
+    }
+
+    private static int FindLineEnd(string text, int start)
+    {
+        for (int i = start; i < text.Length; i++)
+        {
+            if (text[i] is '\r' or '\n')
+            {
+                return i;
+            }
         }
 
-        int count = Math.Min(VisualRowReader.VisibleSegmentChars, text.Length - start);
-        return text.Substring(start, count);
+        return text.Length;
+    }
+
+    private static int SkipLineBreak(string text, int lineEnd)
+    {
+        if (lineEnd >= text.Length)
+        {
+            return text.Length;
+        }
+
+        if (text[lineEnd] == '\r' && lineEnd + 1 < text.Length && text[lineEnd + 1] == '\n')
+        {
+            return lineEnd + 2;
+        }
+
+        return lineEnd + 1;
     }
 
     private static byte[] ReadRange(FileStream fs, long startOffset, long endOffset)
