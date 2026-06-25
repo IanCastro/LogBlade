@@ -41,6 +41,50 @@ public sealed class DisplayParserStage
 
 public static class DisplayParserEvaluator
 {
+    internal static int FindFirstJsonStageIndex(DisplayParserRule? rule)
+    {
+        if (rule?.Stages is null)
+        {
+            return -1;
+        }
+
+        for (int i = 0; i < rule.Stages.Count; i++)
+        {
+            if (rule.Stages[i].Mode == DisplayParserMode.Json)
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    internal static bool TryEvaluateStageRange(
+        DisplayParserRule rule,
+        int startIndex,
+        int endIndexExclusive,
+        string input,
+        out string parsed)
+    {
+        parsed = input;
+        int start = Math.Clamp(startIndex, 0, rule.Stages.Count);
+        int end = Math.Clamp(endIndexExclusive, start, rule.Stages.Count);
+        string current = input;
+        for (int i = start; i < end; i++)
+        {
+            if (!TryEvaluateStage(rule.Stages[i], current, out string next))
+            {
+                parsed = input;
+                return false;
+            }
+
+            current = next;
+        }
+
+        parsed = current;
+        return true;
+    }
+
     public static string GenerateJsonTemplateFromSample(string sample)
     {
         if (string.IsNullOrEmpty(sample))
@@ -52,6 +96,7 @@ public static class DisplayParserEvaluator
         HashSet<string> distinctPaths = new(StringComparer.OrdinalIgnoreCase);
         string normalized = sample.Replace("\r\n", "\n").Replace('\r', '\n');
         string[] lines = normalized.Split('\n');
+        StringBuilder? pendingJson = null;
         for (int i = 0; i < lines.Length; i++)
         {
             string line = lines[i];
@@ -60,15 +105,40 @@ public static class DisplayParserEvaluator
                 continue;
             }
 
+            bool hadPendingJson = pendingJson is not null;
+            string candidate = pendingJson is null
+                ? line
+                : pendingJson.Append(line).ToString();
+            JsonAssemblyState state = DisplayParserRecordSequence.GetJsonAssemblyState(candidate);
+            if (state == JsonAssemblyState.Incomplete)
+            {
+                pendingJson ??= new StringBuilder(line);
+                continue;
+            }
+
+            if (hadPendingJson && state is JsonAssemblyState.None or JsonAssemblyState.Invalid)
+            {
+                pendingJson = null;
+                candidate = line;
+                state = DisplayParserRecordSequence.GetJsonAssemblyState(candidate);
+                if (state == JsonAssemblyState.Incomplete)
+                {
+                    pendingJson = new StringBuilder(line);
+                    continue;
+                }
+            }
+
             try
             {
-                string json = ExtractFirstJsonValue(line);
+                string json = ExtractFirstJsonValue(candidate);
                 using JsonDocument document = JsonDocument.Parse(json);
                 CollectJsonLeafPaths(document.RootElement, string.Empty, paths, distinctPaths);
             }
             catch (JsonException)
             {
             }
+
+            pendingJson = null;
         }
 
         if (paths.Count == 0)
@@ -161,6 +231,30 @@ public static class DisplayParserEvaluator
         return TryEvaluate(rule, input, out string parsed)
             ? parsed
             : input;
+    }
+
+    public static string EvaluateLinesOrOriginal(DisplayParserRule? rule, string input)
+    {
+        if (rule is null || rule.Stages is null || rule.Stages.Count == 0 || input.Length == 0)
+        {
+            return input;
+        }
+
+        string normalized = input.Replace("\r\n", "\n").Replace('\r', '\n');
+        string[] lines = normalized.Split('\n');
+        List<RealLineData> source = new(lines.Length);
+        for (int i = 0; i < lines.Length; i++)
+        {
+            source.Add(new RealLineData(i, i, lines[i], i + 1, i + 1));
+        }
+
+        List<string> output = new();
+        foreach (DisplayParserRecord record in DisplayParserRecordEvaluator.Enumerate(source, rule))
+        {
+            output.Add(record.Text);
+        }
+
+        return string.Join(Environment.NewLine, output);
     }
 
     public static bool TryEvaluate(DisplayParserRule rule, string input, out string parsed)

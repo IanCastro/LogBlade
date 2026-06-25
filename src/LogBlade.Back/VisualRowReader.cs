@@ -3,6 +3,7 @@ using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Threading;
 
 public enum LogEncodingKind
 {
@@ -75,6 +76,7 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
     private long _fileSize;
     private bool _observedZeroFileSize;
     private readonly List<ViewportRow> _viewportRows = new();
+    private readonly Dictionary<long, DisplayParserRecord> _parsedRecordCache = new();
     private long _topOffset;
     private long _viewportEndOffset;
     private int _viewportVisibleLines;
@@ -252,9 +254,17 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
     {
         string? parsedLineText = null;
         if (_displayParserRule is not null &&
-            TryReadRealLine(fs, firstRow.RealLineStartOffset, out RealLineData line, out _))
+            TryReadParsedRecord(firstRow.RealLineStartOffset, out DisplayParserRecord record))
         {
-            parsedLineText = FormatDisplayText(line.Text);
+            parsedLineText = record.Text;
+            nextPosition = record.NextOffset < _fileSize
+                ? new VisualPosition(
+                    record.NextOffset,
+                    record.NextOffset,
+                    RealLineStartKind.TrueBreak,
+                    VisualStartKind.RealStart,
+                    0)
+                : null;
         }
 
         StringBuilder builder = new(firstRow.Text.Length);
@@ -393,6 +403,12 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
         }
 
         long bounded = Math.Clamp(offset, _dataOffset, _fileSize);
+        if (_displayParserRule is not null)
+        {
+            LoadViewportAt(LocateVisualPositionForOffset(bounded), count);
+            return CurrentRows;
+        }
+
         RealLineStartInfo realLineStart = FindRealLineStartContaining(bounded);
         LoadViewportAt(new VisualPosition(
             realLineStart.StartOffset,
@@ -443,15 +459,22 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
         _observedZeroFileSize = false;
         if (currentSize < previousSize)
         {
+            _parsedRecordCache.Clear();
             _fileSize = currentSize;
             return true;
         }
 
         if (currentSize == previousSize)
         {
+            if (wasVisuallyZero)
+            {
+                _parsedRecordCache.Clear();
+            }
+
             return wasVisuallyZero;
         }
 
+        _parsedRecordCache.Clear();
         _fileSize = currentSize;
         return true;
     }
@@ -519,6 +542,8 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
         {
             return CurrentRows;
         }
+
+        _parsedRecordCache.Clear();
 
         _viewportLoaded = false;
 
@@ -746,9 +771,6 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
     public void Dispose()
     {
     }
-
-    private string FormatDisplayText(string text) =>
-        DisplayParserEvaluator.EvaluateOrOriginal(_displayParserRule, text);
 
     internal static FileStream OpenSourceStream(string path)
     {
@@ -1424,26 +1446,47 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
 
     private VisualPosition LocateParsedVisualPositionForOffset(RealLineStartInfo realLineStart, long boundedOffset)
     {
-        VisualPosition first = new(realLineStart.StartOffset, realLineStart.StartOffset, realLineStart.Kind, VisualStartKind.RealStart, 0);
-        using FileStream fs = OpenSourceStream(_filePath);
-        if (!TryReadRealLine(fs, realLineStart.StartOffset, out RealLineData line, out _))
+        long scanStart = FindParserScanStart(realLineStart.StartOffset);
+        DisplayParserRecordSequence sequence = new(_displayParserRule);
+        foreach (DisplayParserRecord record in sequence.Enumerate(
+            SearchRealLineScanner.Enumerate(
+                _filePath,
+                _encoding,
+                _kind,
+                scanStart,
+                _fileSize,
+                CancellationToken.None,
+                firstLineNumber: 1)))
         {
-            return first;
+            _parsedRecordCache[record.StartOffset] = record;
+            if (boundedOffset >= record.NextOffset)
+            {
+                continue;
+            }
+
+            if (boundedOffset < record.StartOffset)
+            {
+                break;
+            }
+
+            int visualRowCount = FilteredLineUtilities.CountVisualRows(record.Text);
+            int segmentIndex = boundedOffset >= record.EndOffset && visualRowCount > 1
+                ? visualRowCount - 1
+                : 0;
+            return new VisualPosition(
+                record.StartOffset,
+                record.StartOffset,
+                RealLineStartKind.TrueBreak,
+                segmentIndex == 0 ? VisualStartKind.RealStart : VisualStartKind.ForcedWrap,
+                segmentIndex);
         }
 
-        string displayText = FormatDisplayText(line.Text);
-        int visualRowCount = FilteredLineUtilities.CountVisualRows(displayText);
-        if (boundedOffset >= line.EndOffset && visualRowCount > 1)
-        {
-            return new(
-                realLineStart.StartOffset,
-                realLineStart.StartOffset,
-                realLineStart.Kind,
-                VisualStartKind.ForcedWrap,
-                visualRowCount - 1);
-        }
-
-        return first;
+        return new(
+            realLineStart.StartOffset,
+            realLineStart.StartOffset,
+            realLineStart.Kind,
+            VisualStartKind.RealStart,
+            0);
     }
 
     private bool TryGetPreviousVisualPosition(VisualPosition current, out VisualPosition previous)
@@ -1461,6 +1504,24 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
         }
 
         current = NormalizePreviousNavigationStart(current);
+
+        if (_displayParserRule is not null)
+        {
+            RealLineStartInfo previousPhysicalLine = FindPreviousRealLineStart(current.RealLineStartOffset);
+            VisualPosition parsedPrevious = LocateParsedVisualPositionForOffset(
+                previousPhysicalLine,
+                previousPhysicalLine.StartOffset);
+            if (parsedPrevious.RealLineStartOffset >= current.RealLineStartOffset)
+            {
+                previous = DefaultTopPosition();
+                return false;
+            }
+
+            previous = LocateLastVisualPositionOfRealLine(new(
+                parsedPrevious.RealLineStartOffset,
+                parsedPrevious.RealLineStartKind));
+            return true;
+        }
 
         RealLineStartInfo previousRealLine = FindPreviousRealLineStart(current.RealLineStartOffset);
         if (previousRealLine.StartOffset == current.RealLineStartOffset)
@@ -1626,7 +1687,7 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
 
     private VisualReadResult ReadParsedVisualRow(FileStream fs, VisualPosition position)
     {
-        if (!TryReadRealLine(fs, position.RealLineStartOffset, out RealLineData line, out long nextLineOffset))
+        if (!TryReadParsedRecord(position.RealLineStartOffset, out DisplayParserRecord record))
         {
             return CreateParsedResult(
                 position,
@@ -1636,25 +1697,74 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
                 nextLineOffset: null);
         }
 
-        string displayText = FormatDisplayText(line.Text);
+        string displayText = record.Text;
         int visualRowCount = FilteredLineUtilities.CountVisualRows(displayText);
         int segmentIndex = Math.Clamp(position.SegmentIndex, 0, visualRowCount - 1);
         string segmentText = FilteredLineUtilities.GetVisualRowText(displayText, segmentIndex);
 
-        return CreateParsedResult(position, segmentText, segmentIndex, visualRowCount, nextLineOffset);
+        return CreateParsedResult(position, segmentText, segmentIndex, visualRowCount, record.NextOffset);
     }
 
-    private bool TryReadRealLine(FileStream fs, long realLineStartOffset, out RealLineData line, out long nextLineOffset)
+    private bool TryReadParsedRecord(long recordStartOffset, out DisplayParserRecord record)
     {
-        fs.Position = realLineStartOffset;
-        if (!FilteredLineUtilities.TryReadNextRealLine(fs, _kind, _encoding, _fileSize, out line))
+        if (_parsedRecordCache.TryGetValue(recordStartOffset, out record))
         {
-            nextLineOffset = realLineStartOffset;
+            return true;
+        }
+
+        DisplayParserRecordSequence sequence = new(_displayParserRule);
+        using IEnumerator<DisplayParserRecord> records = sequence.Enumerate(
+                SearchRealLineScanner.Enumerate(
+                    _filePath,
+                    _encoding,
+                    _kind,
+                    recordStartOffset,
+                    _fileSize,
+                    CancellationToken.None,
+                    firstLineNumber: 1))
+            .GetEnumerator();
+        if (!records.MoveNext())
+        {
+            record = default;
             return false;
         }
 
-        nextLineOffset = fs.Position;
+        record = records.Current;
+        _parsedRecordCache[record.StartOffset] = record;
+        long groupStartOffset = record.GroupStartOffset;
+        while (records.MoveNext())
+        {
+            DisplayParserRecord next = records.Current;
+            _parsedRecordCache[next.StartOffset] = next;
+            if (next.GroupStartOffset != groupStartOffset)
+            {
+                break;
+            }
+        }
+
         return true;
+    }
+
+    private long FindParserScanStart(long currentLineStart)
+    {
+        long scanStart = currentLineStart;
+        for (int i = 1; i < DisplayParserRecordSequence.MaximumRecordLines; i++)
+        {
+            RealLineStartInfo previous = FindPreviousRealLineStart(scanStart);
+            if (previous.StartOffset >= scanStart ||
+                currentLineStart - previous.StartOffset > DisplayParserRecordSequence.MaximumRecordChars)
+            {
+                break;
+            }
+
+            scanStart = previous.StartOffset;
+            if (scanStart <= _dataOffset)
+            {
+                return _dataOffset;
+            }
+        }
+
+        return scanStart;
     }
 
     private VisualReadResult CreateParsedResult(

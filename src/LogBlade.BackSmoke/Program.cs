@@ -19,6 +19,7 @@ internal static class Program
             RunDisplayParserGeneratesJsonTemplateFromSample();
             RunDisplayParserGeneratesJsonTemplateFromMultipleSamples();
             RunDisplayParserGeneratesNestedJsonTemplate();
+            RunDisplayParserGeneratesTemplateFromSplitJson();
             RunDisplayParserIgnoresInvalidJsonTemplatePaths();
             RunDisplayParserGeneratesEmptyTemplateWithoutJson();
             RunDisplayParserRegexNamedDisplay();
@@ -27,6 +28,10 @@ internal static class Program
             RunDisplayParserRegexInvalidRegexValidation();
             RunDisplayParserFallbackOriginal();
             RunDisplayParserRegexThenJsonTemplate();
+            RunDisplayParserRegexThenJsonAcrossLines();
+            RunDisplayParserIncompleteJsonPreservesOriginalLines();
+            RunDisplayParserContinuationMismatchPreservesOriginalLines();
+            RunDisplayParserRecordLineLimitPreservesOriginalLines();
             RunDisplayParserSecondStageFailureReturnsFirstOutput();
             RunDisplayParserRegexReplaceSimple();
             RunDisplayParserRegexReplaceGlobal();
@@ -41,8 +46,10 @@ internal static class Program
             RunSearchUsesDisplayParserRegexCaptures(tempRoot);
             RunAppendSearchUsesDisplayParser(tempRoot);
             RunSearchUsesCascadedDisplayParserLiteral(tempRoot);
+            RunSearchUsesCascadedDisplayParserAcrossLines(tempRoot);
             RunSearchUsesCascadedDisplayParserRegexCaptures(tempRoot);
             RunAppendSearchUsesCascadedDisplayParser(tempRoot);
+            RunAppendSearchCompletesCascadedDisplayParserRecord(tempRoot);
             RunRegexCaptureGroups(tempRoot);
             RunRegexNamedCaptureGroups(tempRoot);
             RunRegexMixedNamedAndUnnamedCaptureGroups(tempRoot);
@@ -73,8 +80,12 @@ internal static class Program
             RunDisplayParserMainViewerPreservesEmptyParsedLines(tempRoot);
             RunDisplayParserMainViewerWrapsParsedLinesIndependently(tempRoot);
             RunDisplayParserMainViewerSelectionPreservesParsedNewlines(tempRoot);
+            RunDisplayParserMainViewerCombinesJsonAcrossLines(tempRoot);
+            RunDisplayParserMainViewerFindsCombinedStartFromContinuation(tempRoot);
+            RunDisplayParserMainViewerReloadCompletesJsonRecord(tempRoot);
             RunSearchFindsTextOnSecondParsedLine(tempRoot);
             RunSearchRepeatsCapturesAcrossParsedLines(tempRoot);
+            RunSearchDoesNotWrapLongParsedLine(tempRoot);
             RunVisualSelectionRangeAcrossViewport(tempRoot);
             RunVisualSelectionSelectsAllRows(tempRoot);
             RunVisualSelectionWrappedRowCopiesOriginalLine(tempRoot);
@@ -99,6 +110,7 @@ internal static class Program
             RunStagedCaptureGroupsUsePerStageCaptures(tempRoot);
             RunStagedNamedCaptureGroupsUsePerStageHeaders(tempRoot);
             RunAppendStagedSearchKeepsIntermediateResults(tempRoot);
+            RunAppendStagedSearchCompletesCascadedParserRecord(tempRoot);
             RunAppendSearchCascadeAddsMatches(tempRoot);
             RunAppendSearchAddsMatches(tempRoot);
             RunAppendSearchWithoutMatchKeepsCount(tempRoot);
@@ -236,6 +248,18 @@ internal static class Program
             "State.Message - running, State.Code - 42, items.0.name - first, items.1.name - second");
     }
 
+    private static void RunDisplayParserGeneratesTemplateFromSplitJson()
+    {
+        string sample =
+            "{\"Timestamp\":\"2026-06-24\",\"Level\":\"Inf\r\n" +
+            "o\",\"Message\":\"running\"}";
+
+        AssertEqual(
+            "display parser generated template from split json",
+            DisplayParserEvaluator.GenerateJsonTemplateFromSample(sample),
+            "Timestamp - {Timestamp}, Level - {Level}, Message - {Message}");
+    }
+
     private static void RunDisplayParserIgnoresInvalidJsonTemplatePaths()
     {
         string sample =
@@ -312,6 +336,78 @@ internal static class Program
             JsonStage("{Key}"));
 
         AssertEqual("display parser regex then json", DisplayParserEvaluator.EvaluateOrOriginal(rule, "Out[0]: {\"Key\":\"Value\"}"), "Value");
+    }
+
+    private static void RunDisplayParserRegexThenJsonAcrossLines()
+    {
+        DisplayParserRule rule = ParserRule(
+            RegexStage(@": (?<json>.*)", "{json}"),
+            JsonStage("{Timestamp} [{Logger}] {upper:Level} {Logger} - {Message}"));
+        string input =
+            "a[0]: { \"Timestamp\": \"2025-09-12 14:50:48.637060\", \"Level\": \"Inf\r\n" +
+            "a[1]: o\", \"Logger\": \"EventScheduler\", \"Mes\r" +
+            "a[2]: sage\": \"Strategy task JT67_48_250912145048_00064 is running\" }";
+
+        AssertEqual(
+            "display parser regex then json across lines",
+            DisplayParserEvaluator.EvaluateLinesOrOriginal(rule, input),
+            "2025-09-12 14:50:48.637060 [EventScheduler] INFO EventScheduler - " +
+            "Strategy task JT67_48_250912145048_00064 is running");
+    }
+
+    private static void RunDisplayParserIncompleteJsonPreservesOriginalLines()
+    {
+        DisplayParserRule rule = ParserRule(
+            RegexStage(@": (?<json>.*)", "{json}"),
+            JsonStage("{Key}"));
+        string input =
+            "a[0]: {\"Key\":\"val\r\n" +
+            "a[1]: ue";
+
+        AssertEqual(
+            "display parser incomplete json preserves originals",
+            DisplayParserEvaluator.EvaluateLinesOrOriginal(rule, input),
+            input);
+    }
+
+    private static void RunDisplayParserContinuationMismatchPreservesOriginalLines()
+    {
+        DisplayParserRule rule = ParserRule(
+            RegexStage(@": (?<json>.*)", "{json}"),
+            JsonStage("{Key}"));
+        string input =
+            "a[0]: {\"Key\":\"val\r\n" +
+            "not a continuation\r\n" +
+            "a[2]: ue\"}";
+
+        AssertEqual(
+            "display parser continuation mismatch preserves originals",
+            DisplayParserEvaluator.EvaluateLinesOrOriginal(rule, input),
+            "a[0]: {\"Key\":\"val" + Environment.NewLine +
+            "not a continuation" + Environment.NewLine +
+            "ue\"}");
+    }
+
+    private static void RunDisplayParserRecordLineLimitPreservesOriginalLines()
+    {
+        DisplayParserRule rule = ParserRule(
+            RegexStage(@": (?<json>.*)", "{json}"),
+            JsonStage("{Key}"));
+        StringBuilder input = new();
+        input.Append("a[0]: {");
+        for (int i = 1; i <= 4096; i++)
+        {
+            input.AppendLine();
+            input.Append("a[");
+            input.Append(i);
+            input.Append("]: ");
+        }
+
+        string value = input.ToString();
+        AssertEqual(
+            "display parser record line limit preserves originals",
+            DisplayParserEvaluator.EvaluateLinesOrOriginal(rule, value),
+            value);
     }
 
     private static void RunDisplayParserSecondStageFailureReturnsFirstOutput()
@@ -484,6 +580,45 @@ internal static class Program
         AssertSequence("cascaded display parser literal cells", columns.CurrentCells[0], "1", "KEY=Value");
     }
 
+    private static void RunSearchUsesCascadedDisplayParserAcrossLines(string tempRoot)
+    {
+        string path = WriteLog(
+            tempRoot,
+            "display-parser-cascade-multiline.log",
+            "a[0]: { \"Timestamp\": \"2025-09-12 14:50:48.637060\", \"Level\": \"Inf\r\n" +
+            "a[1]: o\", \"Logger\": \"EventScheduler\", \"Mes\r\n" +
+            "a[2]: sage\": \"Strategy task JT67_48_250912145048_00064 is running\" }\r\n" +
+            "plain\r\n");
+        DisplayParserRule parser = ParserRule(
+            RegexStage(@": (?<json>.*)", "{json}"),
+            JsonStage("{Timestamp} [{Logger}] {upper:Level} {Logger} - {Message}"));
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("JT67_48", UseRegex: false, IgnoreCase: false),
+            parser);
+
+        reader.ReadFromPercentage(0d, 10);
+        AssertSequence(
+            "cascaded display parser multiline rows",
+            reader.CurrentRows,
+            "2025-09-12 14:50:48.637060 [EventScheduler] INFO EventScheduler - " +
+            "Strategy task JT67_48_250912145048_00064 is running");
+        AssertSequence(
+            "cascaded display parser multiline cells",
+            ((IColumnViewportReader)reader).CurrentCells[0],
+            "1",
+            "2025-09-12 14:50:48.637060 [EventScheduler] INFO EventScheduler - " +
+            "Strategy task JT67_48_250912145048_00064 is running");
+        AssertEqual(
+            "cascaded display parser multiline offset",
+            ((IFileOffsetViewportReader)reader).TryGetRowStartOffset(0, out long startOffset),
+            true);
+        AssertEqual("cascaded display parser multiline first offset", startOffset, 0L);
+    }
+
     private static void RunSearchUsesCascadedDisplayParserRegexCaptures(string tempRoot)
     {
         string path = WriteLog(
@@ -527,6 +662,39 @@ internal static class Program
 
         AssertSequence("cascaded display parser append rows", appended.CurrentRows, "ERROR - failed");
         AssertSequence("cascaded display parser append cells", ((IColumnViewportReader)appended).CurrentCells[0], "2", "ERROR - failed");
+    }
+
+    private static void RunAppendSearchCompletesCascadedDisplayParserRecord(string tempRoot)
+    {
+        string path = WriteLog(
+            tempRoot,
+            "display-parser-cascade-append-combined.log",
+            "a[0]: {\"Level\":\"Inf\r\n" +
+            "a[1]: o\",\"Message\":\"run\r\n");
+        DisplayParserRule parser = ParserRule(
+            RegexStage(@": (?<json>.*)", "{json}"),
+            JsonStage("{upper:Level} - {Message}"));
+
+        using FilteredVisualRowReader initial = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("running", UseRegex: false, IgnoreCase: false),
+            parser);
+
+        File.AppendAllText(path, "a[2]: ning\"}\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        using FilteredVisualRowReader appended = BuildAppendedReader(
+            initial,
+            new SearchOptions("running", UseRegex: false, IgnoreCase: false),
+            parser);
+        appended.ReadFromPercentage(0d, 10);
+
+        AssertSequence("cascaded display parser append combined rows", appended.CurrentRows, "INFO - running");
+        AssertSequence(
+            "cascaded display parser append combined cells",
+            ((IColumnViewportReader)appended).CurrentCells[0],
+            "1",
+            "INFO - running");
     }
 
     private static void RunRegexCaptureGroups(string tempRoot)
@@ -739,15 +907,11 @@ internal static class Program
         IColumnViewportReader columns = reader;
 
         AssertSequence("wrapped headers", columns.ColumnHeaders, "#", "Text", "0", "1");
-        AssertEqual("wrapped row count", columns.CurrentCells.Count, 2);
+        AssertEqual("wrapped row count", columns.CurrentCells.Count, 1);
         AssertEqual("wrapped line number", columns.CurrentCells[0][0], "1");
-        AssertEqual("wrapped first text", columns.CurrentCells[0][1], longText[..VisualRowReader.VisibleSegmentChars]);
+        AssertEqual("wrapped text", columns.CurrentCells[0][1], longText);
         AssertEqual("wrapped first group 0", columns.CurrentCells[0][2], "aaa");
         AssertEqual("wrapped first group 1", columns.CurrentCells[0][3], "ccc");
-        AssertEqual("wrapped second line number", columns.CurrentCells[1][0], "1");
-        AssertEqual("wrapped second text", columns.CurrentCells[1][1], longText[VisualRowReader.VisibleSegmentChars..]);
-        AssertEqual("wrapped second group 0", columns.CurrentCells[1][2], "aaa");
-        AssertEqual("wrapped second group 1", columns.CurrentCells[1][3], "ccc");
     }
 
     private static void RunFilteredLineStaleWhenStartMoves(string tempRoot)
@@ -1028,6 +1192,70 @@ internal static class Program
         AssertSelectedRows("display parser main newline selection", rows, "a\r\nb");
     }
 
+    private static void RunDisplayParserMainViewerCombinesJsonAcrossLines(string tempRoot)
+    {
+        string path = WriteLog(
+            tempRoot,
+            "display-parser-main-combined-json.log",
+            "a[0]: {\"Level\":\"Inf\r\n" +
+            "a[1]: o\",\"Message\":\"run\r\n" +
+            "a[2]: ning\"}\r\n" +
+            "plain\r\n");
+        DisplayParserRule parser = ParserRule(
+            RegexStage(@": (?<json>.*)", "{json}"),
+            JsonStage("{upper:Level} - {Message}"));
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0, parser);
+        reader.ReadFromPercentage(0d, 4);
+
+        AssertSequence("display parser main combined json", reader.CurrentRows, "INFO - running", "plain");
+        reader.ReadFromPercentage(100d, 1);
+        AssertSequence("display parser main combined json end", reader.CurrentRows, "plain");
+        reader.ReadPrevious(1);
+        AssertSequence("display parser main combined json previous", reader.CurrentRows, "INFO - running");
+    }
+
+    private static void RunDisplayParserMainViewerFindsCombinedStartFromContinuation(string tempRoot)
+    {
+        string firstLine = "a[0]: {\"Level\":\"Inf\r\n";
+        string path = WriteLog(
+            tempRoot,
+            "display-parser-main-combined-offset.log",
+            firstLine +
+            "a[1]: o\",\"Message\":\"run\r\n" +
+            "a[2]: ning\"}\r\n" +
+            "plain\r\n");
+        DisplayParserRule parser = ParserRule(
+            RegexStage(@": (?<json>.*)", "{json}"),
+            JsonStage("{upper:Level} - {Message}"));
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0, parser);
+        reader.ReadFromOffset(Encoding.UTF8.GetByteCount(firstLine), 2);
+
+        AssertSequence("display parser main combined continuation offset", reader.CurrentRows, "INFO - running", "plain");
+    }
+
+    private static void RunDisplayParserMainViewerReloadCompletesJsonRecord(string tempRoot)
+    {
+        string path = WriteLog(
+            tempRoot,
+            "display-parser-main-combined-reload.log",
+            "a[0]: {\"Level\":\"Inf\r\n" +
+            "a[1]: o\",\"Message\":\"run\r\n");
+        DisplayParserRule parser = ParserRule(
+            RegexStage(@": (?<json>.*)", "{json}"),
+            JsonStage("{upper:Level} - {Message}"));
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0, parser);
+        reader.ReadFromPercentage(100d, 1);
+        AssertSequence("display parser main combined reload before append", reader.CurrentRows, "a[1]: o\",\"Message\":\"run");
+
+        File.AppendAllText(path, "a[2]: ning\"}\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        reader.ReloadAfterFileChange(2);
+
+        AssertSequence("display parser main combined reload after append", reader.CurrentRows, "INFO - running");
+    }
+
     private static void RunSearchFindsTextOnSecondParsedLine(string tempRoot)
     {
         string path = WriteLog(
@@ -1080,6 +1308,31 @@ internal static class Program
         AssertSequence("display parser multiline capture headers", columns.ColumnHeaders, "#", "Text", "level", "message");
         AssertSequence("display parser multiline capture first cells", columns.CurrentCells[0], "1", "ERROR", "ERROR", "failed");
         AssertSequence("display parser multiline capture second cells", columns.CurrentCells[1], "1", "failed", "ERROR", "failed");
+    }
+
+    private static void RunSearchDoesNotWrapLongParsedLine(string tempRoot)
+    {
+        string first = new('x', VisualRowReader.VisibleSegmentChars + 5);
+        string path = WriteLog(
+            tempRoot,
+            "display-parser-search-long-explicit-lines.log",
+            "{\"First\":\"" + first + "\",\"Second\":\"tail\"}\r\n");
+        DisplayParserRule parser = ParserRule(JsonStage("{First}\n{Second}"));
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("tail", UseRegex: false, IgnoreCase: false),
+            parser);
+
+        reader.ReadFromPercentage(0d, 3);
+        AssertSequence("display parser search long explicit rows", reader.CurrentRows, first, "tail");
+        IReadOnlyList<ViewportSelectedRow> selected = ((ISelectableViewportReader)reader).ReadSelectedRows(
+            selectAll: true,
+            Array.Empty<ViewportRowSelectionRange>(),
+            Array.Empty<ViewportRowSelectionKey>());
+        AssertSelectedRows("display parser search long explicit selection", selected, first, "tail");
     }
 
     private static void RunVisualSelectionRangeAcrossViewport(string tempRoot)
@@ -1572,6 +1825,55 @@ internal static class Program
                 AssertEqual("append staged second count", appended[1].MatchedLineCount, 2L);
                 AssertSequence("append staged second rows", appended[1].CurrentRows, "alpha beta", "new alpha beta");
                 AssertSequence("append staged second final cells", ((IColumnViewportReader)appended[1]).CurrentCells[1], "4", "new alpha beta");
+            }
+            finally
+            {
+                DisposeReaders(appended);
+            }
+        }
+        finally
+        {
+            DisposeReaders(initial);
+        }
+    }
+
+    private static void RunAppendStagedSearchCompletesCascadedParserRecord(string tempRoot)
+    {
+        string path = WriteLog(
+            tempRoot,
+            "append-staged-parser-combined.log",
+            "a[0]: {\"Level\":\"Inf\r\n" +
+            "a[1]: o\",\"Message\":\"run\r\n");
+        SearchOptions[] options =
+        {
+            new("INFO", UseRegex: false, IgnoreCase: false),
+            new("running", UseRegex: false, IgnoreCase: false)
+        };
+        DisplayParserRule parser = ParserRule(
+            RegexStage(@": (?<json>.*)", "{json}"),
+            JsonStage("{upper:Level} - {Message}"));
+
+        FilteredVisualRowReader[] initial = LogSearchBuilder.BuildStagedFilteredReaders(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            options,
+            parser);
+        try
+        {
+            File.AppendAllText(path, "a[2]: ning\"}\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            FilteredVisualRowReader[] appended = BuildAppendedStagedReaders(initial, options, parser);
+            try
+            {
+                appended[0].ReadFromPercentage(0d, 10);
+                appended[1].ReadFromPercentage(0d, 10);
+                AssertSequence("append staged parser combined first rows", appended[0].CurrentRows, "INFO - running");
+                AssertSequence("append staged parser combined second rows", appended[1].CurrentRows, "INFO - running");
+                AssertSequence(
+                    "append staged parser combined cells",
+                    ((IColumnViewportReader)appended[1]).CurrentCells[0],
+                    "1",
+                    "INFO - running");
             }
             finally
             {
@@ -2179,7 +2481,10 @@ internal static class Program
         return latest ?? throw new InvalidOperationException("Append search did not publish a reader.");
     }
 
-    private static FilteredVisualRowReader[] BuildAppendedStagedReaders(IReadOnlyList<FilteredVisualRowReader> initial, IReadOnlyList<SearchOptions> options)
+    private static FilteredVisualRowReader[] BuildAppendedStagedReaders(
+        IReadOnlyList<FilteredVisualRowReader> initial,
+        IReadOnlyList<SearchOptions> options,
+        DisplayParserRule? displayParserRule = null)
     {
         FilteredVisualRowReader?[] latest = new FilteredVisualRowReader?[initial.Count];
         LogSearchBuilder.BuildAppendedStagedFilteredReadersIncremental(
@@ -2198,7 +2503,8 @@ internal static class Program
                     }
                 }
             },
-            CancellationToken.None);
+            CancellationToken.None,
+            displayParserRule);
 
         FilteredVisualRowReader[] readers = new FilteredVisualRowReader[latest.Length];
         for (int i = 0; i < latest.Length; i++)

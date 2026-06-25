@@ -114,6 +114,68 @@ internal static class FilteredLineUtilities
         }
     }
 
+    public static int CountExplicitRows(string text)
+    {
+        int rowCount = 1;
+        for (int i = 0; i < text.Length; i++)
+        {
+            if (text[i] == '\r')
+            {
+                rowCount++;
+                if (i + 1 < text.Length && text[i + 1] == '\n')
+                {
+                    i++;
+                }
+            }
+            else if (text[i] == '\n')
+            {
+                rowCount++;
+            }
+        }
+
+        return rowCount;
+    }
+
+    public static string GetExplicitRowText(string text, int rowIndex)
+    {
+        if (rowIndex < 0)
+        {
+            return string.Empty;
+        }
+
+        int currentRow = 0;
+        int rowStart = 0;
+        for (int i = 0; i <= text.Length; i++)
+        {
+            bool atEnd = i == text.Length;
+            bool atBreak = !atEnd && text[i] is '\r' or '\n';
+            if (!atEnd && !atBreak)
+            {
+                continue;
+            }
+
+            if (currentRow == rowIndex)
+            {
+                return text.Substring(rowStart, i - rowStart);
+            }
+
+            if (atEnd)
+            {
+                return string.Empty;
+            }
+
+            if (text[i] == '\r' && i + 1 < text.Length && text[i + 1] == '\n')
+            {
+                i++;
+            }
+
+            currentRow++;
+            rowStart = i + 1;
+        }
+
+        return string.Empty;
+    }
+
     private static int FindLineEnd(string text, int start)
     {
         for (int i = start; i < text.Length; i++)

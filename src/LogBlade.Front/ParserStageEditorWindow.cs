@@ -447,23 +447,7 @@ internal sealed class ParserStageEditorWindow
 
     private static string EvaluateLines(string text, DisplayParserRule rule)
     {
-        if (text.Length == 0)
-        {
-            return string.Empty;
-        }
-
-        string normalized = text.Replace("\r\n", "\n").Replace('\r', '\n');
-        string[] lines = normalized.Split('\n');
-        string[] output = new string[lines.Length];
-        for (int i = 0; i < lines.Length; i++)
-        {
-            string line = lines[i];
-            output[i] = line.Length == 0
-                ? string.Empty
-                : DisplayParserEvaluator.EvaluateOrOriginal(rule, line);
-        }
-
-        return string.Join(Environment.NewLine, output);
+        return DisplayParserEvaluator.EvaluateLinesOrOriginal(rule, text);
     }
 
     private string GetStageInput() =>
