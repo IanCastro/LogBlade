@@ -17,6 +17,7 @@ internal sealed class ParserStageEditorWindow
     private readonly DisplayParserStage? _initialStage;
     private readonly List<DisplayParserStage> _previousStages;
     private readonly string _sample;
+    private readonly Dictionary<DisplayParserMode, ParserStageDraft> _drafts = new();
     private IntPtr _hwnd;
     private IntPtr _owner;
     private IntPtr _font;
@@ -35,6 +36,7 @@ internal sealed class ParserStageEditorWindow
     private IntPtr _cancelButton;
     private DisplayParserMode _mode;
     private bool _closed;
+    private bool _updatingModeControls;
     private bool _updatingPreview;
 
     private static readonly NativeMethods.WindowProc s_wndProc = WindowProc;
@@ -61,6 +63,10 @@ internal sealed class ParserStageEditorWindow
         _mode = initialStage?.Mode ?? DisplayParserMode.Json;
         _sample = sample;
         _previousStages = ClonePreviousStages(stages, stageIndex);
+        if (initialStage is not null)
+        {
+            _drafts[initialStage.Mode] = new ParserStageDraft(initialStage.Rule, initialStage.Template);
+        }
     }
 
     public DisplayParserStage? SavedStage { get; private set; }
@@ -219,15 +225,7 @@ internal sealed class ParserStageEditorWindow
         SetButtonChecked(_regexRadio, _mode == DisplayParserMode.Regex);
         SetButtonChecked(_regexReplaceRadio, _mode == DisplayParserMode.RegexReplace);
         SetButtonChecked(_jsonRadio, _mode == DisplayParserMode.Json);
-        if (_initialStage is null)
-        {
-            SetDefaultJsonStage();
-        }
-        else
-        {
-            NativeMethods.SetWindowTextW(_ruleEdit, _initialStage.Rule);
-            NativeMethods.SetWindowTextW(_templateEdit, _initialStage.Template);
-        }
+        LoadModeDraft(_mode);
 
         UpdateModeUi();
         UpdatePreview();
@@ -246,30 +244,25 @@ internal sealed class ParserStageEditorWindow
                 IdRegexReplaceMode => DisplayParserMode.RegexReplace,
                 _ => DisplayParserMode.Json
             };
-            bool modeChanged = nextMode != _mode;
+            if (nextMode == _mode)
+            {
+                return;
+            }
+
+            SaveCurrentModeDraft();
             _mode = nextMode;
             SetButtonChecked(_regexRadio, _mode == DisplayParserMode.Regex);
             SetButtonChecked(_regexReplaceRadio, _mode == DisplayParserMode.RegexReplace);
             SetButtonChecked(_jsonRadio, _mode == DisplayParserMode.Json);
-            if (modeChanged && _mode == DisplayParserMode.Json)
-            {
-                SetDefaultJsonStage();
-            }
-            else if (modeChanged && _mode == DisplayParserMode.RegexReplace)
-            {
-                SetDefaultRegexReplaceStage();
-            }
-            else if (modeChanged)
-            {
-                SetDefaultRegexStage();
-            }
-
+            LoadModeDraft(_mode);
             UpdateModeUi();
             UpdatePreview();
             return;
         }
 
-        if (notification == NativeMethods.EN_CHANGE && id is IdRuleEdit or IdTemplateEdit)
+        if (!_updatingModeControls &&
+            notification == NativeMethods.EN_CHANGE &&
+            id is IdRuleEdit or IdTemplateEdit)
         {
             UpdatePreview();
             return;
@@ -364,27 +357,51 @@ internal sealed class ParserStageEditorWindow
         Move(_saveButton, width - margin - 190, y, 90, rowHeight);
     }
 
-    private void SetDefaultJsonStage()
+    private void SaveCurrentModeDraft()
     {
+        _drafts[_mode] = new ParserStageDraft(
+            GetWindowText(_ruleEdit),
+            GetWindowText(_templateEdit));
+    }
+
+    private void LoadModeDraft(DisplayParserMode mode)
+    {
+        if (!_drafts.TryGetValue(mode, out ParserStageDraft draft))
+        {
+            draft = CreateDefaultDraft(mode);
+            _drafts.Add(mode, draft);
+        }
+
+        _updatingModeControls = true;
+        try
+        {
+            NativeMethods.SetWindowTextW(_ruleEdit, draft.Rule);
+            NativeMethods.SetWindowTextW(_templateEdit, draft.Template);
+        }
+        finally
+        {
+            _updatingModeControls = false;
+        }
+    }
+
+    private ParserStageDraft CreateDefaultDraft(DisplayParserMode mode)
+    {
+        if (mode == DisplayParserMode.Regex)
+        {
+            return new ParserStageDraft(@": (?<json>.*)", "{json}");
+        }
+
+        if (mode == DisplayParserMode.RegexReplace)
+        {
+            return new ParserStageDraft(@"\u0001", "|");
+        }
+
         string generatedTemplate = DisplayParserEvaluator.GenerateJsonTemplateFromSample(GetStageInput());
-        NativeMethods.SetWindowTextW(
-            _ruleEdit,
+        return new ParserStageDraft(
             generatedTemplate.Length == 0
                 ? "{Timestamp} [{Logger}] {upper:Level} {Logger} - {Message}"
-                : generatedTemplate);
-        NativeMethods.SetWindowTextW(_templateEdit, string.Empty);
-    }
-
-    private void SetDefaultRegexStage()
-    {
-        NativeMethods.SetWindowTextW(_ruleEdit, @": (?<json>.*)");
-        NativeMethods.SetWindowTextW(_templateEdit, "{json}");
-    }
-
-    private void SetDefaultRegexReplaceStage()
-    {
-        NativeMethods.SetWindowTextW(_ruleEdit, @"\u0001");
-        NativeMethods.SetWindowTextW(_templateEdit, "|");
+                : generatedTemplate,
+            string.Empty);
     }
 
     private void UpdateModeUi()
@@ -613,4 +630,6 @@ internal sealed class ParserStageEditorWindow
         NativeMethods.GetWindowTextW(hwnd, builder, builder.Capacity);
         return builder.ToString();
     }
+
+    private readonly record struct ParserStageDraft(string Rule, string Template);
 }
