@@ -11,6 +11,7 @@ internal sealed class ParserStageEditorWindow
     private const int IdRuleEdit = 104;
     private const int IdTemplateEdit = 105;
     private const int IdPreviewEdit = 106;
+    private const int IdBeforeEdit = 107;
     private const int IdSaveButton = 201;
     private const int IdCancelButton = 202;
 
@@ -30,6 +31,8 @@ internal sealed class ParserStageEditorWindow
     private IntPtr _ruleEdit;
     private IntPtr _templateLabel;
     private IntPtr _templateEdit;
+    private IntPtr _beforeLabel;
+    private IntPtr _beforeEdit;
     private IntPtr _previewLabel;
     private IntPtr _previewEdit;
     private IntPtr _saveButton;
@@ -140,7 +143,7 @@ internal sealed class ParserStageEditorWindow
             NativeMethods.CW_USEDEFAULT,
             NativeMethods.CW_USEDEFAULT,
             720,
-            520,
+            680,
             _owner,
             IntPtr.Zero,
             NativeMethods.GetModuleHandleW(null),
@@ -184,6 +187,9 @@ internal sealed class ParserStageEditorWindow
                 case NativeMethods.WM_SIZE:
                     self.Layout();
                     return IntPtr.Zero;
+                case NativeMethods.WM_GETMINMAXINFO:
+                    SetMinimumWindowSize(lParam);
+                    return IntPtr.Zero;
                 case NativeMethods.WM_COMMAND:
                     self.OnCommand(wParam);
                     return IntPtr.Zero;
@@ -217,6 +223,8 @@ internal sealed class ParserStageEditorWindow
         _ruleEdit = CreateEdit(IdRuleEdit, multiline: true, readOnly: false);
         _templateLabel = CreateLabel("Display");
         _templateEdit = CreateEdit(IdTemplateEdit, multiline: true, readOnly: false);
+        _beforeLabel = CreateLabel("Before");
+        _beforeEdit = CreateEdit(IdBeforeEdit, multiline: true, readOnly: true);
         _previewLabel = CreateLabel("Preview");
         _previewEdit = CreateEdit(IdPreviewEdit, multiline: true, readOnly: true);
         _saveButton = CreateButton("Save", IdSaveButton);
@@ -314,7 +322,7 @@ internal sealed class ParserStageEditorWindow
         }
 
         int width = Math.Max(520, client.right - client.left);
-        int height = Math.Max(420, client.bottom - client.top);
+        int height = Math.Max(560, client.bottom - client.top);
         const int margin = 16;
         const int labelWidth = 78;
         const int rowHeight = 26;
@@ -348,13 +356,28 @@ internal sealed class ParserStageEditorWindow
             Move(_templateEdit, 0, 0, 0, 0);
         }
 
-        int previewHeight = Math.Max(90, height - y - gap - rowHeight - margin);
+        int availablePreviewHeight = Math.Max(144, height - y - (gap * 2) - rowHeight - margin);
+        int beforeHeight = availablePreviewHeight / 2;
+        int previewHeight = availablePreviewHeight - beforeHeight;
+
+        Move(_beforeLabel, margin, y + 4, labelWidth, rowHeight);
+        Move(_beforeEdit, inputLeft, y, inputWidth, beforeHeight);
+        y += beforeHeight + gap;
+
         Move(_previewLabel, margin, y + 4, labelWidth, rowHeight);
         Move(_previewEdit, inputLeft, y, inputWidth, previewHeight);
         y += previewHeight + gap;
 
         Move(_cancelButton, width - margin - 90, y, 90, rowHeight);
         Move(_saveButton, width - margin - 190, y, 90, rowHeight);
+    }
+
+    private static void SetMinimumWindowSize(IntPtr lParam)
+    {
+        NativeMethods.MINMAXINFO info = Marshal.PtrToStructure<NativeMethods.MINMAXINFO>(lParam);
+        info.ptMinTrackSize.x = 560;
+        info.ptMinTrackSize.y = 600;
+        Marshal.StructureToPtr(info, lParam, fDeleteOld: false);
     }
 
     private void SaveCurrentModeDraft()
@@ -416,7 +439,7 @@ internal sealed class ParserStageEditorWindow
 
     private void UpdatePreview()
     {
-        if (_updatingPreview || _previewEdit == IntPtr.Zero)
+        if (_updatingPreview || _beforeEdit == IntPtr.Zero || _previewEdit == IntPtr.Zero)
         {
             return;
         }
@@ -424,6 +447,9 @@ internal sealed class ParserStageEditorWindow
         _updatingPreview = true;
         try
         {
+            string input = GetStageInput();
+            NativeMethods.SetWindowTextW(_beforeEdit, input);
+
             DisplayParserStage stage = CreateStageFromControls();
             try
             {
@@ -435,7 +461,6 @@ internal sealed class ParserStageEditorWindow
                 return;
             }
 
-            string input = GetStageInput();
             string output = EvaluateLines(input, new DisplayParserRule { Stages = new List<DisplayParserStage> { stage } });
             NativeMethods.SetWindowTextW(_previewEdit, output);
         }

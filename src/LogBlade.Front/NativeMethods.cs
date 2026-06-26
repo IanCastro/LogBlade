@@ -43,6 +43,7 @@ internal static class NativeMethods
     public const int WM_DESTROY = 0x0002;
     public const int WM_COMMAND = 0x0111;
     public const int WM_SIZE = 0x0005;
+    public const int WM_GETMINMAXINFO = 0x0024;
     public const int WM_PAINT = 0x000F;
     public const int WM_SETFOCUS = 0x0007;
     public const int WM_KILLFOCUS = 0x0008;
@@ -212,6 +213,16 @@ internal static class NativeMethods
     {
         public int x;
         public int y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MINMAXINFO
+    {
+        public POINT ptReserved;
+        public POINT ptMaxSize;
+        public POINT ptMaxPosition;
+        public POINT ptMinTrackSize;
+        public POINT ptMaxTrackSize;
     }
 
     [StructLayout(LayoutKind.Sequential)]
