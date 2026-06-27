@@ -743,6 +743,15 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
             _observedZeroFileSize = _observedZeroFileSize
         };
         clone._viewportRows.AddRange(_viewportRows);
+        for (int i = 0; i < _viewportRows.Count; i++)
+        {
+            long recordStartOffset = _viewportRows[i].RealLineStartOffset;
+            if (_parsedRecordCache.TryGetValue(recordStartOffset, out DisplayParserRecord record))
+            {
+                clone._parsedRecordCache.TryAdd(recordStartOffset, record);
+            }
+        }
+
         return clone;
     }
 
