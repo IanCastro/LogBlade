@@ -81,6 +81,7 @@ internal sealed class ViewportPaneWindow : IDisposable
     private int _xOffsetChars;
     private bool _isVisible = true;
     private bool _disposed;
+    private bool _usefulPaintNotified;
     private bool _hasFocus;
     private string _statusText = string.Empty;
     private string _emptyContentText = "(empty file)";
@@ -4113,10 +4114,11 @@ internal sealed class ViewportPaneWindow : IDisposable
         NativeMethods.EndPaint(_hwnd, ref ps);
 
         bool useful = _reader is not null && (!_reader.HasContent || visibleNonEmptyLines > 0);
-        if (useful)
+        if (useful && !_usefulPaintNotified && _onUsefulPaint is not null)
         {
             NativeMethods.DwmFlush();
-            _onUsefulPaint?.Invoke(this);
+            _onUsefulPaint(this);
+            _usefulPaintNotified = true;
         }
     }
 
