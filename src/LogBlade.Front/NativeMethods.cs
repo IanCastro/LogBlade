@@ -42,6 +42,7 @@ internal static class NativeMethods
     public const int WM_CREATE = 0x0001;
     public const int WM_DESTROY = 0x0002;
     public const int WM_COMMAND = 0x0111;
+    public const int WM_CTLCOLORSTATIC = 0x0138;
     public const int WM_SIZE = 0x0005;
     public const int WM_GETMINMAXINFO = 0x0024;
     public const int WM_PAINT = 0x000F;
@@ -153,6 +154,8 @@ internal static class NativeMethods
     public const int IMAGE_ICON = 1;
     public const int LR_DEFAULTCOLOR = 0x00000000;
     public const int LR_SHARED = 0x00008000;
+    public const int CC_RGBINIT = 0x00000001;
+    public const int CC_FULLOPEN = 0x00000002;
     public const uint GMEM_MOVEABLE = 0x0002;
     public static readonly IntPtr IDC_ARROW = new(32512);
     public static readonly IntPtr IDC_SIZENS = new(32645);
@@ -302,6 +305,20 @@ internal static class NativeMethods
         public nuint PrivateUsage;
     }
 
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct CHOOSECOLORW
+    {
+        public uint lStructSize;
+        public IntPtr hwndOwner;
+        public IntPtr hInstance;
+        public int rgbResult;
+        public IntPtr lpCustColors;
+        public int Flags;
+        public IntPtr lCustData;
+        public IntPtr lpfnHook;
+        public string? lpTemplateName;
+    }
+
     [UnmanagedFunctionPointer(CallingConvention.Winapi)]
     public delegate IntPtr WindowProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
 
@@ -322,6 +339,10 @@ internal static class NativeMethods
         IntPtr hMenu,
         IntPtr hInstance,
         IntPtr lpParam);
+
+    [DllImport("comdlg32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool ChooseColorW(ref CHOOSECOLORW lpcc);
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

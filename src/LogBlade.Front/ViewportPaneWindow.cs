@@ -76,6 +76,8 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private IntPtr _hwnd;
     private IntPtr _inactiveSelectionBrush;
+    private readonly Dictionary<int, IntPtr> _highlightBrushes = new();
+    private IReadOnlyList<CompiledHighlightRule> _highlightRules = Array.Empty<CompiledHighlightRule>();
     private GCHandle _selfHandle;
     private int _visibleColumnCount = 1;
     private int _visibleLineCount = 1;
@@ -223,6 +225,16 @@ internal sealed class ViewportPaneWindow : IDisposable
     {
         _emptyContentText = text;
         NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
+    }
+
+    public void SetHighlightRules(IReadOnlyList<CompiledHighlightRule> rules)
+    {
+        _highlightRules = rules;
+        ClearHighlightBrushes();
+        if (_hwnd != IntPtr.Zero)
+        {
+            NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
+        }
     }
 
     public void SetStatus(string statusText, bool disposeReader = true, bool preserveColumnWidths = false)
@@ -433,6 +445,8 @@ internal sealed class ViewportPaneWindow : IDisposable
             NativeMethods.DeleteObject(_inactiveSelectionBrush);
             _inactiveSelectionBrush = IntPtr.Zero;
         }
+
+        ClearHighlightBrushes();
     }
 
     private static void EnsureWindowClassRegistered(IntPtr hInstance)
@@ -2530,6 +2544,59 @@ internal sealed class ViewportPaneWindow : IDisposable
             ? _inactiveSelectionBrush
             : NativeMethods.GetSysColorBrush(NativeMethods.COLOR_3DFACE);
 
+    private HighlightStyle? TryGetGridRowHighlight(IReadOnlyList<string> rows, int dataRowIndex)
+    {
+        if (dataRowIndex < 0 || dataRowIndex >= rows.Count)
+        {
+            return null;
+        }
+
+        return TryGetHighlightStyle(NormalizeDisplayText(rows[dataRowIndex]), out HighlightStyle style)
+            ? style
+            : null;
+    }
+
+    private bool TryGetHighlightStyle(string text, out HighlightStyle style)
+    {
+        if (_highlightRules.Count > 0)
+        {
+            return HighlightRuleCompiler.TryMatch(_highlightRules, text, out style);
+        }
+
+        style = default;
+        return false;
+    }
+
+    private IntPtr GetHighlightBrush(int color)
+    {
+        if (_highlightBrushes.TryGetValue(color, out IntPtr brush))
+        {
+            return brush;
+        }
+
+        brush = NativeMethods.CreateSolidBrush(color);
+        if (brush == IntPtr.Zero)
+        {
+            return NativeMethods.GetSysColorBrush(NativeMethods.COLOR_WINDOW);
+        }
+
+        _highlightBrushes.Add(color, brush);
+        return brush;
+    }
+
+    private void ClearHighlightBrushes()
+    {
+        foreach (IntPtr brush in _highlightBrushes.Values)
+        {
+            if (brush != IntPtr.Zero)
+            {
+                NativeMethods.DeleteObject(brush);
+            }
+        }
+
+        _highlightBrushes.Clear();
+    }
+
     private static bool IsSelectionKeySelected(
         bool selectAll,
         IReadOnlyList<ViewportRowSelectionRange> ranges,
@@ -4191,6 +4258,9 @@ internal sealed class ViewportPaneWindow : IDisposable
             string row = rows[rowIndex];
             string displayRow = NormalizeDisplayText(row);
             bool selected = IsDataRowSelected(rowIndex);
+            HighlightStyle? highlight = !selected && TryGetHighlightStyle(displayRow, out HighlightStyle matchedStyle)
+                ? matchedStyle
+                : null;
             if (selected)
             {
                 NativeMethods.RECT rowRect = new()
@@ -4210,6 +4280,18 @@ internal sealed class ViewportPaneWindow : IDisposable
                     NativeMethods.FillRect(hdc, ref rowRect, GetInactiveSelectionBrush());
                     NativeMethods.SetTextColor(hdc, NativeMethods.GetSysColor(NativeMethods.COLOR_WINDOWTEXT));
                 }
+            }
+            else if (highlight is HighlightStyle style)
+            {
+                NativeMethods.RECT rowRect = new()
+                {
+                    left = 0,
+                    top = y,
+                    right = clientRect.right,
+                    bottom = y + _lineHeight
+                };
+                NativeMethods.FillRect(hdc, ref rowRect, GetHighlightBrush(style.BackgroundColor));
+                NativeMethods.SetTextColor(hdc, style.ForegroundColor);
             }
             else
             {
@@ -4241,16 +4323,18 @@ internal sealed class ViewportPaneWindow : IDisposable
         IReadOnlyList<string> headers = GetGridHeaders(reader);
         int[] widths = CalculateColumnWidths(reader);
 
-        PaintGridRow(hdc, clientRect, headers, widths, y: 0, isHeader: true, isRowSelected: false, dataRowIndex: -1);
+        PaintGridRow(hdc, clientRect, headers, widths, y: 0, isHeader: true, isRowSelected: false, dataRowIndex: -1, highlight: null);
 
         int y = _lineHeight;
         int visibleNonEmptyLines = 0;
         int dataRowIndex = 0;
+        IReadOnlyList<string> displayRows = reader.CurrentRows;
         if (reader.ColumnHeaders.Count > 0)
         {
             foreach (IReadOnlyList<string> row in reader.CurrentCells)
             {
-                PaintGridRow(hdc, clientRect, row, widths, y, isHeader: false, IsDataRowSelected(dataRowIndex), dataRowIndex);
+                HighlightStyle? highlight = TryGetGridRowHighlight(displayRows, dataRowIndex);
+                PaintGridRow(hdc, clientRect, row, widths, y, isHeader: false, IsDataRowSelected(dataRowIndex), dataRowIndex, highlight);
                 visibleNonEmptyLines++;
                 dataRowIndex++;
 
@@ -4263,9 +4347,12 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
         else
         {
-            foreach (string row in reader.CurrentRows)
+            foreach (string row in displayRows)
             {
-                PaintGridRow(hdc, clientRect, new[] { row }, widths, y, isHeader: false, IsDataRowSelected(dataRowIndex), dataRowIndex);
+                HighlightStyle? highlight = TryGetHighlightStyle(NormalizeDisplayText(row), out HighlightStyle matchedStyle)
+                    ? matchedStyle
+                    : null;
+                PaintGridRow(hdc, clientRect, new[] { row }, widths, y, isHeader: false, IsDataRowSelected(dataRowIndex), dataRowIndex, highlight);
                 visibleNonEmptyLines++;
                 dataRowIndex++;
 
@@ -4280,7 +4367,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         return visibleNonEmptyLines;
     }
 
-    private void PaintGridRow(IntPtr hdc, NativeMethods.RECT clientRect, IReadOnlyList<string> cells, IReadOnlyList<int> widths, int y, bool isHeader, bool isRowSelected, int dataRowIndex)
+    private void PaintGridRow(IntPtr hdc, NativeMethods.RECT clientRect, IReadOnlyList<string> cells, IReadOnlyList<int> widths, int y, bool isHeader, bool isRowSelected, int dataRowIndex, HighlightStyle? highlight)
     {
         if (widths.Count == 0)
         {
@@ -4301,8 +4388,8 @@ internal sealed class ViewportPaneWindow : IDisposable
             string value = cells.Count > 0 ? cells[0] : string.Empty;
             bool isFirstCellSelected = isHeader
                 ? IsAllGridCellsSelected()
-                : IsSearchRowAxisSelected(dataRowIndex);
-            PaintGridCell(hdc, firstCellRect, Intersect(firstCellRect, clientRect), value, firstWidthChars, isHeader: true, isSelected: isFirstCellSelected);
+                : isRowSelected || IsSearchRowAxisSelected(dataRowIndex);
+            PaintGridCell(hdc, firstCellRect, Intersect(firstCellRect, clientRect), value, firstWidthChars, isHeader: true, isSelected: isFirstCellSelected, highlight);
         }
 
         NativeMethods.RECT scrollRect = clientRect;
@@ -4324,7 +4411,7 @@ internal sealed class ViewportPaneWindow : IDisposable
                 string value = i < cells.Count ? cells[i] : string.Empty;
                 bool isCellSelected = isRowSelected ||
                     (isHeader ? IsSearchColumnAxisSelected(i) : IsGridCellSelected(dataRowIndex, i));
-                PaintGridCell(hdc, cellRect, Intersect(cellRect, scrollRect), value, widthChars, isHeader, isCellSelected);
+                PaintGridCell(hdc, cellRect, Intersect(cellRect, scrollRect), value, widthChars, isHeader, isCellSelected, highlight);
                 if (!isHeader)
                 {
                     PaintGridTextSelection(hdc, dataRowIndex, i, value, cellRect, Intersect(cellRect, scrollRect), widthChars);
@@ -4335,7 +4422,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
     }
 
-    private void PaintGridCell(IntPtr hdc, NativeMethods.RECT cellRect, NativeMethods.RECT visibleRect, string text, int widthChars, bool isHeader, bool isSelected)
+    private void PaintGridCell(IntPtr hdc, NativeMethods.RECT cellRect, NativeMethods.RECT visibleRect, string text, int widthChars, bool isHeader, bool isSelected, HighlightStyle? highlight)
     {
         if (visibleRect.right <= visibleRect.left || visibleRect.bottom <= visibleRect.top)
         {
@@ -4344,11 +4431,16 @@ internal sealed class ViewportPaneWindow : IDisposable
 
         IntPtr backgroundBrush = isSelected
             ? (_hasFocus ? NativeMethods.GetSysColorBrush(NativeMethods.COLOR_HIGHLIGHT) : GetInactiveSelectionBrush())
-            : NativeMethods.GetSysColorBrush(isHeader ? NativeMethods.COLOR_3DFACE : NativeMethods.COLOR_WINDOW);
+            : highlight is HighlightStyle style
+                ? GetHighlightBrush(style.BackgroundColor)
+                : NativeMethods.GetSysColorBrush(isHeader ? NativeMethods.COLOR_3DFACE : NativeMethods.COLOR_WINDOW);
         NativeMethods.FillRect(hdc, ref visibleRect, backgroundBrush);
-        NativeMethods.SetTextColor(
-            hdc,
-            NativeMethods.GetSysColor(isSelected && _hasFocus ? NativeMethods.COLOR_HIGHLIGHTTEXT : NativeMethods.COLOR_WINDOWTEXT));
+        int textColor = isSelected && _hasFocus
+            ? NativeMethods.GetSysColor(NativeMethods.COLOR_HIGHLIGHTTEXT)
+            : !isSelected && highlight is HighlightStyle highlightedStyle
+                ? highlightedStyle.ForegroundColor
+                : NativeMethods.GetSysColor(NativeMethods.COLOR_WINDOWTEXT);
+        NativeMethods.SetTextColor(hdc, textColor);
 
         NativeMethods.RECT textRect = cellRect;
         textRect.left += GridCellPaddingPx;

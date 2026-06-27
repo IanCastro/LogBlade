@@ -47,6 +47,7 @@ internal sealed class ViewerWindow
     private const int TopBarPadding = 4;
     private const int ParserLabelWidth = 52;
     private const int ParserComboWidth = 360;
+    private const int HighlightingButtonWidth = 110;
     private const int SearchInputRowHeight = 24;
     private const int SearchProgressRowHeight = 24;
     private const int SearchDebounceMs = 200;
@@ -68,6 +69,7 @@ internal sealed class ViewerWindow
     private IntPtr _font;
     private IntPtr _parserLabel;
     private IntPtr _parserCombo;
+    private IntPtr _highlightingButton;
     private IntPtr _searchResizeGrip;
     private FileSystemWatcher? _fileWatcher;
     private GCHandle _selfHandle;
@@ -79,6 +81,8 @@ internal sealed class ViewerWindow
     private bool _updatingParserCombo;
     private bool _updatingSearchControls;
     private List<DisplayParserRule> _parserRules = new();
+    private List<HighlightRule> _highlightRules = new();
+    private IReadOnlyList<CompiledHighlightRule> _compiledHighlightRules = Array.Empty<CompiledHighlightRule>();
     private int _selectedParserRuleIndex = -1;
     private readonly List<SearchLevelState> _searchLevels = new();
     private int _activeSearchLevelCount;
@@ -167,6 +171,7 @@ internal sealed class ViewerWindow
         NativeMethods.RECT TopBarRect,
         NativeMethods.RECT ParserLabelRect,
         NativeMethods.RECT ParserComboRect,
+        NativeMethods.RECT HighlightingButtonRect,
         NativeMethods.RECT ViewerRect,
         NativeMethods.RECT SearchAreaRect,
         SearchLevelLayout[] SearchLevelLayouts,
@@ -473,6 +478,7 @@ internal sealed class ViewerWindow
         IntPtr hInstance = NativeMethods.GetModuleHandleW(null);
         CreateParserControls(hInstance);
         ReloadParserRules(selectRuleName: null);
+        ReloadHighlightRules();
 
         _mainPane = new ViewportPaneWindow(
             _font,
@@ -483,6 +489,7 @@ internal sealed class ViewerWindow
             onHostVerticalResizeHit: OnMainPaneResizeHit,
             onHostVerticalResizeBegin: OnMainPaneResizeBegin);
         _mainPane.Create(_hwnd, hInstance);
+        _mainPane.SetHighlightRules(_compiledHighlightRules);
         _mainPane.SetStatus("Loading file...");
 
         CreateSearchLevel(hInstance);
@@ -534,6 +541,51 @@ internal sealed class ViewerWindow
 
         NativeMethods.SendMessageW(_parserLabel, NativeMethods.WM_SETFONT, _font, new IntPtr(1));
         NativeMethods.SendMessageW(_parserCombo, NativeMethods.WM_SETFONT, _font, new IntPtr(1));
+
+        _highlightingButton = NativeMethods.CreateWindowExW(
+            0,
+            "BUTTON",
+            "Highlighting",
+            NativeMethods.WS_CHILD | NativeMethods.WS_VISIBLE | NativeMethods.WS_TABSTOP | NativeMethods.BS_PUSHBUTTON,
+            0,
+            0,
+            1,
+            1,
+            _hwnd,
+            IntPtr.Zero,
+            hInstance,
+            IntPtr.Zero);
+        if (_highlightingButton == IntPtr.Zero)
+        {
+            throw new InvalidOperationException("CreateWindowExW failed for highlighting button.");
+        }
+
+        NativeMethods.SendMessageW(_highlightingButton, NativeMethods.WM_SETFONT, _font, new IntPtr(1));
+    }
+
+    private void ReloadHighlightRules()
+    {
+        _highlightRules = HighlightRuleStore.Load();
+        _compiledHighlightRules = HighlightRuleCompiler.Compile(_highlightRules);
+        ApplyHighlightRulesToPanes();
+    }
+
+    private void ApplyHighlightRulesToPanes()
+    {
+        _mainPane?.SetHighlightRules(_compiledHighlightRules);
+        for (int i = 0; i < _searchLevels.Count; i++)
+        {
+            _searchLevels[i].ResultsPane?.SetHighlightRules(_compiledHighlightRules);
+        }
+    }
+
+    private void OpenHighlightRuleManager()
+    {
+        HighlightRuleManagerWindow manager = new(_highlightRules);
+        if (manager.ShowModal(_hwnd))
+        {
+            ReloadHighlightRules();
+        }
     }
 
     private void ReloadParserRules(string? selectRuleName)
@@ -931,6 +983,7 @@ internal sealed class ViewerWindow
             onHostVerticalResizeHit: OnResultsPaneResizeHit,
             onHostVerticalResizeBegin: OnResultsPaneResizeBegin);
         level.ResultsPane.Create(_hwnd, hInstance);
+        level.ResultsPane.SetHighlightRules(_compiledHighlightRules);
         level.ResultsPane.SetEmptyContentText("(no matches)");
         level.ResultsPane.SetStatus(string.Empty);
         _searchLevels.Add(level);
@@ -2468,6 +2521,12 @@ internal sealed class ViewerWindow
         if (lParam == _parserCombo && notification == NativeMethods.CBN_SELCHANGE && !_updatingParserCombo)
         {
             OnParserSelectionChanged();
+            return;
+        }
+
+        if (lParam == _highlightingButton && notification == NativeMethods.BN_CLICKED)
+        {
+            OpenHighlightRuleManager();
             return;
         }
 
@@ -4054,12 +4113,24 @@ internal sealed class ViewerWindow
             bottom = Math.Min(topBarRect.bottom, topBarRect.top + TopBarPadding + 4 + SearchInputRowHeight)
         };
         int parserComboLeft = parserLabelRect.right + SearchToggleGap;
+        int controlsRight = Math.Max(parserComboLeft, topBarRect.right - TopBarPadding);
+        int availableControlsWidth = Math.Max(0, controlsRight - parserComboLeft);
+        int highlightingWidth = Math.Min(HighlightingButtonWidth, availableControlsWidth);
+        int highlightingGap = highlightingWidth > 0 ? SearchToggleGap : 0;
+        int parserComboWidth = Math.Min(ParserComboWidth, Math.Max(0, availableControlsWidth - highlightingWidth - highlightingGap));
         NativeMethods.RECT parserComboRect = new()
         {
             left = parserComboLeft,
             top = topBarRect.top + TopBarPadding,
-            right = Math.Max(parserComboLeft, Math.Min(topBarRect.right - TopBarPadding, parserComboLeft + ParserComboWidth)),
+            right = parserComboLeft + parserComboWidth,
             bottom = topBarRect.top + TopBarPadding + 220
+        };
+        NativeMethods.RECT highlightingButtonRect = new()
+        {
+            left = parserComboRect.right + highlightingGap,
+            top = topBarRect.top + TopBarPadding,
+            right = Math.Min(controlsRight, parserComboRect.right + highlightingGap + highlightingWidth),
+            bottom = Math.Min(topBarRect.bottom, topBarRect.top + TopBarPadding + SearchInputRowHeight)
         };
         int viewerBottom = Math.Max(topBarBottom, clientRect.bottom - searchAreaHeight);
         int searchAreaTop = viewerBottom;
@@ -4163,7 +4234,7 @@ internal sealed class ViewerWindow
             }
             : CreateZeroRect();
 
-        _layout = new WindowLayout(clientRect, topBarRect, parserLabelRect, parserComboRect, viewerRect, searchAreaRect, searchLevelLayouts, progressRect);
+        _layout = new WindowLayout(clientRect, topBarRect, parserLabelRect, parserComboRect, highlightingButtonRect, viewerRect, searchAreaRect, searchLevelLayouts, progressRect);
     }
 
     private void ApplyLayout()
@@ -4190,6 +4261,18 @@ internal sealed class ViewerWindow
                 GetRectHeight(_layout.ParserComboRect),
                 true);
             NativeMethods.ShowWindow(_parserCombo, NativeMethods.SW_SHOW);
+        }
+
+        if (_highlightingButton != IntPtr.Zero)
+        {
+            NativeMethods.MoveWindow(
+                _highlightingButton,
+                _layout.HighlightingButtonRect.left,
+                _layout.HighlightingButtonRect.top,
+                GetRectWidth(_layout.HighlightingButtonRect),
+                GetRectHeight(_layout.HighlightingButtonRect),
+                true);
+            NativeMethods.ShowWindow(_highlightingButton, GetRectWidth(_layout.HighlightingButtonRect) > 0 ? NativeMethods.SW_SHOW : NativeMethods.SW_HIDE);
         }
 
         _mainPane?.SetBounds(_layout.ViewerRect, true);
@@ -4294,6 +4377,12 @@ internal sealed class ViewerWindow
         {
             NativeMethods.DestroyWindow(_parserLabel);
             _parserLabel = IntPtr.Zero;
+        }
+
+        if (_highlightingButton != IntPtr.Zero)
+        {
+            NativeMethods.DestroyWindow(_highlightingButton);
+            _highlightingButton = IntPtr.Zero;
         }
 
         foreach (SearchLevelState level in _searchLevels)
