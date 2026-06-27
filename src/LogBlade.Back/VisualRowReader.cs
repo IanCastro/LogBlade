@@ -1446,7 +1446,7 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
 
     private VisualPosition LocateParsedVisualPositionForOffset(RealLineStartInfo realLineStart, long boundedOffset)
     {
-        long scanStart = FindParserScanStart(realLineStart.StartOffset);
+        long scanStart = realLineStart.StartOffset;
         DisplayParserRecordSequence sequence = new(_displayParserRule);
         foreach (DisplayParserRecord record in sequence.Enumerate(
             SearchRealLineScanner.Enumerate(
@@ -1743,28 +1743,6 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
         }
 
         return true;
-    }
-
-    private long FindParserScanStart(long currentLineStart)
-    {
-        long scanStart = currentLineStart;
-        for (int i = 1; i < DisplayParserRecordSequence.MaximumRecordLines; i++)
-        {
-            RealLineStartInfo previous = FindPreviousRealLineStart(scanStart);
-            if (previous.StartOffset >= scanStart ||
-                currentLineStart - previous.StartOffset > DisplayParserRecordSequence.MaximumRecordChars)
-            {
-                break;
-            }
-
-            scanStart = previous.StartOffset;
-            if (scanStart <= _dataOffset)
-            {
-                return _dataOffset;
-            }
-        }
-
-        return scanStart;
     }
 
     private VisualReadResult CreateParsedResult(

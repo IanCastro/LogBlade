@@ -81,8 +81,8 @@ internal static class Program
             RunDisplayParserMainViewerWrapsParsedLinesIndependently(tempRoot);
             RunDisplayParserMainViewerSelectionPreservesParsedNewlines(tempRoot);
             RunDisplayParserMainViewerCombinesJsonAcrossLines(tempRoot);
-            RunDisplayParserMainViewerFindsCombinedStartFromContinuation(tempRoot);
-            RunDisplayParserMainViewerReloadCompletesJsonRecord(tempRoot);
+            RunDisplayParserMainViewerDoesNotBackscanFromContinuation(tempRoot);
+            RunDisplayParserMainViewerReloadDoesNotBackscanIntoIncompleteRecord(tempRoot);
             RunSearchFindsTextOnSecondParsedLine(tempRoot);
             RunSearchRepeatsCapturesAcrossParsedLines(tempRoot);
             RunSearchDoesNotWrapLongParsedLine(tempRoot);
@@ -1212,10 +1212,10 @@ internal static class Program
         reader.ReadFromPercentage(100d, 1);
         AssertSequence("display parser main combined json end", reader.CurrentRows, "plain");
         reader.ReadPrevious(1);
-        AssertSequence("display parser main combined json previous", reader.CurrentRows, "INFO - running");
+        AssertSequence("display parser main combined json previous", reader.CurrentRows, "ning\"}");
     }
 
-    private static void RunDisplayParserMainViewerFindsCombinedStartFromContinuation(string tempRoot)
+    private static void RunDisplayParserMainViewerDoesNotBackscanFromContinuation(string tempRoot)
     {
         string firstLine = "a[0]: {\"Level\":\"Inf\r\n";
         string path = WriteLog(
@@ -1232,10 +1232,14 @@ internal static class Program
         using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0, parser);
         reader.ReadFromOffset(Encoding.UTF8.GetByteCount(firstLine), 2);
 
-        AssertSequence("display parser main combined continuation offset", reader.CurrentRows, "INFO - running", "plain");
+        AssertSequence(
+            "display parser main combined continuation offset",
+            reader.CurrentRows,
+            "o\",\"Message\":\"run",
+            "ning\"}");
     }
 
-    private static void RunDisplayParserMainViewerReloadCompletesJsonRecord(string tempRoot)
+    private static void RunDisplayParserMainViewerReloadDoesNotBackscanIntoIncompleteRecord(string tempRoot)
     {
         string path = WriteLog(
             tempRoot,
@@ -1248,12 +1252,16 @@ internal static class Program
 
         using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0, parser);
         reader.ReadFromPercentage(100d, 1);
-        AssertSequence("display parser main combined reload before append", reader.CurrentRows, "a[1]: o\",\"Message\":\"run");
+        AssertSequence("display parser main combined reload before append", reader.CurrentRows, "o\",\"Message\":\"run");
 
         File.AppendAllText(path, "a[2]: ning\"}\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         reader.ReloadAfterFileChange(2);
 
-        AssertSequence("display parser main combined reload after append", reader.CurrentRows, "INFO - running");
+        AssertSequence(
+            "display parser main combined reload after append",
+            reader.CurrentRows,
+            "o\",\"Message\":\"run",
+            "ning\"}");
     }
 
     private static void RunSearchFindsTextOnSecondParsedLine(string tempRoot)
