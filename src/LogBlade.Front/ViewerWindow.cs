@@ -3508,14 +3508,20 @@ internal sealed class ViewerWindow
         MarkSearchStale();
     }
 
-    private void OnFilteredRowActivated(ViewportPaneWindow pane, long startOffset)
+    private void OnFilteredRowActivated(ViewportPaneWindow pane, ViewportRowSelectionKey rowKey)
     {
-        if (FindSearchLevelByResultsPane(pane) is null || _closing || _mainPane is null)
+        int sourceIndex = FindSearchLevelIndexByResultsPane(pane);
+        if (sourceIndex < 0 || _closing || _mainPane is null)
         {
             return;
         }
 
-        _mainPane.JumpToFileOffset(startOffset, selectRowAfterLoad: true);
+        _mainPane.JumpToFileOffset(rowKey.StartOffset, selectRowAfterLoad: true);
+        int upperLevelCount = Math.Min(sourceIndex, GetActiveSearchResultCount());
+        for (int i = 0; i < upperLevelCount; i++)
+        {
+            _searchLevels[i].ResultsPane?.SynchronizeToSearchResult(rowKey);
+        }
     }
 
     private CancellationTokenSource BeginSearchCancellation(long requestId, int searchStartLevel)

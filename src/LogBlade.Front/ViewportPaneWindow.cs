@@ -35,7 +35,8 @@ internal sealed class ViewportPaneWindow : IDisposable
         None,
         FirstVisibleRow,
         LastVisibleRow,
-        SpecificRowOrdinal
+        SpecificRowOrdinal,
+        SynchronizedRowOrdinal
     }
 
     private enum GridAxisSelectionKind
@@ -68,7 +69,7 @@ internal sealed class ViewportPaneWindow : IDisposable
     private readonly int _charWidth;
     private readonly Action<ViewportPaneWindow>? _onUsefulPaint;
     private readonly Action<ViewportPaneWindow>? _onStale;
-    private readonly Action<ViewportPaneWindow, long>? _onRowActivated;
+    private readonly Action<ViewportPaneWindow, ViewportRowSelectionKey>? _onRowActivated;
     private readonly Action? _onPasteRequested;
     private readonly Func<ViewportPaneWindow, int, bool>? _onHostVerticalResizeHit;
     private readonly Func<ViewportPaneWindow, int, bool>? _onHostVerticalResizeBegin;
@@ -155,7 +156,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         int charWidth,
         Action<ViewportPaneWindow>? onUsefulPaint = null,
         Action<ViewportPaneWindow>? onStale = null,
-        Action<ViewportPaneWindow, long>? onRowActivated = null,
+        Action<ViewportPaneWindow, ViewportRowSelectionKey>? onRowActivated = null,
         Action? onPasteRequested = null,
         Func<ViewportPaneWindow, int, bool>? onHostVerticalResizeHit = null,
         Func<ViewportPaneWindow, int, bool>? onHostVerticalResizeBegin = null)
@@ -325,6 +326,22 @@ internal sealed class ViewportPaneWindow : IDisposable
 
         SuspendTailFollow();
         QueueViewportRequest(ViewportRequestKind.LoadAtOffset, requestedOffset: offset, visibleLines: VisibleDataLineCount, selectRowAfterLoad: selectRowAfterLoad);
+    }
+
+    public bool SynchronizeToSearchResult(ViewportRowSelectionKey rowKey)
+    {
+        if (_reader is not IRowOrdinalViewportReader ordinalReader ||
+            !ordinalReader.TryGetRowOrdinal(rowKey, out long rowOrdinal))
+        {
+            return false;
+        }
+
+        return QueueSearchKeyboardSelectionAtRowOrdinal(
+            rowOrdinal,
+            selectedColumn: -1,
+            extendSelection: false,
+            activate: false,
+            synchronizeRow: true);
     }
 
     public void QueueTailRefreshIfAtEnd()
@@ -2654,22 +2671,26 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private void ActivateRowAt(int dataRowIndex)
     {
-        if (_onRowActivated is null || _reader is not IFileOffsetViewportReader offsetReader)
+        if (_onRowActivated is null ||
+            _reader is not IFileOffsetViewportReader offsetReader ||
+            _reader is not ISelectableViewportReader selectableReader)
         {
             return;
         }
 
-        if (dataRowIndex < 0 || dataRowIndex >= _reader.CurrentRows.Count)
+        IReadOnlyList<ViewportRowSelectionKey> rowKeys = selectableReader.CurrentRowSelectionKeys;
+        if (dataRowIndex < 0 || dataRowIndex >= _reader.CurrentRows.Count || dataRowIndex >= rowKeys.Count)
         {
             return;
         }
 
+        ViewportRowSelectionKey rowKey = rowKeys[dataRowIndex];
         long rowOrdinal = offsetReader.TopRowOrdinal + dataRowIndex;
         try
         {
-            if (offsetReader.TryGetRowStartOffset(rowOrdinal, out long startOffset))
+            if (offsetReader.TryGetRowStartOffset(rowOrdinal, out long startOffset) && startOffset == rowKey.StartOffset)
             {
-                _onRowActivated(this, startOffset);
+                _onRowActivated(this, rowKey);
             }
         }
         catch (FilteredLineStaleException)
@@ -3287,7 +3308,12 @@ internal sealed class ViewportPaneWindow : IDisposable
             selectedColumn: selectedColumn);
     }
 
-    private bool QueueSearchKeyboardSelectionAtRowOrdinal(long rowOrdinal, int selectedColumn, bool extendSelection, bool activate)
+    private bool QueueSearchKeyboardSelectionAtRowOrdinal(
+        long rowOrdinal,
+        int selectedColumn,
+        bool extendSelection,
+        bool activate,
+        bool synchronizeRow = false)
     {
         ClearPendingSearchKeyboardSelection();
         long requestId = QueueViewportRequest(
@@ -3299,7 +3325,9 @@ internal sealed class ViewportPaneWindow : IDisposable
             return false;
         }
 
-        _pendingSearchKeyboardSelection = PendingSearchKeyboardSelection.SpecificRowOrdinal;
+        _pendingSearchKeyboardSelection = synchronizeRow
+            ? PendingSearchKeyboardSelection.SynchronizedRowOrdinal
+            : PendingSearchKeyboardSelection.SpecificRowOrdinal;
         _pendingSearchKeyboardSelectionRequestId = requestId;
         _pendingSearchKeyboardSelectionColumn = selectedColumn;
         _pendingSearchKeyboardSelectionRowOrdinal = rowOrdinal;
@@ -3354,7 +3382,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         int rowIndex;
-        if (pendingSelection == PendingSearchKeyboardSelection.SpecificRowOrdinal)
+        if (pendingSelection is PendingSearchKeyboardSelection.SpecificRowOrdinal or PendingSearchKeyboardSelection.SynchronizedRowOrdinal)
         {
             rowIndex = 0;
             if (_reader is IFileOffsetViewportReader offsetReader)
@@ -3368,6 +3396,12 @@ internal sealed class ViewportPaneWindow : IDisposable
             rowIndex = pendingSelection == PendingSearchKeyboardSelection.FirstVisibleRow
                 ? 0
                 : _reader.CurrentRows.Count - 1;
+        }
+
+        if (pendingSelection == PendingSearchKeyboardSelection.SynchronizedRowOrdinal)
+        {
+            SelectSingleCurrentRow(rowIndex, activate: false);
+            return;
         }
 
         if (IsSearchCellSelectionMode && _reader is IColumnViewportReader columnReader)
