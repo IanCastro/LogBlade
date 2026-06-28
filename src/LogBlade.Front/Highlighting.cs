@@ -21,7 +21,9 @@ internal sealed class HighlightRule
 
     public bool IgnoreCase { get; set; }
 
-    public string Color { get; set; } = "#FFF2A8";
+    public string BackgroundColor { get; set; } = "#FFF2A8";
+
+    public string ForegroundColor { get; set; } = "#000000";
 
     public HighlightRule Clone()
     {
@@ -32,7 +34,8 @@ internal sealed class HighlightRule
             Mode = Mode,
             Pattern = Pattern,
             IgnoreCase = IgnoreCase,
-            Color = Color
+            BackgroundColor = BackgroundColor,
+            ForegroundColor = ForegroundColor
         };
     }
 }
@@ -100,9 +103,15 @@ internal static class HighlightRuleCompiler
             return false;
         }
 
-        if (!TryParseColor(rule.Color, out int red, out int green, out int blue))
+        if (!TryParseColor(rule.BackgroundColor, out int backgroundRed, out int backgroundGreen, out int backgroundBlue))
         {
-            error = "Color must use the #RRGGBB format.";
+            error = "Background color must use the #RRGGBB format.";
+            return false;
+        }
+
+        if (!TryParseColor(rule.ForegroundColor, out int foregroundRed, out int foregroundGreen, out int foregroundBlue))
+        {
+            error = "Text color must use the #RRGGBB format.";
             return false;
         }
 
@@ -131,10 +140,8 @@ internal static class HighlightRuleCompiler
             }
         }
 
-        int background = ToColorRef(red, green, blue);
-        int foreground = GetLuminance(red, green, blue) > 0.179d
-            ? ToColorRef(0, 0, 0)
-            : ToColorRef(255, 255, 255);
+        int background = ToColorRef(backgroundRed, backgroundGreen, backgroundBlue);
+        int foreground = ToColorRef(foregroundRed, foregroundGreen, foregroundBlue);
         compiledRule = new CompiledHighlightRule(rule, regex, new HighlightStyle(background, foreground));
         return true;
     }
@@ -182,16 +189,4 @@ internal static class HighlightRuleCompiler
         return red | (green << 8) | (blue << 16);
     }
 
-    private static double GetLuminance(int red, int green, int blue)
-    {
-        static double Linearize(int component)
-        {
-            double value = component / 255d;
-            return value <= 0.03928d
-                ? value / 12.92d
-                : Math.Pow((value + 0.055d) / 1.055d, 2.4d);
-        }
-
-        return (0.2126d * Linearize(red)) + (0.7152d * Linearize(green)) + (0.0722d * Linearize(blue));
-    }
 }

@@ -10,7 +10,8 @@ internal sealed class HighlightRuleEditorWindow
     private const int IdPatternEdit = 103;
     private const int IdIgnoreCase = 104;
     private const int IdEnabled = 105;
-    private const int IdChooseColor = 106;
+    private const int IdChooseBackgroundColor = 106;
+    private const int IdChooseForegroundColor = 107;
     private const int IdSave = 201;
     private const int IdCancel = 202;
     private const string WindowClassName = "LogBladeHighlightRuleEditorWindow";
@@ -29,13 +30,18 @@ internal sealed class HighlightRuleEditorWindow
     private IntPtr _patternEdit;
     private IntPtr _ignoreCaseCheck;
     private IntPtr _enabledCheck;
-    private IntPtr _colorLabel;
-    private IntPtr _colorSwatch;
-    private IntPtr _chooseColorButton;
+    private IntPtr _backgroundColorLabel;
+    private IntPtr _backgroundColorSwatch;
+    private IntPtr _chooseBackgroundColorButton;
+    private IntPtr _foregroundColorLabel;
+    private IntPtr _foregroundColorSwatch;
+    private IntPtr _chooseForegroundColorButton;
     private IntPtr _saveButton;
     private IntPtr _cancelButton;
-    private IntPtr _swatchBrush;
-    private int _colorRef = HighlightRuleCompiler.ToColorRef(255, 242, 168);
+    private IntPtr _backgroundSwatchBrush;
+    private IntPtr _foregroundSwatchBrush;
+    private int _backgroundColorRef = HighlightRuleCompiler.ToColorRef(255, 242, 168);
+    private int _foregroundColorRef = HighlightRuleCompiler.ToColorRef(0, 0, 0);
     private GCHandle _selfHandle;
     private bool _closed;
 
@@ -63,8 +69,11 @@ internal sealed class HighlightRuleEditorWindow
             NativeMethods.UpdateWindow(_hwnd);
             while (!_closed && NativeMethods.GetMessageW(out NativeMethods.MSG msg, IntPtr.Zero, 0, 0) > 0)
             {
-                NativeMethods.TranslateMessage(ref msg);
-                NativeMethods.DispatchMessageW(ref msg);
+                if (!NativeMethods.IsDialogMessageW(_hwnd, ref msg))
+                {
+                    NativeMethods.TranslateMessage(ref msg);
+                    NativeMethods.DispatchMessageW(ref msg);
+                }
             }
         }
         finally
@@ -114,7 +123,7 @@ internal sealed class HighlightRuleEditorWindow
             NativeMethods.CW_USEDEFAULT,
             NativeMethods.CW_USEDEFAULT,
             590,
-            330,
+            370,
             _owner,
             IntPtr.Zero,
             NativeMethods.GetModuleHandleW(null),
@@ -157,9 +166,14 @@ internal sealed class HighlightRuleEditorWindow
                     self.OnCommand(wParam);
                     return IntPtr.Zero;
                 case NativeMethods.WM_CTLCOLORSTATIC:
-                    if (lParam == self._colorSwatch && self._swatchBrush != IntPtr.Zero)
+                    if (lParam == self._backgroundColorSwatch && self._backgroundSwatchBrush != IntPtr.Zero)
                     {
-                        return self._swatchBrush;
+                        return self._backgroundSwatchBrush;
+                    }
+
+                    if (lParam == self._foregroundColorSwatch && self._foregroundSwatchBrush != IntPtr.Zero)
+                    {
+                        return self._foregroundSwatchBrush;
                     }
 
                     break;
@@ -190,9 +204,12 @@ internal sealed class HighlightRuleEditorWindow
         _patternEdit = CreateEdit(IdPatternEdit);
         _ignoreCaseCheck = CreateCheckbox("Ignore case", IdIgnoreCase);
         _enabledCheck = CreateCheckbox("Enabled", IdEnabled);
-        _colorLabel = CreateLabel("Color");
-        _colorSwatch = CreateSwatch();
-        _chooseColorButton = CreateButton("Choose...", IdChooseColor);
+        _backgroundColorLabel = CreateLabel("Background");
+        _backgroundColorSwatch = CreateSwatch();
+        _chooseBackgroundColorButton = CreateButton("Choose...", IdChooseBackgroundColor);
+        _foregroundColorLabel = CreateLabel("Text");
+        _foregroundColorSwatch = CreateSwatch();
+        _chooseForegroundColorButton = CreateButton("Choose...", IdChooseForegroundColor);
         _saveButton = CreateButton("Save", IdSave);
         _cancelButton = CreateButton("Cancel", IdCancel);
 
@@ -202,12 +219,18 @@ internal sealed class HighlightRuleEditorWindow
         NativeMethods.SendMessageW(_modeCombo, NativeMethods.CB_SETCURSEL, new IntPtr(initial.Mode == HighlightMatchMode.Regex ? 1 : 0), IntPtr.Zero);
         SetChecked(_ignoreCaseCheck, initial.IgnoreCase);
         SetChecked(_enabledCheck, initial.Enabled);
-        if (HighlightRuleCompiler.TryParseColor(initial.Color, out int red, out int green, out int blue))
+        if (HighlightRuleCompiler.TryParseColor(initial.BackgroundColor, out int backgroundRed, out int backgroundGreen, out int backgroundBlue))
         {
-            _colorRef = HighlightRuleCompiler.ToColorRef(red, green, blue);
+            _backgroundColorRef = HighlightRuleCompiler.ToColorRef(backgroundRed, backgroundGreen, backgroundBlue);
         }
 
-        RecreateSwatchBrush();
+        if (HighlightRuleCompiler.TryParseColor(initial.ForegroundColor, out int foregroundRed, out int foregroundGreen, out int foregroundBlue))
+        {
+            _foregroundColorRef = HighlightRuleCompiler.ToColorRef(foregroundRed, foregroundGreen, foregroundBlue);
+        }
+
+        RecreateSwatchBrush(ref _backgroundSwatchBrush, _backgroundColorRef);
+        RecreateSwatchBrush(ref _foregroundSwatchBrush, _foregroundColorRef);
         Layout();
     }
 
@@ -215,9 +238,13 @@ internal sealed class HighlightRuleEditorWindow
     {
         int id = NativeMethods.LowWord(wParam);
         int notification = NativeMethods.HighWord(wParam);
-        if (notification == NativeMethods.BN_CLICKED && id == IdChooseColor)
+        if (notification == NativeMethods.BN_CLICKED && id == IdChooseBackgroundColor)
         {
-            ChooseColor();
+            ChooseBackgroundColor();
+        }
+        else if (notification == NativeMethods.BN_CLICKED && id == IdChooseForegroundColor)
+        {
+            ChooseForegroundColor();
         }
         else if (notification == NativeMethods.BN_CLICKED && id == IdSave)
         {
@@ -229,8 +256,29 @@ internal sealed class HighlightRuleEditorWindow
         }
     }
 
-    private void ChooseColor()
+    private void ChooseBackgroundColor()
     {
+        if (TryChooseColor(_backgroundColorRef, out int selectedColor))
+        {
+            _backgroundColorRef = selectedColor;
+            RecreateSwatchBrush(ref _backgroundSwatchBrush, _backgroundColorRef);
+            NativeMethods.InvalidateRect(_backgroundColorSwatch, IntPtr.Zero, true);
+        }
+    }
+
+    private void ChooseForegroundColor()
+    {
+        if (TryChooseColor(_foregroundColorRef, out int selectedColor))
+        {
+            _foregroundColorRef = selectedColor;
+            RecreateSwatchBrush(ref _foregroundSwatchBrush, _foregroundColorRef);
+            NativeMethods.InvalidateRect(_foregroundColorSwatch, IntPtr.Zero, true);
+        }
+    }
+
+    private bool TryChooseColor(int currentColor, out int selectedColor)
+    {
+        selectedColor = currentColor;
         IntPtr customColors = Marshal.AllocHGlobal(sizeof(int) * 16);
         try
         {
@@ -243,16 +291,17 @@ internal sealed class HighlightRuleEditorWindow
             {
                 lStructSize = (uint)Marshal.SizeOf<NativeMethods.CHOOSECOLORW>(),
                 hwndOwner = _hwnd,
-                rgbResult = _colorRef,
+                rgbResult = currentColor,
                 lpCustColors = customColors,
                 Flags = NativeMethods.CC_RGBINIT | NativeMethods.CC_FULLOPEN
             };
-            if (NativeMethods.ChooseColorW(ref choice))
+            if (!NativeMethods.ChooseColorW(ref choice))
             {
-                _colorRef = choice.rgbResult;
-                RecreateSwatchBrush();
-                NativeMethods.InvalidateRect(_colorSwatch, IntPtr.Zero, true);
+                return false;
             }
+
+            selectedColor = choice.rgbResult;
+            return true;
         }
         finally
         {
@@ -289,7 +338,8 @@ internal sealed class HighlightRuleEditorWindow
                 : HighlightMatchMode.Text,
             Pattern = pattern,
             IgnoreCase = IsChecked(_ignoreCaseCheck),
-            Color = HighlightRuleCompiler.ToColorString(_colorRef)
+            BackgroundColor = HighlightRuleCompiler.ToColorString(_backgroundColorRef),
+            ForegroundColor = HighlightRuleCompiler.ToColorString(_foregroundColorRef)
         };
         if (!HighlightRuleCompiler.TryCompile(rule, out _, out string error))
         {
@@ -328,30 +378,40 @@ internal sealed class HighlightRuleEditorWindow
         Move(_ignoreCaseCheck, inputLeft, y, 120, rowHeight);
         Move(_enabledCheck, inputLeft + 140, y, 100, rowHeight);
         y += rowHeight + gap;
-        Move(_colorLabel, margin, y + 4, labelWidth, rowHeight);
-        Move(_colorSwatch, inputLeft, y + 2, 72, rowHeight - 4);
-        Move(_chooseColorButton, inputLeft + 84, y, 96, rowHeight);
+        Move(_backgroundColorLabel, margin, y + 4, labelWidth, rowHeight);
+        Move(_backgroundColorSwatch, inputLeft, y + 2, 72, rowHeight - 4);
+        Move(_chooseBackgroundColorButton, inputLeft + 84, y, 96, rowHeight);
+        y += rowHeight + gap;
+        Move(_foregroundColorLabel, margin, y + 4, labelWidth, rowHeight);
+        Move(_foregroundColorSwatch, inputLeft, y + 2, 72, rowHeight - 4);
+        Move(_chooseForegroundColorButton, inputLeft + 84, y, 96, rowHeight);
         int buttonY = Math.Max(y + rowHeight + gap, client.bottom - margin - rowHeight);
         Move(_cancelButton, width - margin - 90, buttonY, 90, rowHeight);
         Move(_saveButton, width - margin - 190, buttonY, 90, rowHeight);
     }
 
-    private void RecreateSwatchBrush()
+    private static void RecreateSwatchBrush(ref IntPtr brush, int color)
     {
-        if (_swatchBrush != IntPtr.Zero)
+        if (brush != IntPtr.Zero)
         {
-            NativeMethods.DeleteObject(_swatchBrush);
+            NativeMethods.DeleteObject(brush);
         }
 
-        _swatchBrush = NativeMethods.CreateSolidBrush(_colorRef);
+        brush = NativeMethods.CreateSolidBrush(color);
     }
 
     private void ReleaseNativeResources()
     {
-        if (_swatchBrush != IntPtr.Zero)
+        if (_backgroundSwatchBrush != IntPtr.Zero)
         {
-            NativeMethods.DeleteObject(_swatchBrush);
-            _swatchBrush = IntPtr.Zero;
+            NativeMethods.DeleteObject(_backgroundSwatchBrush);
+            _backgroundSwatchBrush = IntPtr.Zero;
+        }
+
+        if (_foregroundSwatchBrush != IntPtr.Zero)
+        {
+            NativeMethods.DeleteObject(_foregroundSwatchBrush);
+            _foregroundSwatchBrush = IntPtr.Zero;
         }
 
         if (_selfHandle.IsAllocated)

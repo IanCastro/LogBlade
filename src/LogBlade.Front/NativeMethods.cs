@@ -382,6 +382,10 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     public static extern bool TranslateMessage([In] ref MSG lpMsg);
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsDialogMessageW(IntPtr hDlg, ref MSG lpMsg);
+
     [DllImport("user32.dll")]
     public static extern IntPtr DispatchMessageW([In] ref MSG lpmsg);
 

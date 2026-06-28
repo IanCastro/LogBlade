@@ -57,8 +57,11 @@ internal sealed class HighlightRuleManagerWindow
             NativeMethods.UpdateWindow(_hwnd);
             while (!_closed && NativeMethods.GetMessageW(out NativeMethods.MSG msg, IntPtr.Zero, 0, 0) > 0)
             {
-                NativeMethods.TranslateMessage(ref msg);
-                NativeMethods.DispatchMessageW(ref msg);
+                if (!NativeMethods.IsDialogMessageW(_hwnd, ref msg))
+                {
+                    NativeMethods.TranslateMessage(ref msg);
+                    NativeMethods.DispatchMessageW(ref msg);
+                }
             }
         }
         finally
