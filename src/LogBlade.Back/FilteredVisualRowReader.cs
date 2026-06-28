@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 
-public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, IFileOffsetViewportReader, IRowOrdinalViewportReader, ISelectableViewportReader, IHighlightGroupViewportReader
+public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, IFileOffsetViewportReader, IRowOrdinalViewportReader, ISelectableViewportReader, IHighlightGroupViewportReader, ITextSelectionViewportReader
 {
     private string _filePath;
     private LogEncodingKind _kind;
@@ -237,6 +237,27 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
         }
     }
 
+    public IReadOnlyList<ViewportTextSegmentKey> CurrentTextSegmentKeys
+    {
+        get
+        {
+            if (_observedZeroFileSize)
+            {
+                return Array.Empty<ViewportTextSegmentKey>();
+            }
+
+            ViewportTextSegmentKey[] keys = new ViewportTextSegmentKey[_currentRowSelectionKeys.Count];
+            for (int i = 0; i < _currentRowSelectionKeys.Count; i++)
+            {
+                ViewportRowSelectionKey rowKey = _currentRowSelectionKeys[i];
+                ViewportHighlightGroupKey groupKey = new(rowKey.StartOffset, rowKey.EndOffset);
+                keys[i] = new ViewportTextSegmentKey(groupKey, rowKey.SegmentIndex);
+            }
+
+            return keys;
+        }
+    }
+
     public IReadOnlyList<ViewportSelectedRow> ReadSelectedRows(bool selectAll, IReadOnlyList<ViewportRowSelectionRange> ranges, IReadOnlyList<ViewportRowSelectionKey> excludedKeys)
     {
         ThrowIfDisposed();
@@ -297,6 +318,43 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
         }
 
         return groups;
+    }
+
+    public bool TryReadTextSelectionContext(ViewportTextSegmentKey key, out ViewportTextSelectionContext context)
+    {
+        ThrowIfDisposed();
+        context = default;
+        ViewportRowSelectionKey rowKey = new(key.GroupKey.StartOffset, key.GroupKey.EndOffset, key.SegmentIndex);
+        if (_observedZeroFileSize || !TryGetRowOrdinal(rowKey, out long rowOrdinal))
+        {
+            return false;
+        }
+
+        (int descriptorIndex, _) = MapTopRow(rowOrdinal);
+        if (descriptorIndex < 0 || descriptorIndex >= _descriptors.Length)
+        {
+            return false;
+        }
+
+        FilteredLineDescriptor descriptor = _descriptors[descriptorIndex];
+        string text = ReadDescriptorText(descriptor);
+        int segmentCount = GetDescriptorVisualRowCount(descriptor);
+        ViewportTextSegmentRange[] segments = new ViewportTextSegmentRange[segmentCount];
+        for (int i = 0; i < segmentCount; i++)
+        {
+            if (!FilteredLineUtilities.TryGetExplicitRowRange(text, i, out int start, out int length))
+            {
+                return false;
+            }
+
+            segments[i] = new ViewportTextSegmentRange(
+                new ViewportTextSegmentKey(key.GroupKey, i),
+                start,
+                length);
+        }
+
+        context = new ViewportTextSelectionContext(key.GroupKey, text, segments);
+        return true;
     }
 
     public IReadOnlyList<string> ReadNext(int count)

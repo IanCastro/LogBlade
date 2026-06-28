@@ -133,6 +133,8 @@ internal sealed class ViewportPaneWindow : IDisposable
     private ViewportRowSelectionKey? _selectionAnchorKey;
     private ViewportRowSelectionKey? _selectionFocusKey;
     private ViewportRowSelectionKey? _textSelectionRowKey;
+    private ViewportTextSegmentKey? _textSelectionSegmentKey;
+    private ViewportTextSelectionContext? _textSelectionContext;
     private int _textSelectionDataIndex = -1;
     private int _textSelectionColumnIndex = -1;
     private int _textSelectionAnchorChar = -1;
@@ -1123,14 +1125,29 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         ClearSelection(invalidate: false);
-        int charIndex = GetTextCharIndexFromX(x, text);
-        if (TryGetWordSelection(text, charIndex, out int wordStart, out int wordEnd))
+        int localCharIndex = GetTextCharIndexFromX(x, text);
+        if (TryGetTextSelectionContext(rowIndex, out ViewportTextSegmentKey segmentKey, out ViewportTextSelectionContext context, out ViewportTextSegmentRange segmentRange))
         {
-            StartTextSelection(rowIndex, rowKey, wordStart, wordEnd, captureMouse: true, columnIndex: -1);
+            int globalCharIndex = Math.Clamp(segmentRange.Start + localCharIndex, segmentRange.Start, segmentRange.Start + segmentRange.Length);
+            if (TryGetWordSelection(context.Text, globalCharIndex, out int wordStart, out int wordEnd))
+            {
+                StartLogicalTextSelection(rowIndex, segmentKey, context, wordStart, wordEnd, captureMouse: true, columnIndex: -1);
+            }
+            else
+            {
+                StartLogicalTextSelection(rowIndex, segmentKey, context, globalCharIndex, globalCharIndex, captureMouse: true, columnIndex: -1);
+            }
         }
         else
         {
-            StartTextSelection(rowIndex, rowKey, charIndex, captureMouse: true, columnIndex: -1);
+            if (TryGetWordSelection(text, localCharIndex, out int wordStart, out int wordEnd))
+            {
+                StartTextSelection(rowIndex, rowKey, wordStart, wordEnd, captureMouse: true, columnIndex: -1);
+            }
+            else
+            {
+                StartTextSelection(rowIndex, rowKey, localCharIndex, captureMouse: true, columnIndex: -1);
+            }
         }
 
         NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
@@ -1153,14 +1170,30 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         ClearSelection(invalidate: false);
-        int charIndex = GetGridCellTextCharIndexFromX(x, cellRect, widthChars, text);
-        if (TryGetWordSelection(text, charIndex, out int wordStart, out int wordEnd))
+        int localCharIndex = GetGridCellTextCharIndexFromX(x, cellRect, widthChars, text);
+        if (columnIndex == 1 &&
+            TryGetTextSelectionContext(rowIndex, out ViewportTextSegmentKey segmentKey, out ViewportTextSelectionContext context, out ViewportTextSegmentRange segmentRange))
         {
-            StartTextSelection(rowIndex, rowKey, wordStart, wordEnd, captureMouse: true, columnIndex: columnIndex);
+            int globalCharIndex = Math.Clamp(segmentRange.Start + localCharIndex, segmentRange.Start, segmentRange.Start + segmentRange.Length);
+            if (TryGetWordSelection(context.Text, globalCharIndex, out int wordStart, out int wordEnd))
+            {
+                StartLogicalTextSelection(rowIndex, segmentKey, context, wordStart, wordEnd, captureMouse: true, columnIndex: columnIndex);
+            }
+            else
+            {
+                StartLogicalTextSelection(rowIndex, segmentKey, context, globalCharIndex, globalCharIndex, captureMouse: true, columnIndex: columnIndex);
+            }
         }
         else
         {
-            StartTextSelection(rowIndex, rowKey, charIndex, captureMouse: true, columnIndex: columnIndex);
+            if (TryGetWordSelection(text, localCharIndex, out int wordStart, out int wordEnd))
+            {
+                StartTextSelection(rowIndex, rowKey, wordStart, wordEnd, captureMouse: true, columnIndex: columnIndex);
+            }
+            else
+            {
+                StartTextSelection(rowIndex, rowKey, localCharIndex, captureMouse: true, columnIndex: columnIndex);
+            }
         }
 
         NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
@@ -1169,7 +1202,55 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private bool TryBeginArmedTextSelection(int x, int y)
     {
-        if (_textSelectionRowKey is null)
+        if (!HasTextSelection)
+        {
+            return false;
+        }
+
+        if (_textSelectionSegmentKey is ViewportTextSegmentKey selectedSegment &&
+            _textSelectionContext is ViewportTextSelectionContext selectedContext)
+        {
+            if (_textSelectionColumnIndex == 1)
+            {
+                if (!TryHitTestGridTextCell(
+                        x,
+                        y,
+                        out int gridRowIndex,
+                        out _,
+                        out int columnIndex,
+                        out string gridText,
+                        out NativeMethods.RECT cellRect,
+                        out int widthChars) ||
+                    columnIndex != 1 ||
+                    !TryGetTextSelectionContext(gridRowIndex, out ViewportTextSegmentKey gridSegment, out ViewportTextSelectionContext gridContext, out ViewportTextSegmentRange gridRange) ||
+                    gridSegment.GroupKey != selectedSegment.GroupKey)
+                {
+                    return false;
+                }
+
+                int localCharIndex = GetGridCellTextCharIndexFromX(x, cellRect, widthChars, gridText);
+                int globalCharIndex = Math.Clamp(gridRange.Start + localCharIndex, gridRange.Start, gridRange.Start + gridRange.Length);
+                StartLogicalTextSelection(gridRowIndex, gridSegment, gridContext, globalCharIndex, globalCharIndex, captureMouse: true, columnIndex: 1);
+                NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
+                return true;
+            }
+
+            if (_textSelectionColumnIndex == -1 &&
+                TryHitTestMainTextRow(x, y, out int logicalMainRowIndex, out _, out string logicalMainText) &&
+                TryGetTextSelectionContext(logicalMainRowIndex, out ViewportTextSegmentKey mainSegment, out ViewportTextSelectionContext mainContext, out ViewportTextSegmentRange mainRange) &&
+                mainSegment.GroupKey == selectedContext.GroupKey)
+            {
+                int localCharIndex = GetTextCharIndexFromX(x, logicalMainText);
+                int globalCharIndex = Math.Clamp(mainRange.Start + localCharIndex, mainRange.Start, mainRange.Start + mainRange.Length);
+                StartLogicalTextSelection(logicalMainRowIndex, mainSegment, mainContext, globalCharIndex, globalCharIndex, captureMouse: true, columnIndex: -1);
+                NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
+                return true;
+            }
+
+            return false;
+        }
+
+        if (_textSelectionRowKey is not ViewportRowSelectionKey selectedRowKey)
         {
             return false;
         }
@@ -1185,7 +1266,7 @@ internal sealed class ViewportPaneWindow : IDisposable
                     out string gridText,
                     out NativeMethods.RECT cellRect,
                     out int widthChars) ||
-                gridRowKey != _textSelectionRowKey.Value ||
+                gridRowKey != selectedRowKey ||
                 columnIndex != _textSelectionColumnIndex)
             {
                 return false;
@@ -1202,7 +1283,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         if (!TryHitTestMainTextRow(x, y, out int mainRowIndex, out ViewportRowSelectionKey mainRowKey, out string mainText) ||
-            mainRowKey != _textSelectionRowKey.Value)
+            mainRowKey != selectedRowKey)
         {
             return false;
         }
@@ -1218,6 +1299,8 @@ internal sealed class ViewportPaneWindow : IDisposable
         _textSelectionDataIndex = rowIndex;
         _textSelectionColumnIndex = columnIndex;
         _textSelectionRowKey = rowKey;
+        _textSelectionSegmentKey = null;
+        _textSelectionContext = null;
         _textSelectionAnchorChar = charIndex;
         _textSelectionFocusChar = charIndex;
         if (captureMouse)
@@ -1232,6 +1315,31 @@ internal sealed class ViewportPaneWindow : IDisposable
         _textSelectionDataIndex = rowIndex;
         _textSelectionColumnIndex = columnIndex;
         _textSelectionRowKey = rowKey;
+        _textSelectionSegmentKey = null;
+        _textSelectionContext = null;
+        _textSelectionAnchorChar = anchorChar;
+        _textSelectionFocusChar = focusChar;
+        if (captureMouse)
+        {
+            NativeMethods.SetCapture(_hwnd);
+        }
+    }
+
+    private void StartLogicalTextSelection(
+        int rowIndex,
+        ViewportTextSegmentKey segmentKey,
+        ViewportTextSelectionContext context,
+        int anchorChar,
+        int focusChar,
+        bool captureMouse,
+        int columnIndex)
+    {
+        _isSelectingText = true;
+        _textSelectionDataIndex = rowIndex;
+        _textSelectionColumnIndex = columnIndex;
+        _textSelectionRowKey = null;
+        _textSelectionSegmentKey = segmentKey;
+        _textSelectionContext = context;
         _textSelectionAnchorChar = anchorChar;
         _textSelectionFocusChar = focusChar;
         if (captureMouse)
@@ -1269,6 +1377,54 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private void UpdateTextSelection(int x)
     {
+        if (_textSelectionSegmentKey is ViewportTextSegmentKey segmentKey &&
+            _textSelectionContext is ViewportTextSelectionContext context)
+        {
+            if (!TryFindCurrentTextSegmentIndex(segmentKey, out int logicalRowIndex) ||
+                !TryGetTextSegmentRange(context, segmentKey, out ViewportTextSegmentRange segmentRange))
+            {
+                ClearTextSelection(invalidate: true);
+                return;
+            }
+
+            _textSelectionDataIndex = logicalRowIndex;
+            int localCharIndex;
+            if (_textSelectionColumnIndex == 1)
+            {
+                if (!TryGetGridCellTextAndRect(
+                        logicalRowIndex,
+                        1,
+                        out string cellText,
+                        out NativeMethods.RECT cellRect,
+                        out _,
+                        out int widthChars))
+                {
+                    ClearTextSelection(invalidate: true);
+                    return;
+                }
+
+                localCharIndex = GetGridCellTextCharIndexFromX(x, cellRect, widthChars, cellText);
+            }
+            else
+            {
+                IReadOnlyList<string> logicalRows = _reader?.CurrentRows ?? Array.Empty<string>();
+                if (logicalRowIndex < 0 || logicalRowIndex >= logicalRows.Count)
+                {
+                    ClearTextSelection(invalidate: true);
+                    return;
+                }
+
+                localCharIndex = GetTextCharIndexFromX(x, logicalRows[logicalRowIndex]);
+            }
+
+            _textSelectionFocusChar = Math.Clamp(
+                segmentRange.Start + localCharIndex,
+                segmentRange.Start,
+                segmentRange.Start + segmentRange.Length);
+            NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
+            return;
+        }
+
         if (_textSelectionRowKey is null || !TryFindCurrentRowIndex(_textSelectionRowKey, out int rowIndex))
         {
             ClearTextSelection(invalidate: true);
@@ -2542,6 +2698,8 @@ internal sealed class ViewportPaneWindow : IDisposable
         _selectionAnchorKey = null;
         _selectionFocusKey = null;
         _textSelectionRowKey = null;
+        _textSelectionSegmentKey = null;
+        _textSelectionContext = null;
         _cellSelectionAnchorKey = null;
         _cellSelectionFocusKey = null;
         _selectionSelectAllRows = false;
@@ -2565,6 +2723,8 @@ internal sealed class ViewportPaneWindow : IDisposable
 
         _isSelectingText = false;
         _textSelectionRowKey = null;
+        _textSelectionSegmentKey = null;
+        _textSelectionContext = null;
         _textSelectionDataIndex = -1;
         _textSelectionColumnIndex = -1;
         _textSelectionAnchorChar = -1;
@@ -2752,9 +2912,9 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private bool HasSelection => HasTextSelection || _selectionSelectAllRows || _selectionRanges.Count > 0 || _cellSelectionColumns.Count > 0;
 
-    private bool HasTextSelection => _textSelectionRowKey is not null;
+    private bool HasTextSelection => _textSelectionRowKey is not null || (_textSelectionSegmentKey is not null && _textSelectionContext is not null);
 
-    private bool HasTextSelectionRange => _textSelectionRowKey is not null && _textSelectionAnchorChar != _textSelectionFocusChar;
+    private bool HasTextSelectionRange => HasTextSelection && _textSelectionAnchorChar != _textSelectionFocusChar;
 
     private bool IsSearchCellSelectionMode => _onRowActivated is not null && _reader is IColumnViewportReader;
 
@@ -2838,6 +2998,108 @@ internal sealed class ViewportPaneWindow : IDisposable
         return true;
     }
 
+    private bool TryGetTextSelectionContext(
+        int rowIndex,
+        out ViewportTextSegmentKey segmentKey,
+        out ViewportTextSelectionContext context,
+        out ViewportTextSegmentRange segmentRange)
+    {
+        segmentKey = default;
+        context = default;
+        segmentRange = default;
+        if (_reader is not ITextSelectionViewportReader textReader)
+        {
+            return false;
+        }
+
+        IReadOnlyList<ViewportTextSegmentKey> keys = textReader.CurrentTextSegmentKeys;
+        if (rowIndex < 0 || rowIndex >= keys.Count)
+        {
+            return false;
+        }
+
+        segmentKey = keys[rowIndex];
+        try
+        {
+            return textReader.TryReadTextSelectionContext(segmentKey, out context) &&
+                TryGetTextSegmentRange(context, segmentKey, out segmentRange);
+        }
+        catch (FilteredLineStaleException)
+        {
+            _onStale?.Invoke(this);
+            return false;
+        }
+    }
+
+    private static bool TryGetTextSegmentRange(
+        ViewportTextSelectionContext context,
+        ViewportTextSegmentKey key,
+        out ViewportTextSegmentRange segmentRange)
+    {
+        for (int i = 0; i < context.Segments.Count; i++)
+        {
+            if (context.Segments[i].Key == key)
+            {
+                segmentRange = context.Segments[i];
+                return true;
+            }
+        }
+
+        segmentRange = default;
+        return false;
+    }
+
+    private bool TryGetLogicalTextSelectionPaintRange(
+        int rowIndex,
+        out int selectionStart,
+        out int selectionEnd,
+        out bool showIndicator)
+    {
+        selectionStart = 0;
+        selectionEnd = 0;
+        showIndicator = false;
+        if (_textSelectionSegmentKey is not ViewportTextSegmentKey selectedSegment ||
+            _textSelectionContext is not ViewportTextSelectionContext context ||
+            _reader is not ITextSelectionViewportReader textReader)
+        {
+            return false;
+        }
+
+        IReadOnlyList<ViewportTextSegmentKey> keys = textReader.CurrentTextSegmentKeys;
+        if (rowIndex < 0 || rowIndex >= keys.Count)
+        {
+            return false;
+        }
+
+        ViewportTextSegmentKey currentSegment = keys[rowIndex];
+        if (currentSegment.GroupKey != context.GroupKey ||
+            !TryGetTextSegmentRange(context, currentSegment, out ViewportTextSegmentRange segmentRange))
+        {
+            return false;
+        }
+
+        if (!HasTextSelectionRange)
+        {
+            showIndicator = currentSegment == selectedSegment;
+            return showIndicator;
+        }
+
+        int globalStart = Math.Clamp(Math.Min(_textSelectionAnchorChar, _textSelectionFocusChar), 0, context.Text.Length);
+        int globalEnd = Math.Clamp(Math.Max(_textSelectionAnchorChar, _textSelectionFocusChar), 0, context.Text.Length);
+        int segmentEnd = segmentRange.Start + segmentRange.Length;
+        int intersectionStart = Math.Max(globalStart, segmentRange.Start);
+        int intersectionEnd = Math.Min(globalEnd, segmentEnd);
+        if (intersectionEnd <= intersectionStart)
+        {
+            return false;
+        }
+
+        selectionStart = intersectionStart - segmentRange.Start;
+        selectionEnd = intersectionEnd - segmentRange.Start;
+        showIndicator = true;
+        return true;
+    }
+
     private ViewportRowSelectionKey? GetCurrentRowSelectionKey(int rowIndex) =>
         TryGetCurrentRowSelection(rowIndex, out ViewportRowSelectionKey key, out _) ? key : null;
 
@@ -2853,6 +3115,27 @@ internal sealed class ViewportPaneWindow : IDisposable
         for (int i = 0; i < keys.Count; i++)
         {
             if (keys[i].Equals(key.Value))
+            {
+                rowIndex = i;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private bool TryFindCurrentTextSegmentIndex(ViewportTextSegmentKey key, out int rowIndex)
+    {
+        rowIndex = -1;
+        if (_reader is not ITextSelectionViewportReader textReader)
+        {
+            return false;
+        }
+
+        IReadOnlyList<ViewportTextSegmentKey> keys = textReader.CurrentTextSegmentKeys;
+        for (int i = 0; i < keys.Count; i++)
+        {
+            if (keys[i] == key)
             {
                 rowIndex = i;
                 return true;
@@ -4063,8 +4346,20 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private bool TryCopyTextSelectionToClipboard()
     {
-        if (!HasTextSelectionRange ||
-            _textSelectionRowKey is null ||
+        if (!HasTextSelectionRange)
+        {
+            return false;
+        }
+
+        if (_textSelectionContext is ViewportTextSelectionContext context)
+        {
+            int globalStart = Math.Clamp(Math.Min(_textSelectionAnchorChar, _textSelectionFocusChar), 0, context.Text.Length);
+            int globalEnd = Math.Clamp(Math.Max(_textSelectionAnchorChar, _textSelectionFocusChar), 0, context.Text.Length);
+            return globalEnd > globalStart &&
+                SetClipboardText(NormalizeClipboardCell(context.Text.Substring(globalStart, globalEnd - globalStart)));
+        }
+
+        if (_textSelectionRowKey is null ||
             !TryFindCurrentRowIndex(_textSelectionRowKey, out int rowIndex) ||
             _reader is null ||
             rowIndex < 0 ||
@@ -5072,25 +5367,49 @@ internal sealed class ViewportPaneWindow : IDisposable
         NativeMethods.RECT visibleRect,
         int widthChars)
     {
-        if (_textSelectionRowKey is null ||
-            _textSelectionColumnIndex != columnIndex ||
-            !TryGetCurrentRowSelection(rowIndex, out ViewportRowSelectionKey rowKey, out _) ||
-            rowKey != _textSelectionRowKey.Value ||
+        if (_textSelectionColumnIndex != columnIndex ||
             visibleRect.right <= visibleRect.left ||
             visibleRect.bottom <= visibleRect.top)
         {
             return;
         }
 
-        PaintTextSelectionModeIndicator(hdc, visibleRect);
+        int selectionStart;
+        int selectionEnd;
+        bool showIndicator;
+        if (_textSelectionContext is not null)
+        {
+            if (columnIndex != 1 ||
+                !TryGetLogicalTextSelectionPaintRange(rowIndex, out selectionStart, out selectionEnd, out showIndicator))
+            {
+                return;
+            }
+        }
+        else
+        {
+            if (_textSelectionRowKey is null ||
+                !TryGetCurrentRowSelection(rowIndex, out ViewportRowSelectionKey rowKey, out _) ||
+                rowKey != _textSelectionRowKey.Value)
+            {
+                return;
+            }
+
+            selectionStart = Math.Clamp(Math.Min(_textSelectionAnchorChar, _textSelectionFocusChar), 0, text.Length);
+            selectionEnd = Math.Clamp(Math.Max(_textSelectionAnchorChar, _textSelectionFocusChar), 0, text.Length);
+            showIndicator = true;
+        }
+
+        if (showIndicator)
+        {
+            PaintTextSelectionModeIndicator(hdc, visibleRect);
+        }
+
         if (!HasTextSelectionRange)
         {
             return;
         }
 
         int textCapacityChars = GetGridTextCapacityChars(widthChars);
-        int selectionStart = Math.Clamp(Math.Min(_textSelectionAnchorChar, _textSelectionFocusChar), 0, text.Length);
-        int selectionEnd = Math.Clamp(Math.Max(_textSelectionAnchorChar, _textSelectionFocusChar), 0, text.Length);
         int visibleEnd = Math.Min(text.Length, textCapacityChars);
         int paintStart = Math.Clamp(selectionStart, 0, visibleEnd);
         int paintEnd = Math.Clamp(selectionEnd, 0, visibleEnd);
@@ -5150,12 +5469,34 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private void PaintTextSelection(IntPtr hdc, int rowIndex, string row, int y, NativeMethods.RECT clientRect)
     {
-        if (_textSelectionRowKey is null ||
-            _textSelectionColumnIndex >= 0 ||
-            !TryGetCurrentRowSelection(rowIndex, out ViewportRowSelectionKey rowKey, out _) ||
-            rowKey != _textSelectionRowKey.Value)
+        if (_textSelectionColumnIndex >= 0)
         {
             return;
+        }
+
+
+        int selectionStart;
+        int selectionEnd;
+        bool showIndicator;
+        if (_textSelectionContext is not null)
+        {
+            if (!TryGetLogicalTextSelectionPaintRange(rowIndex, out selectionStart, out selectionEnd, out showIndicator))
+            {
+                return;
+            }
+        }
+        else
+        {
+            if (_textSelectionRowKey is null ||
+                !TryGetCurrentRowSelection(rowIndex, out ViewportRowSelectionKey rowKey, out _) ||
+                rowKey != _textSelectionRowKey.Value)
+            {
+                return;
+            }
+
+            selectionStart = Math.Clamp(Math.Min(_textSelectionAnchorChar, _textSelectionFocusChar), 0, row.Length);
+            selectionEnd = Math.Clamp(Math.Max(_textSelectionAnchorChar, _textSelectionFocusChar), 0, row.Length);
+            showIndicator = true;
         }
 
         NativeMethods.RECT rowRect = new()
@@ -5165,14 +5506,16 @@ internal sealed class ViewportPaneWindow : IDisposable
             right = clientRect.right,
             bottom = y + _lineHeight
         };
-        PaintTextSelectionModeIndicator(hdc, rowRect);
+        if (showIndicator)
+        {
+            PaintTextSelectionModeIndicator(hdc, rowRect);
+        }
+
         if (!HasTextSelectionRange)
         {
             return;
         }
 
-        int selectionStart = Math.Clamp(Math.Min(_textSelectionAnchorChar, _textSelectionFocusChar), 0, row.Length);
-        int selectionEnd = Math.Clamp(Math.Max(_textSelectionAnchorChar, _textSelectionFocusChar), 0, row.Length);
         int visibleStart = Math.Clamp(_xOffsetChars, 0, row.Length);
         int visibleEnd = Math.Min(row.Length, visibleStart + _visibleColumnCount);
         int paintStart = Math.Max(selectionStart, visibleStart);

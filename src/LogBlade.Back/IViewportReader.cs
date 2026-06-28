@@ -29,6 +29,15 @@ public readonly record struct ViewportHighlightGroupKey(long StartOffset, long E
 
 public readonly record struct ViewportHighlightGroup(ViewportHighlightGroupKey Key, string Text);
 
+public readonly record struct ViewportTextSegmentKey(ViewportHighlightGroupKey GroupKey, int SegmentIndex);
+
+public readonly record struct ViewportTextSegmentRange(ViewportTextSegmentKey Key, int Start, int Length);
+
+public readonly record struct ViewportTextSelectionContext(
+    ViewportHighlightGroupKey GroupKey,
+    string Text,
+    IReadOnlyList<ViewportTextSegmentRange> Segments);
+
 public interface IViewportReader : IDisposable
 {
     string FilePath { get; }
@@ -78,4 +87,10 @@ public interface IHighlightGroupViewportReader : IViewportReader
 {
     IReadOnlyList<ViewportHighlightGroupKey> CurrentHighlightGroupKeys { get; }
     IReadOnlyList<ViewportHighlightGroup> ReadCurrentHighlightGroups();
+}
+
+public interface ITextSelectionViewportReader : IViewportReader
+{
+    IReadOnlyList<ViewportTextSegmentKey> CurrentTextSegmentKeys { get; }
+    bool TryReadTextSelectionContext(ViewportTextSegmentKey key, out ViewportTextSelectionContext context);
 }

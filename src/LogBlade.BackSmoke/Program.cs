@@ -93,6 +93,9 @@ internal static class Program
             RunVisualHighlightGroupsWrappedLine(tempRoot);
             RunVisualHighlightGroupsParsedRecord(tempRoot);
             RunFilteredHighlightGroupsParsedRecord(tempRoot);
+            RunVisualTextSelectionSegmentsWrappedWord(tempRoot);
+            RunVisualTextSelectionSegmentsParsedRecord(tempRoot);
+            RunFilteredTextSelectionSegmentsParsedRecord(tempRoot);
             RunVisualSelectionRangeAcrossViewport(tempRoot);
             RunVisualSelectionSelectsAllRows(tempRoot);
             RunVisualSelectionWrappedRowCopiesOriginalLine(tempRoot);
@@ -1461,6 +1464,83 @@ internal static class Program
         AssertEqual("highlight parser search group count", groups.Count, 1);
         AssertEqual("highlight parser search group key", groups[0].Key, keys[0]);
         AssertEqual("highlight parser search group text", groups[0].Text, "ERROR\nfailed");
+    }
+
+    private static void RunVisualTextSelectionSegmentsWrappedWord(string tempRoot)
+    {
+        string prefix = new('a', VisualRowReader.VisibleSegmentChars - 3);
+        string word = "boundaryword";
+        string line = prefix + word + " tail";
+        string path = WriteLog(tempRoot, "text-selection-wrapped-word.log", line + "\r\n");
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        reader.ReadFromPercentage(0d, 3);
+        ISelectableViewportReader selectable = reader;
+        ITextSelectionViewportReader textReader = reader;
+        IReadOnlyList<ViewportTextSegmentKey> textKeys = textReader.CurrentTextSegmentKeys;
+
+        AssertEqual("text selection wrapped row count", reader.CurrentRows.Count, 2);
+        AssertEqual("text selection wrapped row keys shared", selectable.CurrentRowSelectionKeys[1], selectable.CurrentRowSelectionKeys[0]);
+        AssertEqual("text selection wrapped segment keys differ", textKeys[1] == textKeys[0], false);
+        AssertEqual("text selection wrapped group shared", textKeys[1].GroupKey, textKeys[0].GroupKey);
+        AssertEqual("text selection wrapped context available", textReader.TryReadTextSelectionContext(textKeys[1], out ViewportTextSelectionContext context), true);
+        AssertEqual("text selection wrapped full text", context.Text, line);
+        AssertEqual("text selection wrapped segment count", context.Segments.Count, 2);
+        AssertEqual("text selection wrapped first start", context.Segments[0].Start, 0);
+        AssertEqual("text selection wrapped first length", context.Segments[0].Length, VisualRowReader.VisibleSegmentChars);
+        AssertEqual("text selection wrapped second start", context.Segments[1].Start, VisualRowReader.VisibleSegmentChars);
+        AssertEqual("text selection wrapped cross-boundary word", context.Text.Substring(prefix.Length, word.Length), word);
+    }
+
+    private static void RunVisualTextSelectionSegmentsParsedRecord(string tempRoot)
+    {
+        string first = new('x', VisualRowReader.VisibleSegmentChars + 5);
+        string parsedText = first + "\nsecond";
+        string path = WriteLog(
+            tempRoot,
+            "text-selection-parser-main.log",
+            "{\"First\":\"" + first + "\",\"Second\":\"second\"}\r\n");
+        DisplayParserRule parser = ParserRule(JsonStage("{First}\n{Second}"));
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0, parser);
+        reader.ReadFromPercentage(0d, 4);
+        ITextSelectionViewportReader textReader = reader;
+        IReadOnlyList<ViewportTextSegmentKey> keys = textReader.CurrentTextSegmentKeys;
+
+        AssertEqual("text selection parser main row count", keys.Count, 3);
+        AssertEqual("text selection parser main unique second", keys[1] == keys[0], false);
+        AssertEqual("text selection parser main unique third", keys[2] == keys[1], false);
+        AssertEqual("text selection parser main context available", textReader.TryReadTextSelectionContext(keys[2], out ViewportTextSelectionContext context), true);
+        AssertEqual("text selection parser main full text", context.Text, parsedText);
+        AssertEqual("text selection parser main third start", context.Segments[2].Start, first.Length + 1);
+        AssertEqual("text selection parser main third length", context.Segments[2].Length, "second".Length);
+    }
+
+    private static void RunFilteredTextSelectionSegmentsParsedRecord(string tempRoot)
+    {
+        string path = WriteLog(
+            tempRoot,
+            "text-selection-parser-search.log",
+            "{\"Level\":\"ERROR\",\"Message\":\"failed\"}\r\n");
+        DisplayParserRule parser = ParserRule(JsonStage("{Level}\n{Message}"));
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("failed", UseRegex: false, IgnoreCase: false),
+            parser);
+        reader.ReadFromPercentage(0d, 3);
+        ITextSelectionViewportReader textReader = reader;
+        IReadOnlyList<ViewportTextSegmentKey> keys = textReader.CurrentTextSegmentKeys;
+
+        AssertEqual("text selection parser search row count", keys.Count, 2);
+        AssertEqual("text selection parser search unique rows", keys[1] == keys[0], false);
+        AssertEqual("text selection parser search shared group", keys[1].GroupKey, keys[0].GroupKey);
+        AssertEqual("text selection parser search context available", textReader.TryReadTextSelectionContext(keys[1], out ViewportTextSelectionContext context), true);
+        AssertEqual("text selection parser search full text", context.Text, "ERROR\nfailed");
+        AssertEqual("text selection parser search first range", context.Segments[0], new ViewportTextSegmentRange(keys[0], 0, 5));
+        AssertEqual("text selection parser search second range", context.Segments[1], new ViewportTextSegmentRange(keys[1], 6, 6));
     }
 
     private static void RunVisualSelectionRangeAcrossViewport(string tempRoot)

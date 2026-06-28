@@ -85,9 +85,21 @@ internal static class FilteredLineUtilities
 
     public static string GetVisualRowText(string text, int segmentIndex)
     {
-        if (segmentIndex < 0)
+        if (!TryGetVisualRowRange(text, segmentIndex, out int start, out int length))
         {
             return string.Empty;
+        }
+
+        return text.Substring(start, length);
+    }
+
+    public static bool TryGetVisualRowRange(string text, int segmentIndex, out int start, out int length)
+    {
+        start = 0;
+        length = 0;
+        if (segmentIndex < 0)
+        {
+            return false;
         }
 
         int lineStart = 0;
@@ -99,15 +111,15 @@ internal static class FilteredLineUtilities
             int lineSegmentCount = Math.Max(1, (lineLength + VisualRowReader.VisibleSegmentChars - 1) / VisualRowReader.VisibleSegmentChars);
             if (remainingSegmentIndex < lineSegmentCount)
             {
-                int start = lineStart + (remainingSegmentIndex * VisualRowReader.VisibleSegmentChars);
-                int count = Math.Min(VisualRowReader.VisibleSegmentChars, lineEnd - start);
-                return text.Substring(start, count);
+                start = lineStart + (remainingSegmentIndex * VisualRowReader.VisibleSegmentChars);
+                length = Math.Min(VisualRowReader.VisibleSegmentChars, lineEnd - start);
+                return true;
             }
 
             remainingSegmentIndex -= lineSegmentCount;
             if (lineEnd >= text.Length)
             {
-                return string.Empty;
+                return false;
             }
 
             lineStart = SkipLineBreak(text, lineEnd);
@@ -138,9 +150,21 @@ internal static class FilteredLineUtilities
 
     public static string GetExplicitRowText(string text, int rowIndex)
     {
-        if (rowIndex < 0)
+        if (!TryGetExplicitRowRange(text, rowIndex, out int start, out int length))
         {
             return string.Empty;
+        }
+
+        return text.Substring(start, length);
+    }
+
+    public static bool TryGetExplicitRowRange(string text, int rowIndex, out int start, out int length)
+    {
+        start = 0;
+        length = 0;
+        if (rowIndex < 0)
+        {
+            return false;
         }
 
         int currentRow = 0;
@@ -156,12 +180,14 @@ internal static class FilteredLineUtilities
 
             if (currentRow == rowIndex)
             {
-                return text.Substring(rowStart, i - rowStart);
+                start = rowStart;
+                length = i - rowStart;
+                return true;
             }
 
             if (atEnd)
             {
-                return string.Empty;
+                return false;
             }
 
             if (text[i] == '\r' && i + 1 < text.Length && text[i + 1] == '\n')
@@ -173,7 +199,7 @@ internal static class FilteredLineUtilities
             rowStart = i + 1;
         }
 
-        return string.Empty;
+        return false;
     }
 
     private static int FindLineEnd(string text, int start)

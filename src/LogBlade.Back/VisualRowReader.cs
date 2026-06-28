@@ -36,7 +36,7 @@ internal enum VisualStartKind
     ForcedWrap
 }
 
-public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader, IHighlightGroupViewportReader
+public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader, IHighlightGroupViewportReader, ITextSelectionViewportReader
 {
     public const int VisibleSegmentChars = 4096;
     internal const int SegmentChars = VisibleSegmentChars;
@@ -194,6 +194,27 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
         }
     }
 
+    public IReadOnlyList<ViewportTextSegmentKey> CurrentTextSegmentKeys
+    {
+        get
+        {
+            if (_observedZeroFileSize)
+            {
+                return Array.Empty<ViewportTextSegmentKey>();
+            }
+
+            ViewportTextSegmentKey[] keys = new ViewportTextSegmentKey[_viewportRows.Count];
+            for (int i = 0; i < _viewportRows.Count; i++)
+            {
+                ViewportRow row = _viewportRows[i];
+                ViewportHighlightGroupKey groupKey = new(row.RealLineStartOffset, row.RealLineStartOffset);
+                keys[i] = new ViewportTextSegmentKey(groupKey, row.SegmentIndex);
+            }
+
+            return keys;
+        }
+    }
+
     private bool IsAtConfirmedEnd => _viewportLoaded && IsOffsetAtKnownEnd(_viewportEndOffset);
 
     public IReadOnlyList<ViewportSelectedRow> ReadSelectedRows(bool selectAll, IReadOnlyList<ViewportRowSelectionRange> ranges, IReadOnlyList<ViewportRowSelectionKey> excludedKeys)
@@ -252,6 +273,52 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
         }
 
         return groups;
+    }
+
+    public bool TryReadTextSelectionContext(ViewportTextSegmentKey key, out ViewportTextSelectionContext context)
+    {
+        context = default;
+        if (_observedZeroFileSize ||
+            key.SegmentIndex < 0 ||
+            key.GroupKey.StartOffset != key.GroupKey.EndOffset ||
+            key.GroupKey.StartOffset < _dataOffset ||
+            key.GroupKey.StartOffset >= _fileSize)
+        {
+            return false;
+        }
+
+        VisualPosition position = LocateVisualPositionForOffset(key.GroupKey.StartOffset);
+        if (position.RealLineStartOffset != key.GroupKey.StartOffset)
+        {
+            return false;
+        }
+
+        using FileStream fs = OpenSourceStream(_filePath);
+        fs.Position = position.StartOffset;
+        VisualReadResult read = ReadVisualRow(fs, position);
+        string text = ReadSelectedLogicalLineText(fs, read.Row, read.NextPosition, out _);
+        int segmentCount = FilteredLineUtilities.CountVisualRows(text);
+        if (key.SegmentIndex >= segmentCount)
+        {
+            return false;
+        }
+
+        ViewportTextSegmentRange[] segments = new ViewportTextSegmentRange[segmentCount];
+        for (int i = 0; i < segmentCount; i++)
+        {
+            if (!FilteredLineUtilities.TryGetVisualRowRange(text, i, out int start, out int length))
+            {
+                return false;
+            }
+
+            segments[i] = new ViewportTextSegmentRange(
+                new ViewportTextSegmentKey(key.GroupKey, i),
+                start,
+                length);
+        }
+
+        context = new ViewportTextSelectionContext(key.GroupKey, text, segments);
+        return true;
     }
 
     private void EnumerateSelectedRows(
