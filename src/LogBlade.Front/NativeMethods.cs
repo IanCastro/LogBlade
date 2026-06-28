@@ -27,6 +27,8 @@ internal static class NativeMethods
     public const int CBS_DROPDOWNLIST = 0x0003;
     public const int CBS_HASSTRINGS = 0x0200;
     public const int LBS_NOTIFY = 0x0001;
+    public const int LBS_OWNERDRAWFIXED = 0x0010;
+    public const int LBS_HASSTRINGS = 0x0040;
     public const int CW_USEDEFAULT = unchecked((int)0x80000000);
     public const int SW_HIDE = 0;
     public const int SW_SHOW = 5;
@@ -42,6 +44,7 @@ internal static class NativeMethods
     public const int WM_CREATE = 0x0001;
     public const int WM_DESTROY = 0x0002;
     public const int WM_COMMAND = 0x0111;
+    public const int WM_DRAWITEM = 0x002B;
     public const int WM_CTLCOLORSTATIC = 0x0138;
     public const int WM_SIZE = 0x0005;
     public const int WM_GETMINMAXINFO = 0x0024;
@@ -75,6 +78,7 @@ internal static class NativeMethods
     public const int LB_RESETCONTENT = 0x0184;
     public const int LB_SETCURSEL = 0x0186;
     public const int LB_GETCURSEL = 0x0188;
+    public const int LB_SETITEMHEIGHT = 0x01A0;
     public const int LB_ERR = -1;
     public const int EM_SETSEL = 0x00B1;
     public const int WM_APP = 0x8000;
@@ -131,10 +135,13 @@ internal static class NativeMethods
     public const int MB_ICONQUESTION = 0x00000020;
     public const int IDYES = 6;
     public const int EN_CHANGE = 0x0300;
+    public const int LBN_SELCHANGE = 1;
     public const int LBN_DBLCLK = 2;
     public const int BN_CLICKED = 0;
     public const int BST_UNCHECKED = 0;
     public const int BST_CHECKED = 1;
+    public const int ODS_SELECTED = 0x0001;
+    public const int ODS_FOCUS = 0x0010;
     public const int VK_LEFT = 0x25;
     public const int VK_UP = 0x26;
     public const int VK_RIGHT = 0x27;
@@ -319,6 +326,20 @@ internal static class NativeMethods
         public string? lpTemplateName;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct DRAWITEMSTRUCT
+    {
+        public uint CtlType;
+        public uint CtlID;
+        public uint itemID;
+        public uint itemAction;
+        public uint itemState;
+        public IntPtr hwndItem;
+        public IntPtr hDC;
+        public RECT rcItem;
+        public nuint itemData;
+    }
+
     [UnmanagedFunctionPointer(CallingConvention.Winapi)]
     public delegate IntPtr WindowProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
 
@@ -450,6 +471,10 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     public static extern int FrameRect(IntPtr hDC, ref RECT lprc, IntPtr hbr);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool DrawFocusRect(IntPtr hDC, ref RECT lprc);
 
     [DllImport("gdi32.dll")]
     public static extern int SetBkMode(IntPtr hdc, int mode);

@@ -11,8 +11,6 @@ internal enum HighlightMatchMode
 
 internal sealed class HighlightRule
 {
-    public string Name { get; set; } = string.Empty;
-
     public bool Enabled { get; set; } = true;
 
     public HighlightMatchMode Mode { get; set; } = HighlightMatchMode.Text;
@@ -29,7 +27,6 @@ internal sealed class HighlightRule
     {
         return new HighlightRule
         {
-            Name = Name,
             Enabled = Enabled,
             Mode = Mode,
             Pattern = Pattern,
@@ -90,12 +87,6 @@ internal static class HighlightRuleCompiler
     {
         compiledRule = null!;
         error = string.Empty;
-
-        if (string.IsNullOrWhiteSpace(rule.Name))
-        {
-            error = "Name is required.";
-            return false;
-        }
 
         if (string.IsNullOrEmpty(rule.Pattern))
         {
