@@ -215,7 +215,7 @@ public static class DisplayParserEvaluator
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(stage.Rule))
+        if (string.IsNullOrEmpty(stage.Rule))
         {
             throw new ArgumentException("Rule is required.", nameof(stage));
         }
@@ -311,7 +311,7 @@ public static class DisplayParserEvaluator
             throw new InvalidOperationException("Regex did not match.");
         }
 
-        string displayTemplate = string.IsNullOrWhiteSpace(template) ? "{0}" : template;
+        string displayTemplate = string.IsNullOrEmpty(template) ? "{0}" : template;
         return RenderTemplate(displayTemplate, selector => ResolveRegexPlaceholder(regex, match, selector));
     }
 

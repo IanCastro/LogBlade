@@ -14,6 +14,8 @@ internal static class Program
             Directory.CreateDirectory(tempRoot);
 
             RunDisplayParserJsonTemplate();
+            RunDisplayParserJsonPreservesTemplateWhitespace();
+            RunDisplayParserJsonAllowsWhitespaceOnlyTemplate();
             RunDisplayParserJsonWithTrailingText();
             RunDisplayParserJsonSkipsInvalidPrefixCandidate();
             RunDisplayParserGeneratesJsonTemplateFromSample();
@@ -25,6 +27,8 @@ internal static class Program
             RunDisplayParserRegexNamedDisplay();
             RunDisplayParserRegexDefaultFullMatch();
             RunDisplayParserRegexPreservesPatternSpaces();
+            RunDisplayParserRegexPreservesDisplaySpaces();
+            RunDisplayParserRegexAllowsWhitespaceOnlyDisplay();
             RunDisplayParserRegexInvalidRegexValidation();
             RunDisplayParserFallbackOriginal();
             RunDisplayParserRegexThenJsonTemplate();
@@ -188,6 +192,27 @@ internal static class Program
             "2025-09-12 14:50:48.637060 [EventScheduler] INFO EventScheduler - Strategy task JT67_48_250912145048_00064 is running");
     }
 
+    private static void RunDisplayParserJsonPreservesTemplateWhitespace()
+    {
+        DisplayParserRule rule = ParserRule(JsonStage(" \t{Level}\r\n "));
+
+        AssertEqual(
+            "display parser json preserves template whitespace",
+            DisplayParserEvaluator.EvaluateOrOriginal(rule, "{\"Level\":\"Info\"}"),
+            " \tInfo\r\n ");
+    }
+
+    private static void RunDisplayParserJsonAllowsWhitespaceOnlyTemplate()
+    {
+        DisplayParserStage stage = JsonStage("   ");
+        DisplayParserEvaluator.ValidateStage(stage);
+
+        AssertEqual(
+            "display parser json allows whitespace-only template",
+            DisplayParserEvaluator.EvaluateOrOriginal(ParserRule(stage), "{\"Level\":\"Info\"}"),
+            "   ");
+    }
+
     private static void RunDisplayParserJsonWithTrailingText()
     {
         DisplayParserRule rule = ParserRule(JsonStage("{upper:Level} {Logger} - {Message}"));
@@ -306,6 +331,26 @@ internal static class Program
 
         AssertEqual("display parser regex preserves pattern spaces match", DisplayParserEvaluator.EvaluateOrOriginal(rule, "x abc y"), "hit");
         AssertEqual("display parser regex preserves pattern spaces no match", DisplayParserEvaluator.EvaluateOrOriginal(rule, "abc"), "abc");
+    }
+
+    private static void RunDisplayParserRegexPreservesDisplaySpaces()
+    {
+        DisplayParserRule rule = ParserRule(RegexStage(@"(?<value>abc)", " \t{value}\r\n "));
+
+        AssertEqual(
+            "display parser regex preserves display spaces",
+            DisplayParserEvaluator.EvaluateOrOriginal(rule, "abc"),
+            " \tabc\r\n ");
+    }
+
+    private static void RunDisplayParserRegexAllowsWhitespaceOnlyDisplay()
+    {
+        DisplayParserRule rule = ParserRule(RegexStage("abc", "   "));
+
+        AssertEqual(
+            "display parser regex allows whitespace-only display",
+            DisplayParserEvaluator.EvaluateOrOriginal(rule, "abc"),
+            "   ");
     }
 
     private static void RunDisplayParserRegexInvalidRegexValidation()

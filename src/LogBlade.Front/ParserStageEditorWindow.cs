@@ -473,17 +473,13 @@ internal sealed class ParserStageEditorWindow
     private DisplayParserStage CreateStageFromControls()
     {
         string rawRule = GetWindowText(_ruleEdit);
-        string rule = _mode is DisplayParserMode.Regex or DisplayParserMode.RegexReplace
-            ? rawRule
-            : rawRule.Trim();
         string rawTemplate = GetWindowText(_templateEdit);
-        string template = _mode == DisplayParserMode.RegexReplace ? rawTemplate : rawTemplate.Trim();
 
         return new DisplayParserStage
         {
             Mode = _mode,
-            Rule = rule,
-            Template = _mode is DisplayParserMode.Regex or DisplayParserMode.RegexReplace ? template : string.Empty
+            Rule = rawRule,
+            Template = _mode is DisplayParserMode.Regex or DisplayParserMode.RegexReplace ? rawTemplate : string.Empty
         };
     }
 
