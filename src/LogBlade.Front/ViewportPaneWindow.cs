@@ -65,6 +65,9 @@ internal sealed class ViewportPaneWindow : IDisposable
     private static readonly string[] s_textOnlyGridHeaders = ["Text"];
 
     private readonly IntPtr _font;
+    private readonly IntPtr _boldFont;
+    private readonly IntPtr _italicFont;
+    private readonly IntPtr _boldItalicFont;
     private readonly int _lineHeight;
     private readonly int _charWidth;
     private readonly Action<ViewportPaneWindow>? _onUsefulPaint;
@@ -156,6 +159,9 @@ internal sealed class ViewportPaneWindow : IDisposable
         IntPtr font,
         int lineHeight,
         int charWidth,
+        IntPtr boldFont = default,
+        IntPtr italicFont = default,
+        IntPtr boldItalicFont = default,
         Action<ViewportPaneWindow>? onUsefulPaint = null,
         Action<ViewportPaneWindow>? onStale = null,
         Action<ViewportPaneWindow, ViewportRowSelectionKey>? onRowActivated = null,
@@ -164,6 +170,9 @@ internal sealed class ViewportPaneWindow : IDisposable
         Func<ViewportPaneWindow, int, bool>? onHostVerticalResizeBegin = null)
     {
         _font = font;
+        _boldFont = boldFont != IntPtr.Zero ? boldFont : font;
+        _italicFont = italicFont != IntPtr.Zero ? italicFont : font;
+        _boldItalicFont = boldItalicFont != IntPtr.Zero ? boldItalicFont : font;
         _lineHeight = Math.Max(1, lineHeight);
         _charWidth = Math.Max(1, charWidth);
         _inactiveSelectionBrush = NativeMethods.CreateSolidBrush(InactiveSelectionColor);
@@ -2567,6 +2576,26 @@ internal sealed class ViewportPaneWindow : IDisposable
         return false;
     }
 
+    private IntPtr GetHighlightFont(HighlightStyle? highlight, bool selected)
+    {
+        if (selected || highlight is not HighlightStyle style)
+        {
+            return _font;
+        }
+
+        if (style.Bold && style.Italic)
+        {
+            return _boldItalicFont;
+        }
+
+        if (style.Bold)
+        {
+            return _boldFont;
+        }
+
+        return style.Italic ? _italicFont : _font;
+    }
+
     private IntPtr GetHighlightBrush(int color)
     {
         if (_highlightBrushes.TryGetValue(color, out IntPtr brush))
@@ -4301,7 +4330,16 @@ internal sealed class ViewportPaneWindow : IDisposable
             string visibleText = SliceVisibleText(displayRow);
             if (visibleText.Length > 0)
             {
+                IntPtr rowFont = GetHighlightFont(highlight, selected);
+                IntPtr previousFont = rowFont != _font
+                    ? NativeMethods.SelectObject(hdc, rowFont)
+                    : IntPtr.Zero;
                 NativeMethods.TextOutW(hdc, x, y, visibleText, visibleText.Length);
+                if (previousFont != IntPtr.Zero)
+                {
+                    NativeMethods.SelectObject(hdc, previousFont);
+                }
+
                 visibleNonEmptyLines++;
             }
 
@@ -4451,6 +4489,10 @@ internal sealed class ViewportPaneWindow : IDisposable
             string visibleText = FitGridCellText(text, textCapacityChars);
             if (visibleText.Length > 0)
             {
+                IntPtr textFont = GetHighlightFont(highlight, isSelected);
+                IntPtr previousFont = textFont != _font
+                    ? NativeMethods.SelectObject(hdc, textFont)
+                    : IntPtr.Zero;
                 int savedDc = NativeMethods.SaveDC(hdc);
                 if (savedDc != 0)
                 {
@@ -4467,6 +4509,11 @@ internal sealed class ViewportPaneWindow : IDisposable
                 if (savedDc != 0)
                 {
                     NativeMethods.RestoreDC(hdc, savedDc);
+                }
+
+                if (previousFont != IntPtr.Zero)
+                {
+                    NativeMethods.SelectObject(hdc, previousFont);
                 }
             }
         }

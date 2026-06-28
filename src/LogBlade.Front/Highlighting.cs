@@ -10,6 +10,12 @@ internal sealed class HighlightRule
 
     public bool IgnoreCase { get; set; }
 
+    public bool InvertMatch { get; set; }
+
+    public bool Bold { get; set; }
+
+    public bool Italic { get; set; }
+
     public string BackgroundColor { get; set; } = "#FFF2A8";
 
     public string ForegroundColor { get; set; } = "#000000";
@@ -21,23 +27,32 @@ internal sealed class HighlightRule
             Enabled = Enabled,
             Pattern = Pattern,
             IgnoreCase = IgnoreCase,
+            InvertMatch = InvertMatch,
+            Bold = Bold,
+            Italic = Italic,
             BackgroundColor = BackgroundColor,
             ForegroundColor = ForegroundColor
         };
     }
 }
 
-internal readonly record struct HighlightStyle(int BackgroundColor, int ForegroundColor);
+internal readonly record struct HighlightStyle(
+    int BackgroundColor,
+    int ForegroundColor,
+    bool Bold,
+    bool Italic);
 
 internal sealed class CompiledHighlightRule
 {
     private readonly string _pattern;
     private readonly StringComparison _comparison;
+    private readonly bool _invertMatch;
 
     public CompiledHighlightRule(HighlightRule rule, HighlightStyle style)
     {
         _pattern = rule.Pattern;
         _comparison = rule.IgnoreCase ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        _invertMatch = rule.InvertMatch;
         Style = style;
     }
 
@@ -45,7 +60,8 @@ internal sealed class CompiledHighlightRule
 
     public bool IsMatch(string text)
     {
-        return text.IndexOf(_pattern, _comparison) >= 0;
+        bool matched = text.IndexOf(_pattern, _comparison) >= 0;
+        return _invertMatch ? !matched : matched;
     }
 }
 
@@ -96,7 +112,9 @@ internal static class HighlightRuleCompiler
 
         int background = ToColorRef(backgroundRed, backgroundGreen, backgroundBlue);
         int foreground = ToColorRef(foregroundRed, foregroundGreen, foregroundBlue);
-        compiledRule = new CompiledHighlightRule(rule, new HighlightStyle(background, foreground));
+        compiledRule = new CompiledHighlightRule(
+            rule,
+            new HighlightStyle(background, foreground, rule.Bold, rule.Italic));
         return true;
     }
 

@@ -67,6 +67,9 @@ internal sealed class ViewerWindow
     private readonly string _titleSuffix;
     private IntPtr _hwnd;
     private IntPtr _font;
+    private IntPtr _boldFont;
+    private IntPtr _italicFont;
+    private IntPtr _boldItalicFont;
     private IntPtr _parserLabel;
     private IntPtr _parserCombo;
     private IntPtr _highlightingButton;
@@ -454,26 +457,16 @@ internal sealed class ViewerWindow
     private void OnCreate(IntPtr hwnd)
     {
         _hwnd = hwnd;
-        _font = NativeMethods.CreateFontW(
-            -13,
-            0,
-            0,
-            0,
-            NativeMethods.FW_NORMAL,
-            0,
-            0,
-            0,
-            NativeMethods.DEFAULT_CHARSET,
-            NativeMethods.OUT_OUTLINE_PRECIS,
-            NativeMethods.CLIP_DEFAULT_PRECIS,
-            NativeMethods.CLEARTYPE_QUALITY,
-            NativeMethods.FF_MODERN,
-            "Consolas");
+        _font = CreateContentFont(NativeMethods.FW_NORMAL, italic: false);
 
         if (_font == IntPtr.Zero)
         {
             _font = NativeMethods.GetStockObject(NativeMethods.SYSTEM_FIXED_FONT);
         }
+
+        _boldFont = CreateContentFont(NativeMethods.FW_BOLD, italic: false);
+        _italicFont = CreateContentFont(NativeMethods.FW_NORMAL, italic: true);
+        _boldItalicFont = CreateContentFont(NativeMethods.FW_BOLD, italic: true);
 
         MeasureFont();
 
@@ -486,6 +479,9 @@ internal sealed class ViewerWindow
             _font,
             _lineHeight,
             _charWidth,
+            boldFont: _boldFont,
+            italicFont: _italicFont,
+            boldItalicFont: _boldItalicFont,
             onUsefulPaint: OnMainPaneUsefulPaint,
             onPasteRequested: OpenClipboardTextInNewWindow,
             onHostVerticalResizeHit: OnMainPaneResizeHit,
@@ -1027,6 +1023,9 @@ internal sealed class ViewerWindow
             _font,
             _lineHeight,
             _charWidth,
+            boldFont: _boldFont,
+            italicFont: _italicFont,
+            boldItalicFont: _boldItalicFont,
             onStale: OnFilteredPaneStale,
             onRowActivated: OnFilteredRowActivated,
             onPasteRequested: OpenClipboardTextInNewWindow,
@@ -3975,6 +3974,25 @@ internal sealed class ViewerWindow
             new LogField("viewportBytes", pane.Reader.ViewportBytes.ToString()));
     }
 
+    private static IntPtr CreateContentFont(int weight, bool italic)
+    {
+        return NativeMethods.CreateFontW(
+            -13,
+            0,
+            0,
+            0,
+            weight,
+            italic ? 1u : 0u,
+            0,
+            0,
+            NativeMethods.DEFAULT_CHARSET,
+            NativeMethods.OUT_OUTLINE_PRECIS,
+            NativeMethods.CLIP_DEFAULT_PRECIS,
+            NativeMethods.CLEARTYPE_QUALITY,
+            NativeMethods.FF_MODERN,
+            "Consolas");
+    }
+
     private void MeasureFont()
     {
         IntPtr hdc = NativeMethods.GetDC(_hwnd);
@@ -4467,8 +4485,20 @@ internal sealed class ViewerWindow
             NativeMethods.DeleteObject(_font);
         }
 
+        DeleteOwnedFont(ref _boldFont);
+        DeleteOwnedFont(ref _italicFont);
+        DeleteOwnedFont(ref _boldItalicFont);
         _searchResizeGrip = IntPtr.Zero;
         _font = IntPtr.Zero;
+    }
+
+    private static void DeleteOwnedFont(ref IntPtr font)
+    {
+        if (font != IntPtr.Zero)
+        {
+            NativeMethods.DeleteObject(font);
+            font = IntPtr.Zero;
+        }
     }
 
     private void PaintSearchProgress(IntPtr hdc)

@@ -13,6 +13,9 @@ internal sealed class HighlightRuleManagerWindow
     private const int IdEnabled = 105;
     private const int IdChooseBackgroundColor = 106;
     private const int IdChooseForegroundColor = 107;
+    private const int IdInvertMatch = 108;
+    private const int IdBold = 109;
+    private const int IdItalic = 110;
     private const int IdAdd = 201;
     private const int IdDuplicate = 202;
     private const int IdRemove = 203;
@@ -38,7 +41,10 @@ internal sealed class HighlightRuleManagerWindow
     private IntPtr _patternLabel;
     private IntPtr _patternEdit;
     private IntPtr _ignoreCaseCheck;
+    private IntPtr _invertMatchCheck;
     private IntPtr _enabledCheck;
+    private IntPtr _boldCheck;
+    private IntPtr _italicCheck;
     private IntPtr _backgroundColorLabel;
     private IntPtr _backgroundColorSwatch;
     private IntPtr _chooseBackgroundColorButton;
@@ -236,7 +242,10 @@ internal sealed class HighlightRuleManagerWindow
         _patternLabel = CreateLabel("Pattern");
         _patternEdit = CreateEdit(IdPatternEdit);
         _ignoreCaseCheck = CreateCheckbox("Ignore case", IdIgnoreCase);
+        _invertMatchCheck = CreateCheckbox("Invert match", IdInvertMatch);
         _enabledCheck = CreateCheckbox("Enabled", IdEnabled);
+        _boldCheck = CreateCheckbox("Bold", IdBold);
+        _italicCheck = CreateCheckbox("Italic", IdItalic);
         _backgroundColorLabel = CreateLabel("Background");
         _backgroundColorSwatch = CreateSwatch();
         _chooseBackgroundColorButton = CreateButton("Choose...", IdChooseBackgroundColor);
@@ -300,7 +309,8 @@ internal sealed class HighlightRuleManagerWindow
         }
         else if (!_updatingControls &&
             ((id == IdPatternEdit && notification == NativeMethods.EN_CHANGE) ||
-             (notification == NativeMethods.BN_CLICKED && id is IdIgnoreCase or IdEnabled)))
+             (notification == NativeMethods.BN_CLICKED &&
+              id is IdIgnoreCase or IdInvertMatch or IdEnabled or IdBold or IdItalic)))
         {
             UpdateSelectedRuleFromControls();
         }
@@ -419,7 +429,10 @@ internal sealed class HighlightRuleManagerWindow
             HighlightRule rule = hasSelection ? _rules[_selectedIndex] : new HighlightRule();
             NativeMethods.SetWindowTextW(_patternEdit, hasSelection ? rule.Pattern : string.Empty);
             SetChecked(_ignoreCaseCheck, hasSelection && rule.IgnoreCase);
+            SetChecked(_invertMatchCheck, hasSelection && rule.InvertMatch);
             SetChecked(_enabledCheck, hasSelection && rule.Enabled);
+            SetChecked(_boldCheck, hasSelection && rule.Bold);
+            SetChecked(_italicCheck, hasSelection && rule.Italic);
 
             _backgroundColorRef = ParseColorOrDefault(rule.BackgroundColor, HighlightRuleCompiler.ToColorRef(255, 242, 168));
             _foregroundColorRef = ParseColorOrDefault(rule.ForegroundColor, HighlightRuleCompiler.ToColorRef(0, 0, 0));
@@ -445,7 +458,10 @@ internal sealed class HighlightRuleManagerWindow
         HighlightRule rule = _rules[_selectedIndex];
         rule.Pattern = GetText(_patternEdit);
         rule.IgnoreCase = IsChecked(_ignoreCaseCheck);
+        rule.InvertMatch = IsChecked(_invertMatchCheck);
         rule.Enabled = IsChecked(_enabledCheck);
+        rule.Bold = IsChecked(_boldCheck);
+        rule.Italic = IsChecked(_italicCheck);
         rule.BackgroundColor = HighlightRuleCompiler.ToColorString(_backgroundColorRef);
         rule.ForegroundColor = HighlightRuleCompiler.ToColorString(_foregroundColorRef);
         NativeMethods.InvalidateRect(_rulesList, IntPtr.Zero, true);
@@ -594,7 +610,10 @@ internal sealed class HighlightRuleManagerWindow
     {
         NativeMethods.EnableWindow(_patternEdit, enabled);
         NativeMethods.EnableWindow(_ignoreCaseCheck, enabled);
+        NativeMethods.EnableWindow(_invertMatchCheck, enabled);
         NativeMethods.EnableWindow(_enabledCheck, enabled);
+        NativeMethods.EnableWindow(_boldCheck, enabled);
+        NativeMethods.EnableWindow(_italicCheck, enabled);
         NativeMethods.EnableWindow(_chooseBackgroundColorButton, enabled);
         NativeMethods.EnableWindow(_chooseForegroundColorButton, enabled);
     }
@@ -636,8 +655,12 @@ internal sealed class HighlightRuleManagerWindow
         Move(_patternLabel, formLeft, y + 4, labelWidth, rowHeight);
         Move(_patternEdit, inputLeft, y, inputWidth, rowHeight);
         y += rowHeight + gap;
-        Move(_ignoreCaseCheck, inputLeft, y, 120, rowHeight);
-        Move(_enabledCheck, inputLeft + 140, y, 100, rowHeight);
+        Move(_ignoreCaseCheck, inputLeft, y, 112, rowHeight);
+        Move(_invertMatchCheck, inputLeft + 120, y, 112, rowHeight);
+        Move(_enabledCheck, inputLeft + 240, y, 90, rowHeight);
+        y += rowHeight + gap;
+        Move(_boldCheck, inputLeft, y, 80, rowHeight);
+        Move(_italicCheck, inputLeft + 88, y, 80, rowHeight);
         y += rowHeight + gap;
         Move(_backgroundColorLabel, formLeft, y + 4, labelWidth, rowHeight);
         Move(_backgroundColorSwatch, inputLeft, y + 2, 72, rowHeight - 4);

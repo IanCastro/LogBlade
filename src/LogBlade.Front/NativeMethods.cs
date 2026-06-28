@@ -122,6 +122,7 @@ internal static class NativeMethods
     public const int CLEARTYPE_QUALITY = 5;
     public const int FF_MODERN = 0x30;
     public const int FW_NORMAL = 400;
+    public const int FW_BOLD = 700;
     public const int SYSTEM_FIXED_FONT = 16;
     public const int DT_LEFT = 0x0000;
     public const int DT_VCENTER = 0x0004;
