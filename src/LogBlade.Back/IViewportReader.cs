@@ -25,6 +25,10 @@ public readonly record struct ViewportRowSelectionRange(ViewportRowSelectionKey 
 
 public readonly record struct ViewportSelectedRow(ViewportRowSelectionKey Key, string Text, IReadOnlyList<string>? Cells = null);
 
+public readonly record struct ViewportHighlightGroupKey(long StartOffset, long EndOffset);
+
+public readonly record struct ViewportHighlightGroup(ViewportHighlightGroupKey Key, string Text);
+
 public interface IViewportReader : IDisposable
 {
     string FilePath { get; }
@@ -68,4 +72,10 @@ public interface ISelectableViewportReader : IViewportReader
 {
     IReadOnlyList<ViewportRowSelectionKey> CurrentRowSelectionKeys { get; }
     IReadOnlyList<ViewportSelectedRow> ReadSelectedRows(bool selectAll, IReadOnlyList<ViewportRowSelectionRange> ranges, IReadOnlyList<ViewportRowSelectionKey> excludedKeys);
+}
+
+public interface IHighlightGroupViewportReader : IViewportReader
+{
+    IReadOnlyList<ViewportHighlightGroupKey> CurrentHighlightGroupKeys { get; }
+    IReadOnlyList<ViewportHighlightGroup> ReadCurrentHighlightGroups();
 }

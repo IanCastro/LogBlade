@@ -90,6 +90,9 @@ internal static class Program
             RunSearchFindsTextOnSecondParsedLine(tempRoot);
             RunSearchRepeatsCapturesAcrossParsedLines(tempRoot);
             RunSearchDoesNotWrapLongParsedLine(tempRoot);
+            RunVisualHighlightGroupsWrappedLine(tempRoot);
+            RunVisualHighlightGroupsParsedRecord(tempRoot);
+            RunFilteredHighlightGroupsParsedRecord(tempRoot);
             RunVisualSelectionRangeAcrossViewport(tempRoot);
             RunVisualSelectionSelectsAllRows(tempRoot);
             RunVisualSelectionWrappedRowCopiesOriginalLine(tempRoot);
@@ -1386,6 +1389,78 @@ internal static class Program
             Array.Empty<ViewportRowSelectionRange>(),
             Array.Empty<ViewportRowSelectionKey>());
         AssertSelectedRows("display parser search long explicit selection", selected, first, "tail");
+    }
+
+    private static void RunVisualHighlightGroupsWrappedLine(string tempRoot)
+    {
+        string line = new string('a', VisualRowReader.VisibleSegmentChars) +
+            "MATCH" +
+            new string('b', VisualRowReader.VisibleSegmentChars);
+        string path = WriteLog(tempRoot, "highlight-groups-wrapped-line.log", line + "\r\n");
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        reader.ReadFromPercentage(0d, 4);
+        IHighlightGroupViewportReader highlightReader = reader;
+        IReadOnlyList<ViewportHighlightGroupKey> keys = highlightReader.CurrentHighlightGroupKeys;
+        IReadOnlyList<ViewportHighlightGroup> groups = highlightReader.ReadCurrentHighlightGroups();
+
+        AssertEqual("highlight wrapped row count", reader.CurrentRows.Count, 3);
+        AssertEqual("highlight wrapped key count", keys.Count, 3);
+        AssertEqual("highlight wrapped second key", keys[1], keys[0]);
+        AssertEqual("highlight wrapped third key", keys[2], keys[0]);
+        AssertEqual("highlight wrapped group count", groups.Count, 1);
+        AssertEqual("highlight wrapped group key", groups[0].Key, keys[0]);
+        AssertEqual("highlight wrapped group text", groups[0].Text, line);
+    }
+
+    private static void RunVisualHighlightGroupsParsedRecord(string tempRoot)
+    {
+        string first = new('x', VisualRowReader.VisibleSegmentChars + 1);
+        string path = WriteLog(
+            tempRoot,
+            "highlight-groups-parser-main.log",
+            "{\"First\":\"" + first + "\",\"Second\":\"tail\"}\r\n");
+        DisplayParserRule parser = ParserRule(JsonStage("{First}\n{Second}"));
+
+        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0, parser);
+        reader.ReadFromPercentage(0d, 4);
+        IHighlightGroupViewportReader highlightReader = reader;
+        IReadOnlyList<ViewportHighlightGroupKey> keys = highlightReader.CurrentHighlightGroupKeys;
+        IReadOnlyList<ViewportHighlightGroup> groups = highlightReader.ReadCurrentHighlightGroups();
+
+        AssertEqual("highlight parser main row count", reader.CurrentRows.Count, 3);
+        AssertEqual("highlight parser main key count", keys.Count, 3);
+        AssertEqual("highlight parser main second key", keys[1], keys[0]);
+        AssertEqual("highlight parser main third key", keys[2], keys[0]);
+        AssertEqual("highlight parser main group count", groups.Count, 1);
+        AssertEqual("highlight parser main group text", groups[0].Text, first + "\ntail");
+    }
+
+    private static void RunFilteredHighlightGroupsParsedRecord(string tempRoot)
+    {
+        string path = WriteLog(
+            tempRoot,
+            "highlight-groups-parser-search.log",
+            "{\"Level\":\"ERROR\",\"Message\":\"failed\"}\r\n");
+        DisplayParserRule parser = ParserRule(JsonStage("{Level}\n{Message}"));
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("failed", UseRegex: false, IgnoreCase: false),
+            parser);
+        reader.ReadFromPercentage(0d, 3);
+        IHighlightGroupViewportReader highlightReader = reader;
+        IReadOnlyList<ViewportHighlightGroupKey> keys = highlightReader.CurrentHighlightGroupKeys;
+        IReadOnlyList<ViewportHighlightGroup> groups = highlightReader.ReadCurrentHighlightGroups();
+
+        AssertEqual("highlight parser search row count", reader.CurrentRows.Count, 2);
+        AssertEqual("highlight parser search key count", keys.Count, 2);
+        AssertEqual("highlight parser search second key", keys[1], keys[0]);
+        AssertEqual("highlight parser search group count", groups.Count, 1);
+        AssertEqual("highlight parser search group key", groups[0].Key, keys[0]);
+        AssertEqual("highlight parser search group text", groups[0].Text, "ERROR\nfailed");
     }
 
     private static void RunVisualSelectionRangeAcrossViewport(string tempRoot)

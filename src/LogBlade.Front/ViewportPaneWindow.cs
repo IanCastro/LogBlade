@@ -12,7 +12,8 @@ internal enum ViewportRequestKind
     JumpHome,
     JumpEnd,
     RefreshTailIfAtEnd,
-    ReloadAfterFileChange
+    ReloadAfterFileChange,
+    RefreshHighlighting
 }
 
 internal readonly record struct ViewportRequest(long Id, ViewportRequestKind Kind, int DeltaLines, double RequestedPercentage, long RequestedOffset, long RequestedRowOrdinal, int VisibleLines, bool SelectRowAfterLoad);
@@ -26,6 +27,7 @@ internal sealed class ViewportWorkerResult
     public IViewportReader? Reader { get; set; }
     public bool SelectRowAfterLoad { get; set; }
     public long SelectedOffset { get; set; }
+    public Dictionary<ViewportHighlightGroupKey, HighlightStyle?>? HighlightStyleCache { get; set; }
 }
 
 internal sealed class ViewportPaneWindow : IDisposable
@@ -56,6 +58,7 @@ internal sealed class ViewportPaneWindow : IDisposable
     private const int DefaultGroupColumnWidthPx = 200;
     private const int GridCellPaddingPx = 4;
     private const int GridDividerThicknessPx = 1;
+    private const int MaximumHighlightStyleCacheEntries = 2048;
     private const int InactiveSelectionColor = 0x00FAF0E8;
     private const string WindowClassName = "LogBladeViewportPaneWindow";
 
@@ -80,6 +83,7 @@ internal sealed class ViewportPaneWindow : IDisposable
     private IntPtr _hwnd;
     private IntPtr _inactiveSelectionBrush;
     private readonly Dictionary<int, IntPtr> _highlightBrushes = new();
+    private readonly Dictionary<ViewportHighlightGroupKey, HighlightStyle?> _highlightStyleCache = new();
     private IReadOnlyList<CompiledHighlightRule> _highlightRules = Array.Empty<CompiledHighlightRule>();
     private GCHandle _selfHandle;
     private int _visibleColumnCount = 1;
@@ -239,10 +243,15 @@ internal sealed class ViewportPaneWindow : IDisposable
     public void SetHighlightRules(IReadOnlyList<CompiledHighlightRule> rules)
     {
         _highlightRules = rules;
+        _highlightStyleCache.Clear();
         ClearHighlightBrushes();
         if (_hwnd != IntPtr.Zero)
         {
             NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
+            if (_reader is not null)
+            {
+                QueueViewportRequest(ViewportRequestKind.RefreshHighlighting, visibleLines: VisibleDataLineCount);
+            }
         }
     }
 
@@ -254,6 +263,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         {
             _reader?.Dispose();
             _reader = null;
+            _highlightStyleCache.Clear();
         }
 
         _statusText = statusText;
@@ -277,15 +287,23 @@ internal sealed class ViewportPaneWindow : IDisposable
 
         _reader?.Dispose();
         _reader = reader;
+        _highlightStyleCache.Clear();
         _statusText = string.Empty;
         ResetViewportAsyncState();
         UpdateScrollBar();
+        bool viewportRequestQueued = false;
         if (VisibleDataLineCount != Math.Max(1, preloadedVisibleLines))
         {
             QueueViewportRequest(
                 ViewportRequestKind.LoadAtPercentage,
                 requestedPercentage: _reader.ScrollPercentage,
                 visibleLines: VisibleDataLineCount);
+            viewportRequestQueued = true;
+        }
+
+        if (!viewportRequestQueued && _highlightRules.Count > 0)
+        {
+            QueueViewportRequest(ViewportRequestKind.RefreshHighlighting, visibleLines: VisibleDataLineCount);
         }
 
         NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
@@ -456,6 +474,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         ClearHighlightBrushes();
+        _highlightStyleCache.Clear();
     }
 
     private static void EnsureWindowClassRegistered(IntPtr hInstance)
@@ -558,7 +577,14 @@ internal sealed class ViewportPaneWindow : IDisposable
             return 0L;
         }
 
-        ClearTextSelection(invalidate: false);
+        if (kind != ViewportRequestKind.RefreshHighlighting)
+        {
+            ClearTextSelection(invalidate: false);
+        }
+        if (kind is ViewportRequestKind.RefreshTailIfAtEnd or ViewportRequestKind.ReloadAfterFileChange)
+        {
+            _highlightStyleCache.Clear();
+        }
         int effectiveVisible = Math.Max(1, visibleLines ?? VisibleDataLineCount);
         var request = new ViewportRequest(
             Id: ++_nextViewportRequestId,
@@ -592,6 +618,8 @@ internal sealed class ViewportPaneWindow : IDisposable
         _viewportWorkerRunning = true;
 
         IViewportReader workerReader = _reader.CloneForWorker();
+        IReadOnlyList<CompiledHighlightRule> highlightRules = _highlightRules;
+        Dictionary<ViewportHighlightGroupKey, HighlightStyle?> highlightStyleCache = new(_highlightStyleCache);
         IntPtr hwnd = _hwnd;
         ThreadPool.QueueUserWorkItem(_ =>
         {
@@ -660,8 +688,14 @@ internal sealed class ViewportPaneWindow : IDisposable
                         }
 
                         break;
+                    case ViewportRequestKind.RefreshHighlighting:
+                        break;
                 }
 
+                result.HighlightStyleCache = PrepareHighlightStyleCache(
+                    workerReader,
+                    highlightRules,
+                    highlightStyleCache);
                 result.Success = true;
                 result.Reader = workerReader;
             }
@@ -705,6 +739,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         {
             _reader?.Dispose();
             _reader = result.Reader;
+            ReplaceHighlightStyleCache(result.HighlightStyleCache);
             ResumeTailFollowIfAtEnd();
             UpdateScrollBar();
             if (result.SelectRowAfterLoad)
@@ -2560,20 +2595,82 @@ internal sealed class ViewportPaneWindow : IDisposable
             return null;
         }
 
-        return TryGetHighlightStyle(NormalizeDisplayText(rows[dataRowIndex]), out HighlightStyle style)
+        return TryGetHighlightStyle(dataRowIndex, NormalizeDisplayText(rows[dataRowIndex]), out HighlightStyle style)
             ? style
             : null;
     }
 
-    private bool TryGetHighlightStyle(string text, out HighlightStyle style)
+    private bool TryGetHighlightStyle(int rowIndex, string fallbackText, out HighlightStyle style)
     {
+        if (_reader is IHighlightGroupViewportReader highlightReader)
+        {
+            IReadOnlyList<ViewportHighlightGroupKey> keys = highlightReader.CurrentHighlightGroupKeys;
+            if (rowIndex >= 0 && rowIndex < keys.Count &&
+                _highlightStyleCache.TryGetValue(keys[rowIndex], out HighlightStyle? cachedStyle) &&
+                cachedStyle is HighlightStyle matchedStyle)
+            {
+                style = matchedStyle;
+                return true;
+            }
+
+            style = default;
+            return false;
+        }
+
         if (_highlightRules.Count > 0)
         {
-            return HighlightRuleCompiler.TryMatch(_highlightRules, text, out style);
+            return HighlightRuleCompiler.TryMatch(_highlightRules, fallbackText, out style);
         }
 
         style = default;
         return false;
+    }
+
+    private static Dictionary<ViewportHighlightGroupKey, HighlightStyle?> PrepareHighlightStyleCache(
+        IViewportReader reader,
+        IReadOnlyList<CompiledHighlightRule> rules,
+        Dictionary<ViewportHighlightGroupKey, HighlightStyle?> cache)
+    {
+        if (rules.Count == 0 || reader is not IHighlightGroupViewportReader highlightReader)
+        {
+            return new Dictionary<ViewportHighlightGroupKey, HighlightStyle?>();
+        }
+
+        IReadOnlyList<ViewportHighlightGroup> groups = highlightReader.ReadCurrentHighlightGroups();
+        if (cache.Count + groups.Count > MaximumHighlightStyleCacheEntries)
+        {
+            cache.Clear();
+        }
+
+        for (int i = 0; i < groups.Count; i++)
+        {
+            ViewportHighlightGroup group = groups[i];
+            if (cache.ContainsKey(group.Key))
+            {
+                continue;
+            }
+
+            string displayText = NormalizeDisplayText(group.Text);
+            cache[group.Key] = HighlightRuleCompiler.TryMatch(rules, displayText, out HighlightStyle style)
+                ? style
+                : null;
+        }
+
+        return cache;
+    }
+
+    private void ReplaceHighlightStyleCache(Dictionary<ViewportHighlightGroupKey, HighlightStyle?>? cache)
+    {
+        _highlightStyleCache.Clear();
+        if (cache is null)
+        {
+            return;
+        }
+
+        foreach ((ViewportHighlightGroupKey key, HighlightStyle? style) in cache)
+        {
+            _highlightStyleCache[key] = style;
+        }
     }
 
     private IntPtr GetHighlightFont(HighlightStyle? highlight, bool selected)
@@ -4287,7 +4384,7 @@ internal sealed class ViewportPaneWindow : IDisposable
             string row = rows[rowIndex];
             string displayRow = NormalizeDisplayText(row);
             bool selected = IsDataRowSelected(rowIndex);
-            HighlightStyle? highlight = !selected && TryGetHighlightStyle(displayRow, out HighlightStyle matchedStyle)
+            HighlightStyle? highlight = !selected && TryGetHighlightStyle(rowIndex, displayRow, out HighlightStyle matchedStyle)
                 ? matchedStyle
                 : null;
             if (selected)
@@ -4387,7 +4484,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         {
             foreach (string row in displayRows)
             {
-                HighlightStyle? highlight = TryGetHighlightStyle(NormalizeDisplayText(row), out HighlightStyle matchedStyle)
+                HighlightStyle? highlight = TryGetHighlightStyle(dataRowIndex, NormalizeDisplayText(row), out HighlightStyle matchedStyle)
                     ? matchedStyle
                     : null;
                 PaintGridRow(hdc, clientRect, new[] { row }, widths, y, isHeader: false, IsDataRowSelected(dataRowIndex), dataRowIndex, highlight);

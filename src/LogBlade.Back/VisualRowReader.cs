@@ -36,7 +36,7 @@ internal enum VisualStartKind
     ForcedWrap
 }
 
-public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
+public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader, IHighlightGroupViewportReader
 {
     public const int VisibleSegmentChars = 4096;
     internal const int SegmentChars = VisibleSegmentChars;
@@ -174,6 +174,26 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
         }
     }
 
+    public IReadOnlyList<ViewportHighlightGroupKey> CurrentHighlightGroupKeys
+    {
+        get
+        {
+            if (_observedZeroFileSize)
+            {
+                return Array.Empty<ViewportHighlightGroupKey>();
+            }
+
+            ViewportHighlightGroupKey[] keys = new ViewportHighlightGroupKey[_viewportRows.Count];
+            for (int i = 0; i < _viewportRows.Count; i++)
+            {
+                long startOffset = _viewportRows[i].RealLineStartOffset;
+                keys[i] = new ViewportHighlightGroupKey(startOffset, startOffset);
+            }
+
+            return keys;
+        }
+    }
+
     private bool IsAtConfirmedEnd => _viewportLoaded && IsOffsetAtKnownEnd(_viewportEndOffset);
 
     public IReadOnlyList<ViewportSelectedRow> ReadSelectedRows(bool selectAll, IReadOnlyList<ViewportRowSelectionRange> ranges, IReadOnlyList<ViewportRowSelectionKey> excludedKeys)
@@ -200,6 +220,38 @@ public sealed class VisualRowReader : IViewportReader, ISelectableViewportReader
 
         rows.Sort((left, right) => left.Key.CompareTo(right.Key));
         return rows;
+    }
+
+    public IReadOnlyList<ViewportHighlightGroup> ReadCurrentHighlightGroups()
+    {
+        if (_observedZeroFileSize || _viewportRows.Count == 0)
+        {
+            return Array.Empty<ViewportHighlightGroup>();
+        }
+
+        HashSet<ViewportHighlightGroupKey> uniqueKeys = new(CurrentHighlightGroupKeys);
+        ViewportRowSelectionRange[] ranges = new ViewportRowSelectionRange[uniqueKeys.Count];
+        int rangeIndex = 0;
+        foreach (ViewportHighlightGroupKey key in uniqueKeys)
+        {
+            ViewportRowSelectionKey selectionKey = new(key.StartOffset, key.EndOffset, 0);
+            ranges[rangeIndex++] = new ViewportRowSelectionRange(selectionKey, selectionKey);
+        }
+
+        IReadOnlyList<ViewportSelectedRow> selectedRows = ReadSelectedRows(
+            selectAll: false,
+            ranges,
+            Array.Empty<ViewportRowSelectionKey>());
+        ViewportHighlightGroup[] groups = new ViewportHighlightGroup[selectedRows.Count];
+        for (int i = 0; i < selectedRows.Count; i++)
+        {
+            ViewportSelectedRow row = selectedRows[i];
+            groups[i] = new ViewportHighlightGroup(
+                new ViewportHighlightGroupKey(row.Key.StartOffset, row.Key.EndOffset),
+                row.Text);
+        }
+
+        return groups;
     }
 
     private void EnumerateSelectedRows(

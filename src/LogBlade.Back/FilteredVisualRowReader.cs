@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 
-public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, IFileOffsetViewportReader, IRowOrdinalViewportReader, ISelectableViewportReader
+public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, IFileOffsetViewportReader, IRowOrdinalViewportReader, ISelectableViewportReader, IHighlightGroupViewportReader
 {
     private string _filePath;
     private LogEncodingKind _kind;
@@ -217,6 +217,26 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
         }
     }
 
+    public IReadOnlyList<ViewportHighlightGroupKey> CurrentHighlightGroupKeys
+    {
+        get
+        {
+            if (_observedZeroFileSize)
+            {
+                return Array.Empty<ViewportHighlightGroupKey>();
+            }
+
+            ViewportHighlightGroupKey[] keys = new ViewportHighlightGroupKey[_currentRowSelectionKeys.Count];
+            for (int i = 0; i < _currentRowSelectionKeys.Count; i++)
+            {
+                ViewportRowSelectionKey rowKey = _currentRowSelectionKeys[i];
+                keys[i] = new ViewportHighlightGroupKey(rowKey.StartOffset, rowKey.EndOffset);
+            }
+
+            return keys;
+        }
+    }
+
     public IReadOnlyList<ViewportSelectedRow> ReadSelectedRows(bool selectAll, IReadOnlyList<ViewportRowSelectionRange> ranges, IReadOnlyList<ViewportRowSelectionKey> excludedKeys)
     {
         ThrowIfDisposed();
@@ -252,6 +272,31 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
         }
 
         return rows;
+    }
+
+    public IReadOnlyList<ViewportHighlightGroup> ReadCurrentHighlightGroups()
+    {
+        ThrowIfDisposed();
+        if (_observedZeroFileSize || _currentRowSelectionKeys.Count == 0)
+        {
+            return Array.Empty<ViewportHighlightGroup>();
+        }
+
+        HashSet<ViewportHighlightGroupKey> pending = new(CurrentHighlightGroupKeys);
+        List<ViewportHighlightGroup> groups = new(pending.Count);
+        for (int i = _topDescriptorIndex; i < _descriptors.Length && pending.Count > 0; i++)
+        {
+            FilteredLineDescriptor descriptor = _descriptors[i];
+            ViewportHighlightGroupKey key = new(descriptor.StartOffset, descriptor.EndOffset);
+            if (!pending.Remove(key))
+            {
+                continue;
+            }
+
+            groups.Add(new ViewportHighlightGroup(key, ReadDescriptorText(descriptor)));
+        }
+
+        return groups;
     }
 
     public IReadOnlyList<string> ReadNext(int count)
