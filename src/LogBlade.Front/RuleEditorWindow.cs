@@ -22,6 +22,7 @@ internal sealed class RuleEditorWindow
     private readonly string? _originalName;
     private readonly string _defaultSample;
     private readonly List<DisplayParserStage> _stages;
+    private readonly Action<DisplayParserRule?>? _onPreviewChanged;
     private IntPtr _hwnd;
     private IntPtr _owner;
     private IntPtr _font;
@@ -49,26 +50,47 @@ internal sealed class RuleEditorWindow
     private static bool s_registered;
 
     public RuleEditorWindow(IReadOnlyList<DisplayParserRule> existingRules)
-        : this(existingRules, initialRule: null, defaultSample: string.Empty)
+        : this(existingRules, initialRule: null, defaultSample: string.Empty, onPreviewChanged: null)
     {
     }
 
     public RuleEditorWindow(IReadOnlyList<DisplayParserRule> existingRules, string defaultSample)
-        : this(existingRules, initialRule: null, defaultSample)
+        : this(existingRules, initialRule: null, defaultSample, onPreviewChanged: null)
     {
     }
 
     public RuleEditorWindow(IReadOnlyList<DisplayParserRule> existingRules, DisplayParserRule? initialRule)
-        : this(existingRules, initialRule, defaultSample: string.Empty)
+        : this(existingRules, initialRule, defaultSample: string.Empty, onPreviewChanged: null)
     {
     }
 
-    private RuleEditorWindow(IReadOnlyList<DisplayParserRule> existingRules, DisplayParserRule? initialRule, string defaultSample)
+    public RuleEditorWindow(
+        IReadOnlyList<DisplayParserRule> existingRules,
+        string defaultSample,
+        Action<DisplayParserRule?>? onPreviewChanged)
+        : this(existingRules, initialRule: null, defaultSample, onPreviewChanged)
+    {
+    }
+
+    public RuleEditorWindow(
+        IReadOnlyList<DisplayParserRule> existingRules,
+        DisplayParserRule? initialRule,
+        Action<DisplayParserRule?>? onPreviewChanged)
+        : this(existingRules, initialRule, defaultSample: string.Empty, onPreviewChanged)
+    {
+    }
+
+    private RuleEditorWindow(
+        IReadOnlyList<DisplayParserRule> existingRules,
+        DisplayParserRule? initialRule,
+        string defaultSample,
+        Action<DisplayParserRule?>? onPreviewChanged)
     {
         _existingRules = existingRules;
         _initialRule = initialRule;
         _originalName = initialRule?.Name;
         _defaultSample = defaultSample;
+        _onPreviewChanged = onPreviewChanged;
         _stages = initialRule is null
             ? new List<DisplayParserStage>()
             : initialRule.Stages.ConvertAll(stage => stage.Clone());
@@ -243,6 +265,7 @@ internal sealed class RuleEditorWindow
         ReloadStagesList(_stages.Count == 0 ? -1 : 0);
         Layout();
         UpdatePreview();
+        PublishLivePreview();
     }
 
     private void OnCommand(IntPtr wParam)
@@ -306,16 +329,23 @@ internal sealed class RuleEditorWindow
 
     private void AddStage()
     {
-        ParserStageEditorWindow editor = new(_stages, GetWindowText(_sampleEdit), _stages.Count);
+        int stageIndex = _stages.Count;
+        ParserStageEditorWindow editor = new(
+            _stages,
+            GetWindowText(_sampleEdit),
+            stageIndex,
+            stage => PublishStagePreview(stageIndex, stage));
         DisplayParserStage? saved = editor.ShowModal(_hwnd);
         if (saved is null)
         {
+            PublishLivePreview();
             return;
         }
 
         _stages.Add(saved);
         ReloadStagesList(_stages.Count - 1);
         UpdatePreview();
+        PublishLivePreview();
     }
 
     private void EditStage()
@@ -327,16 +357,22 @@ internal sealed class RuleEditorWindow
             return;
         }
 
-        ParserStageEditorWindow editor = new(_stages, GetWindowText(_sampleEdit), index);
+        ParserStageEditorWindow editor = new(
+            _stages,
+            GetWindowText(_sampleEdit),
+            index,
+            stage => PublishStagePreview(index, stage));
         DisplayParserStage? saved = editor.ShowModal(_hwnd);
         if (saved is null)
         {
+            PublishLivePreview();
             return;
         }
 
         _stages[index] = saved;
         ReloadStagesList(index);
         UpdatePreview();
+        PublishLivePreview();
     }
 
     private void RemoveStage()
@@ -351,6 +387,7 @@ internal sealed class RuleEditorWindow
         _stages.RemoveAt(index);
         ReloadStagesList(Math.Min(index, _stages.Count - 1));
         UpdatePreview();
+        PublishLivePreview();
     }
 
     private void MoveStage(int direction)
@@ -365,6 +402,7 @@ internal sealed class RuleEditorWindow
         (_stages[index], _stages[next]) = (_stages[next], _stages[index]);
         ReloadStagesList(next);
         UpdatePreview();
+        PublishLivePreview();
     }
 
     private void SaveRule()
@@ -518,6 +556,47 @@ internal sealed class RuleEditorWindow
     private List<DisplayParserStage> CloneStages()
     {
         return _stages.ConvertAll(stage => stage.Clone());
+    }
+
+    private void PublishLivePreview()
+    {
+        _onPreviewChanged?.Invoke(CreatePreviewRule(CloneStages()));
+    }
+
+    private void PublishStagePreview(int stageIndex, DisplayParserStage? stage)
+    {
+        if (_onPreviewChanged is null)
+        {
+            return;
+        }
+
+        if (stage is null)
+        {
+            _onPreviewChanged(null);
+            return;
+        }
+
+        List<DisplayParserStage> stages = CloneStages();
+        if (stageIndex >= stages.Count)
+        {
+            stages.Add(stage.Clone());
+        }
+        else
+        {
+            stages[stageIndex] = stage.Clone();
+        }
+
+        _onPreviewChanged(CreatePreviewRule(stages));
+    }
+
+    private DisplayParserRule CreatePreviewRule(List<DisplayParserStage> stages)
+    {
+        return new DisplayParserRule
+        {
+            Name = GetWindowText(_nameEdit),
+            Stages = stages,
+            Sample = GetWindowText(_sampleEdit)
+        };
     }
 
     private static string EvaluateSample(DisplayParserRule rule)

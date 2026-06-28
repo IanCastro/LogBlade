@@ -1,19 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using System.Text.RegularExpressions;
-
-internal enum HighlightMatchMode
-{
-    Text,
-    Regex
-}
 
 internal sealed class HighlightRule
 {
     public bool Enabled { get; set; } = true;
-
-    public HighlightMatchMode Mode { get; set; } = HighlightMatchMode.Text;
 
     public string Pattern { get; set; } = string.Empty;
 
@@ -28,7 +19,6 @@ internal sealed class HighlightRule
         return new HighlightRule
         {
             Enabled = Enabled,
-            Mode = Mode,
             Pattern = Pattern,
             IgnoreCase = IgnoreCase,
             BackgroundColor = BackgroundColor,
@@ -43,13 +33,11 @@ internal sealed class CompiledHighlightRule
 {
     private readonly string _pattern;
     private readonly StringComparison _comparison;
-    private readonly Regex? _regex;
 
-    public CompiledHighlightRule(HighlightRule rule, Regex? regex, HighlightStyle style)
+    public CompiledHighlightRule(HighlightRule rule, HighlightStyle style)
     {
         _pattern = rule.Pattern;
         _comparison = rule.IgnoreCase ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-        _regex = regex;
         Style = style;
     }
 
@@ -57,7 +45,7 @@ internal sealed class CompiledHighlightRule
 
     public bool IsMatch(string text)
     {
-        return _regex?.IsMatch(text) ?? text.IndexOf(_pattern, _comparison) >= 0;
+        return text.IndexOf(_pattern, _comparison) >= 0;
     }
 }
 
@@ -106,34 +94,9 @@ internal static class HighlightRuleCompiler
             return false;
         }
 
-        Regex? regex = null;
-        if (rule.Mode == HighlightMatchMode.Regex)
-        {
-            RegexOptions options = RegexOptions.CultureInvariant | RegexOptions.NonBacktracking;
-            if (rule.IgnoreCase)
-            {
-                options |= RegexOptions.IgnoreCase;
-            }
-
-            try
-            {
-                regex = new Regex(rule.Pattern, options);
-            }
-            catch (ArgumentException ex)
-            {
-                error = "Invalid Regex: " + ex.Message;
-                return false;
-            }
-            catch (NotSupportedException ex)
-            {
-                error = "Regex is not compatible with NonBacktracking: " + ex.Message;
-                return false;
-            }
-        }
-
         int background = ToColorRef(backgroundRed, backgroundGreen, backgroundBlue);
         int foreground = ToColorRef(foregroundRed, foregroundGreen, foregroundBlue);
-        compiledRule = new CompiledHighlightRule(rule, regex, new HighlightStyle(background, foreground));
+        compiledRule = new CompiledHighlightRule(rule, new HighlightStyle(background, foreground));
         return true;
     }
 

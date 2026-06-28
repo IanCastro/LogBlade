@@ -15,6 +15,7 @@ internal sealed class RuleManagerWindow
 
     private readonly List<DisplayParserRule> _rules;
     private readonly string _defaultRuleSample;
+    private readonly Action<DisplayParserRule?>? _onPreviewChanged;
     private string? _activeRuleName;
     private IntPtr _hwnd;
     private IntPtr _owner;
@@ -33,15 +34,25 @@ internal sealed class RuleManagerWindow
     private static bool s_registered;
 
     public RuleManagerWindow(IReadOnlyList<DisplayParserRule> rules, string? activeRuleName)
-        : this(rules, activeRuleName, defaultRuleSample: string.Empty)
+        : this(rules, activeRuleName, defaultRuleSample: string.Empty, onPreviewChanged: null)
     {
     }
 
     public RuleManagerWindow(IReadOnlyList<DisplayParserRule> rules, string? activeRuleName, string defaultRuleSample)
+        : this(rules, activeRuleName, defaultRuleSample, onPreviewChanged: null)
+    {
+    }
+
+    public RuleManagerWindow(
+        IReadOnlyList<DisplayParserRule> rules,
+        string? activeRuleName,
+        string defaultRuleSample,
+        Action<DisplayParserRule?>? onPreviewChanged)
     {
         _rules = new List<DisplayParserRule>(rules);
         _activeRuleName = activeRuleName;
         _defaultRuleSample = defaultRuleSample;
+        _onPreviewChanged = onPreviewChanged;
     }
 
     public string? ShowModal(IntPtr owner)
@@ -234,16 +245,18 @@ internal sealed class RuleManagerWindow
 
     private void AddRule()
     {
-        RuleEditorWindow editor = new(_rules, _defaultRuleSample);
+        RuleEditorWindow editor = new(_rules, _defaultRuleSample, _onPreviewChanged);
         DisplayParserRule? saved = editor.ShowModal(_hwnd);
         if (saved is null)
         {
+            PublishActiveRulePreview();
             return;
         }
 
         List<DisplayParserRule> nextRules = new(_rules) { saved };
         if (!TrySaveRules(nextRules))
         {
+            PublishActiveRulePreview();
             return;
         }
 
@@ -251,6 +264,7 @@ internal sealed class RuleManagerWindow
         _rules.AddRange(nextRules);
         _activeRuleName = saved.Name;
         ReloadList(saved.Name);
+        PublishActiveRulePreview();
     }
 
     private void EditSelectedRule()
@@ -262,10 +276,11 @@ internal sealed class RuleManagerWindow
             return;
         }
 
-        RuleEditorWindow editor = new(_rules, CopyRule(_rules[index]));
+        RuleEditorWindow editor = new(_rules, CopyRule(_rules[index]), _onPreviewChanged);
         DisplayParserRule? saved = editor.ShowModal(_hwnd);
         if (saved is null)
         {
+            PublishActiveRulePreview();
             return;
         }
 
@@ -278,6 +293,7 @@ internal sealed class RuleManagerWindow
         nextRules[index] = saved;
         if (!TrySaveRules(nextRules))
         {
+            PublishActiveRulePreview();
             return;
         }
 
@@ -285,6 +301,7 @@ internal sealed class RuleManagerWindow
         _rules.AddRange(nextRules);
         _activeRuleName = nextActiveRuleName;
         ReloadList(saved.Name);
+        PublishActiveRulePreview();
     }
 
     private void RemoveSelectedRule()
@@ -326,6 +343,7 @@ internal sealed class RuleManagerWindow
         _activeRuleName = nextActiveRuleName;
         string? nextSelection = index < _rules.Count ? _rules[index].Name : _activeRuleName;
         ReloadList(nextSelection);
+        PublishActiveRulePreview();
     }
 
     private void DuplicateSelectedRule()
@@ -350,6 +368,13 @@ internal sealed class RuleManagerWindow
         _rules.AddRange(nextRules);
         _activeRuleName = duplicate.Name;
         ReloadList(duplicate.Name);
+        PublishActiveRulePreview();
+    }
+
+    private void PublishActiveRulePreview()
+    {
+        int index = FindRuleIndex(_activeRuleName);
+        _onPreviewChanged?.Invoke(index >= 0 ? _rules[index].Clone() : null);
     }
 
     private void ReloadList(string? selectRuleName)

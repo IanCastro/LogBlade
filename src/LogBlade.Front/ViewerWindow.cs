@@ -81,6 +81,8 @@ internal sealed class ViewerWindow
     private bool _updatingParserCombo;
     private bool _updatingSearchControls;
     private List<DisplayParserRule> _parserRules = new();
+    private DisplayParserRule? _previewParserRule;
+    private bool _parserPreviewActive;
     private List<HighlightRule> _highlightRules = new();
     private IReadOnlyList<CompiledHighlightRule> _compiledHighlightRules = Array.Empty<CompiledHighlightRule>();
     private int _selectedParserRuleIndex = -1;
@@ -581,11 +583,21 @@ internal sealed class ViewerWindow
 
     private void OpenHighlightRuleManager()
     {
-        HighlightRuleManagerWindow manager = new(_highlightRules);
+        HighlightRuleManagerWindow manager = new(_highlightRules, ApplyHighlightRulePreview);
         if (manager.ShowModal(_hwnd))
         {
             ReloadHighlightRules();
+            return;
         }
+
+        _compiledHighlightRules = HighlightRuleCompiler.Compile(_highlightRules);
+        ApplyHighlightRulesToPanes();
+    }
+
+    private void ApplyHighlightRulePreview(IReadOnlyList<HighlightRule> rules)
+    {
+        _compiledHighlightRules = HighlightRuleCompiler.Compile(rules);
+        ApplyHighlightRulesToPanes();
     }
 
     private void ReloadParserRules(string? selectRuleName)
@@ -641,6 +653,13 @@ internal sealed class ViewerWindow
             : null;
     }
 
+    private DisplayParserRule? GetEffectiveParserRule()
+    {
+        return _parserPreviewActive
+            ? _previewParserRule?.Clone()
+            : GetSelectedParserRule();
+    }
+
     private void OnParserSelectionChanged()
     {
         int selected = NativeMethods.SendMessageW(_parserCombo, NativeMethods.CB_GETCURSEL, IntPtr.Zero, IntPtr.Zero).ToInt32();
@@ -658,9 +677,40 @@ internal sealed class ViewerWindow
     private void OpenRuleManager()
     {
         string? activeRuleName = GetSelectedParserRule()?.Name;
-        RuleManagerWindow manager = new(_parserRules, activeRuleName, CreateDefaultParserRuleSample());
-        string? selectedRuleName = manager.ShowModal(_hwnd);
+        RuleManagerWindow manager = new(_parserRules, activeRuleName, CreateDefaultParserRuleSample(), ApplyParserPreview);
+        string? selectedRuleName;
+        try
+        {
+            selectedRuleName = manager.ShowModal(_hwnd);
+        }
+        finally
+        {
+            _parserPreviewActive = false;
+            _previewParserRule = null;
+        }
+
         ReloadParserRules(selectedRuleName);
+        ApplyParserRuleChange();
+    }
+
+    private void ApplyParserPreview(DisplayParserRule? rule)
+    {
+        DisplayParserRule? validRule = null;
+        if (rule is not null)
+        {
+            try
+            {
+                DisplayParserEvaluator.ValidateRule(rule);
+                validRule = rule.Clone();
+            }
+            catch (ArgumentException)
+            {
+                validRule = null;
+            }
+        }
+
+        _parserPreviewActive = true;
+        _previewParserRule = validRule;
         ApplyParserRuleChange();
     }
 
@@ -849,7 +899,7 @@ internal sealed class ViewerWindow
 
         if (HasActiveSearch)
         {
-            RestartSearchAfterInputChange();
+            RestartSearchAfterInputChange(dispatchImmediately: true);
         }
     }
 
@@ -864,7 +914,7 @@ internal sealed class ViewerWindow
         int visibleLines = _mainPane.VisibleLineCount;
         try
         {
-            DisplayParserRule? parserRule = GetSelectedParserRule();
+            DisplayParserRule? parserRule = GetEffectiveParserRule();
             if (parserRule is not null)
             {
                 DisplayParserEvaluator.ValidateRule(parserRule);
@@ -1083,7 +1133,7 @@ internal sealed class ViewerWindow
         string workerPath = _path;
         IntPtr hwnd = _hwnd;
         int visibleLines = _mainPane.VisibleLineCount;
-        DisplayParserRule? workerParserRule = GetSelectedParserRule();
+        DisplayParserRule? workerParserRule = GetEffectiveParserRule();
         ThreadPool.QueueUserWorkItem(_ =>
         {
             var result = new OpenWorkerResult();
@@ -2555,7 +2605,10 @@ internal sealed class ViewerWindow
         }
     }
 
-    private void RestartSearchAfterInputChange(int changedLevelIndex = 0, IReadOnlyList<SearchOptions>? previousOptions = null)
+    private void RestartSearchAfterInputChange(
+        int changedLevelIndex = 0,
+        IReadOnlyList<SearchOptions>? previousOptions = null,
+        bool dispatchImmediately = false)
     {
         SearchOptions[] options = GetActiveSearchOptions();
         int searchStartLevel = GetSearchStartLevelForInputChange(changedLevelIndex, previousOptions ?? Array.Empty<SearchOptions>(), options);
@@ -2631,7 +2684,14 @@ internal sealed class ViewerWindow
         RecalculateLayout();
         ApplyLayout();
         InvalidateHost();
-        NativeMethods.SetTimer(_hwnd, SearchDebounceTimerId, SearchDebounceMs, IntPtr.Zero);
+        if (dispatchImmediately)
+        {
+            DispatchPendingSearch();
+        }
+        else
+        {
+            NativeMethods.SetTimer(_hwnd, SearchDebounceTimerId, SearchDebounceMs, IntPtr.Zero);
+        }
     }
 
     private int GetSearchStartLevelForInputChange(
@@ -2736,6 +2796,11 @@ internal sealed class ViewerWindow
         }
 
         NativeMethods.KillTimer(_hwnd, SearchDebounceTimerId);
+        DispatchPendingSearch();
+    }
+
+    private void DispatchPendingSearch()
+    {
         SearchOptions[] options = GetActiveSearchOptions();
         int searchStartLevel = _pendingSearchStartLevel;
         _pendingSearchStartLevel = 0;
@@ -2767,7 +2832,7 @@ internal sealed class ViewerWindow
         bool useRegex = AnySearchOptionUsesRegex(workerOptions);
         bool ignoreCase = AnySearchOptionIgnoresCase(workerOptions);
         bool invertMatch = AnySearchOptionInvertsMatch(workerOptions);
-        DisplayParserRule? workerParserRule = GetSelectedParserRule();
+        DisplayParserRule? workerParserRule = GetEffectiveParserRule();
         CancellationTokenSource searchCancellation = BeginSearchCancellation(requestId, searchStartLevel: 0);
         CancellationToken cancellationToken = searchCancellation.Token;
         ThreadPool.QueueUserWorkItem(_ =>
@@ -2918,7 +2983,7 @@ internal sealed class ViewerWindow
         bool useRegex = AnySearchOptionUsesRegex(workerOptions);
         bool ignoreCase = AnySearchOptionIgnoresCase(workerOptions);
         bool invertMatch = AnySearchOptionInvertsMatch(workerOptions);
-        DisplayParserRule? workerParserRule = GetSelectedParserRule();
+        DisplayParserRule? workerParserRule = GetEffectiveParserRule();
         CancellationTokenSource searchCancellation = BeginSearchCancellation(requestId, changedLevelIndex);
         CancellationToken cancellationToken = searchCancellation.Token;
         ThreadPool.QueueUserWorkItem(_ =>
@@ -3237,7 +3302,7 @@ internal sealed class ViewerWindow
         bool useRegex = AnySearchOptionUsesRegex(workerOptions);
         bool ignoreCase = AnySearchOptionIgnoresCase(workerOptions);
         bool invertMatch = AnySearchOptionInvertsMatch(workerOptions);
-        DisplayParserRule? workerParserRule = GetSelectedParserRule();
+        DisplayParserRule? workerParserRule = GetEffectiveParserRule();
         CancellationTokenSource searchCancellation = BeginSearchCancellation(requestId, searchStartLevel: 0);
         CancellationToken cancellationToken = searchCancellation.Token;
         _appendSearchPending = false;
@@ -3392,7 +3457,7 @@ internal sealed class ViewerWindow
         bool useRegex = AnySearchOptionUsesRegex(workerOptions);
         bool ignoreCase = AnySearchOptionIgnoresCase(workerOptions);
         bool invertMatch = AnySearchOptionInvertsMatch(workerOptions);
-        DisplayParserRule? workerParserRule = GetSelectedParserRule();
+        DisplayParserRule? workerParserRule = GetEffectiveParserRule();
         CancellationTokenSource searchCancellation = BeginSearchCancellation(requestId, searchStartLevel: 0);
         CancellationToken cancellationToken = searchCancellation.Token;
         _appendSearchPending = false;

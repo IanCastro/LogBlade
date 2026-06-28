@@ -8,7 +8,6 @@ using System.Text.Json;
 internal sealed class HighlightRuleManagerWindow
 {
     private const int IdRulesList = 101;
-    private const int IdModeCombo = 102;
     private const int IdPatternEdit = 103;
     private const int IdIgnoreCase = 104;
     private const int IdEnabled = 105;
@@ -26,6 +25,7 @@ internal sealed class HighlightRuleManagerWindow
 
     private readonly List<HighlightRule> _rules;
     private readonly Dictionary<int, IntPtr> _listBrushes = new();
+    private readonly Action<IReadOnlyList<HighlightRule>>? _onPreviewChanged;
     private IntPtr _owner;
     private IntPtr _hwnd;
     private IntPtr _font;
@@ -35,8 +35,6 @@ internal sealed class HighlightRuleManagerWindow
     private IntPtr _removeButton;
     private IntPtr _upButton;
     private IntPtr _downButton;
-    private IntPtr _modeLabel;
-    private IntPtr _modeCombo;
     private IntPtr _patternLabel;
     private IntPtr _patternEdit;
     private IntPtr _ignoreCaseCheck;
@@ -63,8 +61,9 @@ internal sealed class HighlightRuleManagerWindow
     private static readonly NativeMethods.WindowProc s_wndProc = WindowProc;
     private static bool s_registered;
 
-    public HighlightRuleManagerWindow(IReadOnlyList<HighlightRule> rules)
+    public HighlightRuleManagerWindow(IReadOnlyList<HighlightRule> rules, Action<IReadOnlyList<HighlightRule>>? onPreviewChanged = null)
     {
+        _onPreviewChanged = onPreviewChanged;
         _rules = new List<HighlightRule>(rules.Count);
         for (int i = 0; i < rules.Count; i++)
         {
@@ -234,10 +233,6 @@ internal sealed class HighlightRuleManagerWindow
         _upButton = CreateButton("Up", IdUp);
         _downButton = CreateButton("Down", IdDown);
 
-        _modeLabel = CreateLabel("Type");
-        _modeCombo = CreateCombo(IdModeCombo);
-        NativeMethods.SendMessageW(_modeCombo, NativeMethods.CB_ADDSTRING, IntPtr.Zero, "Text");
-        NativeMethods.SendMessageW(_modeCombo, NativeMethods.CB_ADDSTRING, IntPtr.Zero, "Regex");
         _patternLabel = CreateLabel("Pattern");
         _patternEdit = CreateEdit(IdPatternEdit);
         _ignoreCaseCheck = CreateCheckbox("Ignore case", IdIgnoreCase);
@@ -305,7 +300,6 @@ internal sealed class HighlightRuleManagerWindow
         }
         else if (!_updatingControls &&
             ((id == IdPatternEdit && notification == NativeMethods.EN_CHANGE) ||
-             (id == IdModeCombo && notification == NativeMethods.CBN_SELCHANGE) ||
              (notification == NativeMethods.BN_CLICKED && id is IdIgnoreCase or IdEnabled)))
         {
             UpdateSelectedRuleFromControls();
@@ -316,6 +310,7 @@ internal sealed class HighlightRuleManagerWindow
     {
         _rules.Add(new HighlightRule());
         ReloadList(_rules.Count - 1);
+        PublishPreview();
         NativeMethods.SetFocus(_patternEdit);
     }
 
@@ -330,6 +325,7 @@ internal sealed class HighlightRuleManagerWindow
 
         _rules.Insert(index + 1, _rules[index].Clone());
         ReloadList(index + 1);
+        PublishPreview();
     }
 
     private void RemoveSelectedRule()
@@ -348,6 +344,7 @@ internal sealed class HighlightRuleManagerWindow
 
         _rules.RemoveAt(index);
         ReloadList(Math.Min(index, _rules.Count - 1));
+        PublishPreview();
     }
 
     private void MoveSelectedRule(int direction)
@@ -361,6 +358,7 @@ internal sealed class HighlightRuleManagerWindow
 
         (_rules[index], _rules[target]) = (_rules[target], _rules[index]);
         ReloadList(target);
+        PublishPreview();
     }
 
     private void SaveAndClose()
@@ -419,7 +417,6 @@ internal sealed class HighlightRuleManagerWindow
         try
         {
             HighlightRule rule = hasSelection ? _rules[_selectedIndex] : new HighlightRule();
-            NativeMethods.SendMessageW(_modeCombo, NativeMethods.CB_SETCURSEL, hasSelection ? new IntPtr(rule.Mode == HighlightMatchMode.Regex ? 1 : 0) : new IntPtr(-1), IntPtr.Zero);
             NativeMethods.SetWindowTextW(_patternEdit, hasSelection ? rule.Pattern : string.Empty);
             SetChecked(_ignoreCaseCheck, hasSelection && rule.IgnoreCase);
             SetChecked(_enabledCheck, hasSelection && rule.Enabled);
@@ -446,15 +443,13 @@ internal sealed class HighlightRuleManagerWindow
         }
 
         HighlightRule rule = _rules[_selectedIndex];
-        rule.Mode = NativeMethods.SendMessageW(_modeCombo, NativeMethods.CB_GETCURSEL, IntPtr.Zero, IntPtr.Zero).ToInt32() == 1
-            ? HighlightMatchMode.Regex
-            : HighlightMatchMode.Text;
         rule.Pattern = GetText(_patternEdit);
         rule.IgnoreCase = IsChecked(_ignoreCaseCheck);
         rule.Enabled = IsChecked(_enabledCheck);
         rule.BackgroundColor = HighlightRuleCompiler.ToColorString(_backgroundColorRef);
         rule.ForegroundColor = HighlightRuleCompiler.ToColorString(_foregroundColorRef);
         NativeMethods.InvalidateRect(_rulesList, IntPtr.Zero, true);
+        PublishPreview();
     }
 
     private void ChooseBackgroundColor()
@@ -597,7 +592,6 @@ internal sealed class HighlightRuleManagerWindow
 
     private void SetEditorEnabled(bool enabled)
     {
-        NativeMethods.EnableWindow(_modeCombo, enabled);
         NativeMethods.EnableWindow(_patternEdit, enabled);
         NativeMethods.EnableWindow(_ignoreCaseCheck, enabled);
         NativeMethods.EnableWindow(_enabledCheck, enabled);
@@ -639,9 +633,6 @@ internal sealed class HighlightRuleManagerWindow
         int inputLeft = formLeft + labelWidth + 12;
         int inputWidth = Math.Max(220, width - inputLeft - margin);
         int y = margin;
-        Move(_modeLabel, formLeft, y + 4, labelWidth, rowHeight);
-        Move(_modeCombo, inputLeft, y, Math.Min(180, inputWidth), 180);
-        y += rowHeight + gap;
         Move(_patternLabel, formLeft, y + 4, labelWidth, rowHeight);
         Move(_patternEdit, inputLeft, y, inputWidth, rowHeight);
         y += rowHeight + gap;
@@ -698,8 +689,6 @@ internal sealed class HighlightRuleManagerWindow
         return hwnd;
     }
 
-    private IntPtr CreateCombo(int id) => CreateControl("COMBOBOX", string.Empty, NativeMethods.WS_CHILD | NativeMethods.WS_VISIBLE | NativeMethods.WS_TABSTOP | NativeMethods.CBS_DROPDOWNLIST | NativeMethods.CBS_HASSTRINGS, id);
-
     private IntPtr CreateCheckbox(string text, int id) => CreateControl("BUTTON", text, NativeMethods.WS_CHILD | NativeMethods.WS_VISIBLE | NativeMethods.WS_TABSTOP | NativeMethods.BS_AUTOCHECKBOX, id);
 
     private IntPtr CreateButton(string text, int id) => CreateControl("BUTTON", text, NativeMethods.WS_CHILD | NativeMethods.WS_VISIBLE | NativeMethods.WS_TABSTOP | NativeMethods.BS_PUSHBUTTON, id);
@@ -751,6 +740,8 @@ internal sealed class HighlightRuleManagerWindow
     }
 
     private static void Move(IntPtr hwnd, int x, int y, int width, int height) => NativeMethods.MoveWindow(hwnd, x, y, width, height, true);
+
+    private void PublishPreview() => _onPreviewChanged?.Invoke(_rules);
 
     private void ShowError(string message) => NativeMethods.MessageBoxW(_hwnd, message, Program.AppTitle, NativeMethods.MB_OK | NativeMethods.MB_ICONERROR);
 

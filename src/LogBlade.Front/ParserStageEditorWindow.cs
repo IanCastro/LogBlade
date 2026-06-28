@@ -19,6 +19,7 @@ internal sealed class ParserStageEditorWindow
     private readonly List<DisplayParserStage> _previousStages;
     private readonly string _sample;
     private readonly Dictionary<DisplayParserMode, ParserStageDraft> _drafts = new();
+    private readonly Action<DisplayParserStage?>? _onPreviewChanged;
     private IntPtr _hwnd;
     private IntPtr _owner;
     private IntPtr _font;
@@ -46,26 +47,41 @@ internal sealed class ParserStageEditorWindow
     private static bool s_registered;
 
     public ParserStageEditorWindow()
-        : this(initialStage: null, Array.Empty<DisplayParserStage>(), string.Empty, stageIndex: 0)
+        : this(initialStage: null, Array.Empty<DisplayParserStage>(), string.Empty, stageIndex: 0, onPreviewChanged: null)
     {
     }
 
     public ParserStageEditorWindow(DisplayParserStage? initialStage)
-        : this(initialStage, Array.Empty<DisplayParserStage>(), string.Empty, stageIndex: 0)
+        : this(initialStage, Array.Empty<DisplayParserStage>(), string.Empty, stageIndex: 0, onPreviewChanged: null)
     {
     }
 
     public ParserStageEditorWindow(IReadOnlyList<DisplayParserStage> stages, string sample, int stageIndex)
-        : this(GetInitialStage(stages, stageIndex), stages, sample, stageIndex)
+        : this(GetInitialStage(stages, stageIndex), stages, sample, stageIndex, onPreviewChanged: null)
     {
     }
 
-    private ParserStageEditorWindow(DisplayParserStage? initialStage, IReadOnlyList<DisplayParserStage> stages, string sample, int stageIndex)
+    public ParserStageEditorWindow(
+        IReadOnlyList<DisplayParserStage> stages,
+        string sample,
+        int stageIndex,
+        Action<DisplayParserStage?>? onPreviewChanged)
+        : this(GetInitialStage(stages, stageIndex), stages, sample, stageIndex, onPreviewChanged)
+    {
+    }
+
+    private ParserStageEditorWindow(
+        DisplayParserStage? initialStage,
+        IReadOnlyList<DisplayParserStage> stages,
+        string sample,
+        int stageIndex,
+        Action<DisplayParserStage?>? onPreviewChanged)
     {
         _initialStage = initialStage;
         _mode = initialStage?.Mode ?? DisplayParserMode.Json;
         _sample = sample;
         _previousStages = ClonePreviousStages(stages, stageIndex);
+        _onPreviewChanged = onPreviewChanged;
         if (initialStage is not null)
         {
             _drafts[initialStage.Mode] = new ParserStageDraft(initialStage.Rule, initialStage.Template);
@@ -458,11 +474,13 @@ internal sealed class ParserStageEditorWindow
             catch (ArgumentException ex)
             {
                 NativeMethods.SetWindowTextW(_previewEdit, ex.Message);
+                _onPreviewChanged?.Invoke(null);
                 return;
             }
 
             string output = EvaluateLines(input, new DisplayParserRule { Stages = new List<DisplayParserStage> { stage } });
             NativeMethods.SetWindowTextW(_previewEdit, output);
+            _onPreviewChanged?.Invoke(stage.Clone());
         }
         finally
         {
