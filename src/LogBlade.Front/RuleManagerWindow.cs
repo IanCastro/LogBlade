@@ -29,6 +29,8 @@ internal sealed class RuleManagerWindow
     private IntPtr _closeButton;
     private bool _closed;
     private bool _updatingList;
+    private bool _ruleEditorOpen;
+    private DisplayParserRule? _openRuleEditorTarget;
 
     private static readonly NativeMethods.WindowProc s_wndProc = WindowProc;
     private static bool s_registered;
@@ -60,11 +62,14 @@ internal sealed class RuleManagerWindow
         _owner = owner;
         RegisterClass();
         CreateWindow();
+        IntPtr modalHwnd = _hwnd;
+        bool registered = false;
 
-        NativeMethods.EnableWindow(_owner, false);
         try
         {
             NativeMethods.ShowWindow(_hwnd, NativeMethods.SW_SHOWDEFAULT);
+            AuxiliaryWindowRegistry.Register(modalHwnd);
+            registered = true;
             NativeMethods.UpdateWindow(_hwnd);
 
             NativeMethods.MSG msg;
@@ -76,7 +81,11 @@ internal sealed class RuleManagerWindow
         }
         finally
         {
-            NativeMethods.EnableWindow(_owner, true);
+            if (registered)
+            {
+                AuxiliaryWindowRegistry.Unregister(modalHwnd);
+            }
+
             NativeMethods.SetActiveWindow(_owner);
         }
 
@@ -120,7 +129,7 @@ internal sealed class RuleManagerWindow
             0,
             "LogBladeRuleManagerWindow",
             "Configure Parser Rules",
-            NativeMethods.WS_OVERLAPPEDWINDOW | NativeMethods.WS_CLIPCHILDREN,
+            (NativeMethods.WS_OVERLAPPEDWINDOW & ~NativeMethods.WS_MINIMIZEBOX) | NativeMethods.WS_CLIPCHILDREN,
             NativeMethods.CW_USEDEFAULT,
             NativeMethods.CW_USEDEFAULT,
             520,
@@ -171,6 +180,20 @@ internal sealed class RuleManagerWindow
                 case NativeMethods.WM_COMMAND:
                     self.OnCommand(wParam);
                     return IntPtr.Zero;
+                case NativeMethods.WM_SYSCOMMAND:
+                    if (((int)wParam.ToInt64() & 0xFFF0) == NativeMethods.SC_MINIMIZE)
+                    {
+                        return IntPtr.Zero;
+                    }
+
+                    break;
+                case NativeMethods.WM_CLOSE:
+                    if (self._ruleEditorOpen)
+                    {
+                        return IntPtr.Zero;
+                    }
+
+                    break;
                 case NativeMethods.WM_DESTROY:
                     self._closed = true;
                     return IntPtr.Zero;
@@ -245,8 +268,25 @@ internal sealed class RuleManagerWindow
 
     private void AddRule()
     {
+        if (_ruleEditorOpen)
+        {
+            return;
+        }
+
         RuleEditorWindow editor = new(_rules, _defaultRuleSample, _onPreviewChanged);
-        DisplayParserRule? saved = editor.ShowModal(_hwnd);
+        DisplayParserRule? saved;
+        _ruleEditorOpen = true;
+        _openRuleEditorTarget = null;
+        try
+        {
+            saved = editor.ShowModal(_hwnd);
+        }
+        finally
+        {
+            _openRuleEditorTarget = null;
+            _ruleEditorOpen = false;
+        }
+
         if (saved is null)
         {
             PublishActiveRulePreview();
@@ -269,6 +309,11 @@ internal sealed class RuleManagerWindow
 
     private void EditSelectedRule()
     {
+        if (_ruleEditorOpen)
+        {
+            return;
+        }
+
         int index = GetSelectedRuleIndex();
         if (index < 0)
         {
@@ -276,21 +321,42 @@ internal sealed class RuleManagerWindow
             return;
         }
 
-        RuleEditorWindow editor = new(_rules, CopyRule(_rules[index]), _onPreviewChanged);
-        DisplayParserRule? saved = editor.ShowModal(_hwnd);
+        DisplayParserRule target = _rules[index];
+        RuleEditorWindow editor = new(_rules, CopyRule(target), _onPreviewChanged);
+        DisplayParserRule? saved;
+        _ruleEditorOpen = true;
+        _openRuleEditorTarget = target;
+        try
+        {
+            saved = editor.ShowModal(_hwnd);
+        }
+        finally
+        {
+            _openRuleEditorTarget = null;
+            _ruleEditorOpen = false;
+        }
+
         if (saved is null)
         {
             PublishActiveRulePreview();
             return;
         }
 
+        int currentIndex = _rules.IndexOf(target);
+        if (currentIndex < 0)
+        {
+            ShowError("The edited rule is no longer available.");
+            PublishActiveRulePreview();
+            return;
+        }
+
         bool editedActiveRule = _activeRuleName is not null &&
-            string.Equals(_rules[index].Name, _activeRuleName, StringComparison.OrdinalIgnoreCase);
+            string.Equals(target.Name, _activeRuleName, StringComparison.OrdinalIgnoreCase);
         string? nextActiveRuleName = editedActiveRule || _activeRuleName is null
             ? saved.Name
             : _activeRuleName;
         List<DisplayParserRule> nextRules = new(_rules);
-        nextRules[index] = saved;
+        nextRules[currentIndex] = saved;
         if (!TrySaveRules(nextRules))
         {
             PublishActiveRulePreview();
@@ -310,6 +376,12 @@ internal sealed class RuleManagerWindow
         if (index < 0)
         {
             ShowError("Select a rule to remove.");
+            return;
+        }
+
+        if (ReferenceEquals(_rules[index], _openRuleEditorTarget))
+        {
+            ShowError("Close the editor before removing this rule.");
             return;
         }
 
@@ -431,6 +503,11 @@ internal sealed class RuleManagerWindow
 
     private void Close()
     {
+        if (_ruleEditorOpen)
+        {
+            return;
+        }
+
         if (_hwnd != IntPtr.Zero)
         {
             NativeMethods.DestroyWindow(_hwnd);

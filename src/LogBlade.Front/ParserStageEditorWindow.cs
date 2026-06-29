@@ -95,11 +95,14 @@ internal sealed class ParserStageEditorWindow
         _owner = owner;
         RegisterClass();
         CreateWindow();
+        IntPtr modalHwnd = _hwnd;
+        bool registered = false;
 
-        NativeMethods.EnableWindow(_owner, false);
         try
         {
             NativeMethods.ShowWindow(_hwnd, NativeMethods.SW_SHOWDEFAULT);
+            AuxiliaryWindowRegistry.Register(modalHwnd);
+            registered = true;
             NativeMethods.UpdateWindow(_hwnd);
 
             NativeMethods.MSG msg;
@@ -111,7 +114,11 @@ internal sealed class ParserStageEditorWindow
         }
         finally
         {
-            NativeMethods.EnableWindow(_owner, true);
+            if (registered)
+            {
+                AuxiliaryWindowRegistry.Unregister(modalHwnd);
+            }
+
             NativeMethods.SetActiveWindow(_owner);
         }
 
@@ -155,7 +162,7 @@ internal sealed class ParserStageEditorWindow
             0,
             "LogBladeParserStageEditorWindow",
             _initialStage is null ? "Add Parser Stage" : "Edit Parser Stage",
-            NativeMethods.WS_OVERLAPPEDWINDOW | NativeMethods.WS_CLIPCHILDREN,
+            (NativeMethods.WS_OVERLAPPEDWINDOW & ~NativeMethods.WS_MINIMIZEBOX) | NativeMethods.WS_CLIPCHILDREN,
             NativeMethods.CW_USEDEFAULT,
             NativeMethods.CW_USEDEFAULT,
             720,
@@ -209,6 +216,13 @@ internal sealed class ParserStageEditorWindow
                 case NativeMethods.WM_COMMAND:
                     self.OnCommand(wParam);
                     return IntPtr.Zero;
+                case NativeMethods.WM_SYSCOMMAND:
+                    if (((int)wParam.ToInt64() & 0xFFF0) == NativeMethods.SC_MINIMIZE)
+                    {
+                        return IntPtr.Zero;
+                    }
+
+                    break;
                 case NativeMethods.WM_DESTROY:
                     self._closed = true;
                     return IntPtr.Zero;

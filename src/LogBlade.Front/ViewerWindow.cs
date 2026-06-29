@@ -80,6 +80,7 @@ internal sealed class ViewerWindow
     private int _charWidth = 8;
     private bool _firstRenderLogged;
     private bool _closing;
+    private bool _configurationWindowOpen;
     private bool _resourcesDisposed;
     private bool _updatingParserCombo;
     private bool _updatingSearchControls;
@@ -369,7 +370,7 @@ internal sealed class ViewerWindow
                     self.OnCreate(hwnd);
                     return IntPtr.Zero;
                 case NativeMethods.WM_SIZE:
-                    self.OnSize();
+                    self.OnSize(wParam.ToInt32());
                     return IntPtr.Zero;
                 case NativeMethods.WM_COMMAND:
                     self.OnCommand(wParam, lParam);
@@ -421,6 +422,13 @@ internal sealed class ViewerWindow
                 case NativeMethods.WM_APP_FILE_CHANGED:
                     self.OnFileChanged();
                     return IntPtr.Zero;
+                case NativeMethods.WM_CLOSE:
+                    if (self._configurationWindowOpen)
+                    {
+                        return IntPtr.Zero;
+                    }
+
+                    return NativeMethods.DefWindowProcW(hwnd, msg, wParam, lParam);
                 case NativeMethods.WM_DESTROY:
                     self._closing = true;
                     self.DisposeResources();
@@ -579,8 +587,24 @@ internal sealed class ViewerWindow
 
     private void OpenHighlightRuleManager()
     {
+        if (_configurationWindowOpen)
+        {
+            return;
+        }
+
         HighlightRuleManagerWindow manager = new(_highlightRules, ApplyHighlightRulePreview);
-        if (manager.ShowModal(_hwnd))
+        bool saved;
+        _configurationWindowOpen = true;
+        try
+        {
+            saved = manager.ShowModal(_hwnd);
+        }
+        finally
+        {
+            _configurationWindowOpen = false;
+        }
+
+        if (saved)
         {
             ReloadHighlightRules();
             return;
@@ -672,15 +696,23 @@ internal sealed class ViewerWindow
 
     private void OpenRuleManager()
     {
+        if (_configurationWindowOpen)
+        {
+            SetParserComboSelection(_selectedParserRuleIndex);
+            return;
+        }
+
         string? activeRuleName = GetSelectedParserRule()?.Name;
         RuleManagerWindow manager = new(_parserRules, activeRuleName, CreateDefaultParserRuleSample(), ApplyParserPreview);
         string? selectedRuleName;
+        _configurationWindowOpen = true;
         try
         {
             selectedRuleName = manager.ShowModal(_hwnd);
         }
         finally
         {
+            _configurationWindowOpen = false;
             _parserPreviewActive = false;
             _previewParserRule = null;
         }
@@ -1299,8 +1331,19 @@ internal sealed class ViewerWindow
         InvalidateHost();
     }
 
-    private void OnSize()
+    private void OnSize(int sizeType)
     {
+        if (sizeType == NativeMethods.SIZE_MINIMIZED)
+        {
+            AuxiliaryWindowRegistry.SetMainWindowMinimized(minimized: true);
+            return;
+        }
+
+        if (sizeType == NativeMethods.SIZE_RESTORED || sizeType == NativeMethods.SIZE_MAXIMIZED)
+        {
+            AuxiliaryWindowRegistry.SetMainWindowMinimized(minimized: false);
+        }
+
         RecalculateLayout();
         ApplyLayout();
         InvalidateHost();

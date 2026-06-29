@@ -45,6 +45,8 @@ internal sealed class RuleEditorWindow
     private bool _closed;
     private bool _updatingList;
     private bool _updatingPreview;
+    private bool _stageEditorOpen;
+    private DisplayParserStage? _openStageEditorTarget;
 
     private static readonly NativeMethods.WindowProc s_wndProc = WindowProc;
     private static bool s_registered;
@@ -103,11 +105,14 @@ internal sealed class RuleEditorWindow
         _owner = owner;
         RegisterClass();
         CreateWindow();
+        IntPtr modalHwnd = _hwnd;
+        bool registered = false;
 
-        NativeMethods.EnableWindow(_owner, false);
         try
         {
             NativeMethods.ShowWindow(_hwnd, NativeMethods.SW_SHOWDEFAULT);
+            AuxiliaryWindowRegistry.Register(modalHwnd);
+            registered = true;
             NativeMethods.UpdateWindow(_hwnd);
 
             NativeMethods.MSG msg;
@@ -119,7 +124,11 @@ internal sealed class RuleEditorWindow
         }
         finally
         {
-            NativeMethods.EnableWindow(_owner, true);
+            if (registered)
+            {
+                AuxiliaryWindowRegistry.Unregister(modalHwnd);
+            }
+
             NativeMethods.SetActiveWindow(_owner);
         }
 
@@ -163,7 +172,7 @@ internal sealed class RuleEditorWindow
             0,
             "LogBladeRuleEditorWindow",
             _initialRule is null ? "Add Parser Rule" : "Edit Parser Rule",
-            NativeMethods.WS_OVERLAPPEDWINDOW | NativeMethods.WS_CLIPCHILDREN,
+            (NativeMethods.WS_OVERLAPPEDWINDOW & ~NativeMethods.WS_MINIMIZEBOX) | NativeMethods.WS_CLIPCHILDREN,
             NativeMethods.CW_USEDEFAULT,
             NativeMethods.CW_USEDEFAULT,
             820,
@@ -214,6 +223,20 @@ internal sealed class RuleEditorWindow
                 case NativeMethods.WM_COMMAND:
                     self.OnCommand(wParam);
                     return IntPtr.Zero;
+                case NativeMethods.WM_SYSCOMMAND:
+                    if (((int)wParam.ToInt64() & 0xFFF0) == NativeMethods.SC_MINIMIZE)
+                    {
+                        return IntPtr.Zero;
+                    }
+
+                    break;
+                case NativeMethods.WM_CLOSE:
+                    if (self._stageEditorOpen)
+                    {
+                        return IntPtr.Zero;
+                    }
+
+                    break;
                 case NativeMethods.WM_DESTROY:
                     self._closed = true;
                     return IntPtr.Zero;
@@ -329,13 +352,30 @@ internal sealed class RuleEditorWindow
 
     private void AddStage()
     {
+        if (_stageEditorOpen)
+        {
+            return;
+        }
+
         int stageIndex = _stages.Count;
         ParserStageEditorWindow editor = new(
             _stages,
             GetWindowText(_sampleEdit),
             stageIndex,
-            stage => PublishStagePreview(stageIndex, stage));
-        DisplayParserStage? saved = editor.ShowModal(_hwnd);
+            stage => PublishStagePreview(target: null, stage));
+        DisplayParserStage? saved;
+        _stageEditorOpen = true;
+        _openStageEditorTarget = null;
+        try
+        {
+            saved = editor.ShowModal(_hwnd);
+        }
+        finally
+        {
+            _openStageEditorTarget = null;
+            _stageEditorOpen = false;
+        }
+
         if (saved is null)
         {
             PublishLivePreview();
@@ -350,6 +390,11 @@ internal sealed class RuleEditorWindow
 
     private void EditStage()
     {
+        if (_stageEditorOpen)
+        {
+            return;
+        }
+
         int index = GetSelectedStageIndex();
         if (index < 0)
         {
@@ -357,20 +402,41 @@ internal sealed class RuleEditorWindow
             return;
         }
 
+        DisplayParserStage target = _stages[index];
         ParserStageEditorWindow editor = new(
             _stages,
             GetWindowText(_sampleEdit),
             index,
-            stage => PublishStagePreview(index, stage));
-        DisplayParserStage? saved = editor.ShowModal(_hwnd);
+            stage => PublishStagePreview(target, stage));
+        DisplayParserStage? saved;
+        _stageEditorOpen = true;
+        _openStageEditorTarget = target;
+        try
+        {
+            saved = editor.ShowModal(_hwnd);
+        }
+        finally
+        {
+            _openStageEditorTarget = null;
+            _stageEditorOpen = false;
+        }
+
         if (saved is null)
         {
             PublishLivePreview();
             return;
         }
 
-        _stages[index] = saved;
-        ReloadStagesList(index);
+        int currentIndex = _stages.IndexOf(target);
+        if (currentIndex < 0)
+        {
+            ShowError("The edited stage is no longer available.");
+            PublishLivePreview();
+            return;
+        }
+
+        _stages[currentIndex] = saved;
+        ReloadStagesList(currentIndex);
         UpdatePreview();
         PublishLivePreview();
     }
@@ -381,6 +447,12 @@ internal sealed class RuleEditorWindow
         if (index < 0)
         {
             ShowError("Select a stage to remove.");
+            return;
+        }
+
+        if (ReferenceEquals(_stages[index], _openStageEditorTarget))
+        {
+            ShowError("Close the editor before removing this stage.");
             return;
         }
 
@@ -407,6 +479,11 @@ internal sealed class RuleEditorWindow
 
     private void SaveRule()
     {
+        if (_stageEditorOpen)
+        {
+            return;
+        }
+
         string name = GetWindowText(_nameEdit).Trim();
         string sample = GetWindowText(_sampleEdit);
 
@@ -450,6 +527,11 @@ internal sealed class RuleEditorWindow
 
     private void Close()
     {
+        if (_stageEditorOpen)
+        {
+            return;
+        }
+
         if (_hwnd != IntPtr.Zero)
         {
             NativeMethods.DestroyWindow(_hwnd);
@@ -563,7 +645,7 @@ internal sealed class RuleEditorWindow
         _onPreviewChanged?.Invoke(CreatePreviewRule(CloneStages()));
     }
 
-    private void PublishStagePreview(int stageIndex, DisplayParserStage? stage)
+    private void PublishStagePreview(DisplayParserStage? target, DisplayParserStage? stage)
     {
         if (_onPreviewChanged is null)
         {
@@ -573,6 +655,12 @@ internal sealed class RuleEditorWindow
         if (stage is null)
         {
             _onPreviewChanged(null);
+            return;
+        }
+
+        int stageIndex = target is null ? _stages.Count : _stages.IndexOf(target);
+        if (stageIndex < 0)
+        {
             return;
         }
 

@@ -12,6 +12,7 @@ internal static class NativeMethods
     public const int WS_BORDER = 0x00800000;
     public const int WS_CLIPCHILDREN = 0x02000000;
     public const int WS_OVERLAPPEDWINDOW = 0x00CF0000;
+    public const int WS_MINIMIZEBOX = 0x00020000;
     public const int WS_GROUP = 0x00020000;
     public const int WS_HSCROLL = 0x00100000;
     public const int WS_VSCROLL = 0x00200000;
@@ -33,6 +34,9 @@ internal static class NativeMethods
     public const int SW_HIDE = 0;
     public const int SW_SHOW = 5;
     public const int SW_SHOWDEFAULT = 10;
+    public const int SIZE_RESTORED = 0;
+    public const int SIZE_MINIMIZED = 1;
+    public const int SIZE_MAXIMIZED = 2;
     public const uint SWP_NOSIZE = 0x0001;
     public const uint SWP_NOMOVE = 0x0002;
     public const uint SWP_NOZORDER = 0x0004;
@@ -43,7 +47,9 @@ internal static class NativeMethods
     public const int GWLP_USERDATA = -21;
     public const int WM_CREATE = 0x0001;
     public const int WM_DESTROY = 0x0002;
+    public const int WM_CLOSE = 0x0010;
     public const int WM_COMMAND = 0x0111;
+    public const int WM_SYSCOMMAND = 0x0112;
     public const int WM_DRAWITEM = 0x002B;
     public const int WM_CTLCOLORSTATIC = 0x0138;
     public const int WM_SIZE = 0x0005;
@@ -66,6 +72,7 @@ internal static class NativeMethods
     public const int WM_ERASEBKGND = 0x0014;
     public const int WM_NCCREATE = 0x0081;
     public const int WM_NCDESTROY = 0x0082;
+    public const int SC_MINIMIZE = 0xF020;
     public const int BM_GETCHECK = 0x00F0;
     public const int BM_SETCHECK = 0x00F1;
     public const int CBN_SELCHANGE = 1;

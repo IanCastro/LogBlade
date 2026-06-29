@@ -82,10 +82,13 @@ internal sealed class HighlightRuleManagerWindow
         _owner = owner;
         RegisterClass();
         CreateWindow();
-        NativeMethods.EnableWindow(owner, false);
+        IntPtr modalHwnd = _hwnd;
+        bool registered = false;
         try
         {
             NativeMethods.ShowWindow(_hwnd, NativeMethods.SW_SHOWDEFAULT);
+            AuxiliaryWindowRegistry.Register(modalHwnd);
+            registered = true;
             NativeMethods.UpdateWindow(_hwnd);
             while (!_closed && NativeMethods.GetMessageW(out NativeMethods.MSG msg, IntPtr.Zero, 0, 0) > 0)
             {
@@ -98,7 +101,11 @@ internal sealed class HighlightRuleManagerWindow
         }
         finally
         {
-            NativeMethods.EnableWindow(owner, true);
+            if (registered)
+            {
+                AuxiliaryWindowRegistry.Unregister(modalHwnd);
+            }
+
             NativeMethods.SetActiveWindow(owner);
         }
 
@@ -139,7 +146,7 @@ internal sealed class HighlightRuleManagerWindow
             0,
             WindowClassName,
             "Configure Highlighting",
-            NativeMethods.WS_OVERLAPPEDWINDOW | NativeMethods.WS_CLIPCHILDREN,
+            (NativeMethods.WS_OVERLAPPEDWINDOW & ~NativeMethods.WS_MINIMIZEBOX) | NativeMethods.WS_CLIPCHILDREN,
             NativeMethods.CW_USEDEFAULT,
             NativeMethods.CW_USEDEFAULT,
             900,
@@ -188,6 +195,13 @@ internal sealed class HighlightRuleManagerWindow
                 case NativeMethods.WM_COMMAND:
                     self.OnCommand(wParam);
                     return IntPtr.Zero;
+                case NativeMethods.WM_SYSCOMMAND:
+                    if (((int)wParam.ToInt64() & 0xFFF0) == NativeMethods.SC_MINIMIZE)
+                    {
+                        return IntPtr.Zero;
+                    }
+
+                    break;
                 case NativeMethods.WM_DRAWITEM:
                     if (self.DrawRuleItem(lParam))
                     {
