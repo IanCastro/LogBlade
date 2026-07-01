@@ -53,6 +53,10 @@ O `run.ps1` prefere o artefato do build normal e tambem aceita o publish de dist
 - UTF-16 BE com BOM
 - Sem BOM, cai direto em Windows-1252
 
+## Contratos de comportamento
+
+Os contratos canonicos de parser e search estao em [docs/BEHAVIOR.md](docs/BEHAVIOR.md).
+
 ## Notas
 
 - Sem WPF, WinForms, Avalonia, MAUI ou WebView.
