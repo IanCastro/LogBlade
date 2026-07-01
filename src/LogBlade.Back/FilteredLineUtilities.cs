@@ -5,7 +5,13 @@ using System.Text;
 
 public readonly record struct FilteredCaptureGroups(string[] Headers, string[] Values);
 
-public readonly record struct FilteredLineDescriptor(long StartOffset, long EndOffset, int VisualRowCount, FilteredCaptureGroups? CaptureGroups = null, long LineNumber = 0);
+public readonly record struct FilteredLineDescriptor(
+    long StartOffset,
+    long EndOffset,
+    int VisualRowCount,
+    FilteredCaptureGroups? CaptureGroups = null,
+    long LineNumber = 0,
+    int ExplicitRowIndex = 0);
 
 public sealed class FilteredLineStaleException : IOException
 {
@@ -16,6 +22,7 @@ public sealed class FilteredLineStaleException : IOException
 }
 
 internal readonly record struct RealLineData(long StartOffset, long EndOffset, string Text, long LineNumber = 0, long NextOffset = -1);
+internal readonly record struct ExplicitRowData(int Index, string Text);
 
 internal static class FilteredLineUtilities
 {
@@ -146,6 +153,35 @@ internal static class FilteredLineUtilities
         }
 
         return rowCount;
+    }
+
+    public static IEnumerable<ExplicitRowData> EnumerateExplicitRows(string text)
+    {
+        int rowIndex = 0;
+        int rowStart = 0;
+        for (int i = 0; i <= text.Length; i++)
+        {
+            bool atEnd = i == text.Length;
+            bool atBreak = !atEnd && text[i] is '\r' or '\n';
+            if (!atEnd && !atBreak)
+            {
+                continue;
+            }
+
+            yield return new ExplicitRowData(rowIndex, text.Substring(rowStart, i - rowStart));
+            if (atEnd)
+            {
+                yield break;
+            }
+
+            if (text[i] == '\r' && i + 1 < text.Length && text[i + 1] == '\n')
+            {
+                i++;
+            }
+
+            rowIndex++;
+            rowStart = i + 1;
+        }
     }
 
     public static string GetExplicitRowText(string text, int rowIndex)

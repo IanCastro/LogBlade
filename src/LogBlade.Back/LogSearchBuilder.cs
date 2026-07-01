@@ -388,6 +388,8 @@ public static class LogSearchBuilder
         Stopwatch stopwatch = Stopwatch.StartNew();
         int processedDescriptorCount = 0;
         long processedOffset = dataOffset;
+        FilteredLineDescriptor? cachedDescriptor = null;
+        string cachedRecordText = string.Empty;
 
         try
         {
@@ -397,14 +399,30 @@ public static class LogSearchBuilder
                 cancellationToken.ThrowIfCancellationRequested();
                 processedDescriptorCount++;
                 processedOffset = sourceDescriptor.EndOffset;
-                string lineText = DisplayParserRecordEvaluator.ReadRecordText(
-                    fullPath,
-                    encoding,
-                    kind,
-                    sourceDescriptor.StartOffset,
-                    sourceDescriptor.EndOffset,
-                    sourceDescriptor.LineNumber,
-                    parserRule);
+                string recordText;
+                if (cachedDescriptor is FilteredLineDescriptor cached &&
+                    cached.StartOffset == sourceDescriptor.StartOffset &&
+                    cached.EndOffset == sourceDescriptor.EndOffset)
+                {
+                    recordText = cachedRecordText;
+                }
+                else
+                {
+                    recordText = DisplayParserRecordEvaluator.ReadRecordText(
+                        fullPath,
+                        encoding,
+                        kind,
+                        sourceDescriptor.StartOffset,
+                        sourceDescriptor.EndOffset,
+                        sourceDescriptor.LineNumber,
+                        parserRule);
+                    cachedDescriptor = sourceDescriptor;
+                    cachedRecordText = recordText;
+                }
+
+                string lineText = FilteredLineUtilities.GetExplicitRowText(
+                    recordText,
+                    sourceDescriptor.ExplicitRowIndex);
                 AddChangedStageDescriptors(
                     descriptors,
                     changedStageIndex,
@@ -1055,18 +1073,21 @@ public static class LogSearchBuilder
         DisplayParserRecord record,
         SearchMatcherCascade matcher)
     {
-        string searchableText = record.Text;
-        if (!matcher.TryMatch(searchableText, out FilteredCaptureGroups? captureGroups))
+        foreach (ExplicitRowData row in FilteredLineUtilities.EnumerateExplicitRows(record.Text))
         {
-            return;
-        }
+            if (!matcher.TryMatch(row.Text, out FilteredCaptureGroups? captureGroups))
+            {
+                continue;
+            }
 
-        descriptors.Add(new FilteredLineDescriptor(
-            record.StartOffset,
-            record.EndOffset,
-            FilteredLineUtilities.CountExplicitRows(searchableText),
-            captureGroups,
-            record.LineNumber));
+            descriptors.Add(new FilteredLineDescriptor(
+                record.StartOffset,
+                record.EndOffset,
+                VisualRowCount: 1,
+                captureGroups,
+                record.LineNumber,
+                row.Index));
+        }
     }
 
     private static void AddDescriptorsByStage(
@@ -1079,17 +1100,20 @@ public static class LogSearchBuilder
             return;
         }
 
-        string searchableText = record.Text;
-        FilteredCaptureGroups?[] captureGroupsByStage = new FilteredCaptureGroups?[descriptors.Length];
-        int includedStages = matcher.MatchStages(searchableText, captureGroupsByStage);
-        for (int i = 0; i < includedStages; i++)
+        foreach (ExplicitRowData row in FilteredLineUtilities.EnumerateExplicitRows(record.Text))
         {
-            descriptors[i].Add(new FilteredLineDescriptor(
-                record.StartOffset,
-                record.EndOffset,
-                FilteredLineUtilities.CountExplicitRows(searchableText),
-                captureGroupsByStage[i],
-                record.LineNumber));
+            FilteredCaptureGroups?[] captureGroupsByStage = new FilteredCaptureGroups?[descriptors.Length];
+            int includedStages = matcher.MatchStages(row.Text, captureGroupsByStage);
+            for (int i = 0; i < includedStages; i++)
+            {
+                descriptors[i].Add(new FilteredLineDescriptor(
+                    record.StartOffset,
+                    record.EndOffset,
+                    VisualRowCount: 1,
+                    captureGroupsByStage[i],
+                    record.LineNumber,
+                    row.Index));
+            }
         }
     }
 
@@ -1105,17 +1129,17 @@ public static class LogSearchBuilder
             return;
         }
 
-        string searchableText = lineText;
         FilteredCaptureGroups?[] captureGroupsByStage = new FilteredCaptureGroups?[descriptors.Length];
-        int includedStages = matcher.MatchStages(searchableText, captureGroupsByStage);
+        int includedStages = matcher.MatchStages(lineText, captureGroupsByStage);
         for (int i = changedStageIndex; i < includedStages; i++)
         {
             descriptors[i].Add(new FilteredLineDescriptor(
                 sourceDescriptor.StartOffset,
                 sourceDescriptor.EndOffset,
-                FilteredLineUtilities.CountExplicitRows(searchableText),
+                VisualRowCount: 1,
                 captureGroupsByStage[i],
-                sourceDescriptor.LineNumber));
+                sourceDescriptor.LineNumber,
+                sourceDescriptor.ExplicitRowIndex));
         }
     }
 

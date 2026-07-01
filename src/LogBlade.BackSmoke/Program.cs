@@ -88,8 +88,13 @@ internal static class Program
             RunDisplayParserMainViewerDoesNotBackscanFromContinuation(tempRoot);
             RunDisplayParserMainViewerReloadDoesNotBackscanIntoIncompleteRecord(tempRoot);
             RunSearchFindsTextOnSecondParsedLine(tempRoot);
-            RunSearchRepeatsCapturesAcrossParsedLines(tempRoot);
+            RunSearchCapturesOnlyMatchingParsedLine(tempRoot);
             RunSearchDoesNotWrapLongParsedLine(tempRoot);
+            RunSearchReturnsEachMatchingParsedLine(tempRoot);
+            RunSearchInvertFiltersParsedLines(tempRoot);
+            RunCascadedSearchDoesNotCrossParsedLines(tempRoot);
+            RunChangedCascadedSearchUsesMatchedParsedLine(tempRoot);
+            RunAppendSearchKeepsMatchedParsedLine(tempRoot);
             RunVisualHighlightGroupsWrappedLine(tempRoot);
             RunVisualHighlightGroupsParsedRecord(tempRoot);
             RunFilteredHighlightGroupsParsedRecord(tempRoot);
@@ -1332,25 +1337,25 @@ internal static class Program
 
         reader.ReadFromPercentage(0d, 3);
         IColumnViewportReader columns = reader;
-        AssertSequence("display parser search second line rows", reader.CurrentRows, "ERROR", "failed");
-        AssertSequence("display parser search second line first cells", columns.CurrentCells[0], "2", "ERROR");
-        AssertSequence("display parser search second line second cells", columns.CurrentCells[1], "2", "failed");
+        AssertSequence("display parser search second line rows", reader.CurrentRows, "failed");
+        AssertSequence("display parser search second line cells", columns.CurrentCells[0], "2", "failed");
 
         ISelectableViewportReader selectable = reader;
+        AssertEqual("display parser search second line key", selectable.CurrentRowSelectionKeys[0].SegmentIndex, 1);
         AssertEqual(
             "display parser search second line ordinal",
-            ((IRowOrdinalViewportReader)reader).TryGetRowOrdinal(selectable.CurrentRowSelectionKeys[1], out long rowOrdinal),
+            ((IRowOrdinalViewportReader)reader).TryGetRowOrdinal(selectable.CurrentRowSelectionKeys[0], out long rowOrdinal),
             true);
-        AssertEqual("display parser search second line ordinal value", rowOrdinal, 1L);
+        AssertEqual("display parser search second line ordinal value", rowOrdinal, 0L);
 
         IReadOnlyList<ViewportSelectedRow> selectedRows = selectable.ReadSelectedRows(
             selectAll: true,
             Array.Empty<ViewportRowSelectionRange>(),
             Array.Empty<ViewportRowSelectionKey>());
-        AssertSelectedRows("display parser search second line selection", selectedRows, "ERROR", "failed");
+        AssertSelectedRows("display parser search second line selection", selectedRows, "failed");
     }
 
-    private static void RunSearchRepeatsCapturesAcrossParsedLines(string tempRoot)
+    private static void RunSearchCapturesOnlyMatchingParsedLine(string tempRoot)
     {
         string path = WriteLog(tempRoot, "display-parser-search-multiline-captures.log", "{\"Level\":\"Error\",\"Message\":\"failed\"}\r\n");
         DisplayParserRule parser = ParserRule(JsonStage("{upper:Level}\n{Message}"));
@@ -1359,14 +1364,21 @@ internal static class Program
             path,
             Encoding.UTF8,
             dataOffset: 0,
-            new SearchOptions("(?<level>ERROR)\\n(?<message>failed)", UseRegex: true, IgnoreCase: false),
+            new SearchOptions("(?<message>failed)", UseRegex: true, IgnoreCase: false),
             parser);
 
         reader.ReadFromPercentage(0d, 3);
         IColumnViewportReader columns = reader;
-        AssertSequence("display parser multiline capture headers", columns.ColumnHeaders, "#", "Text", "level", "message");
-        AssertSequence("display parser multiline capture first cells", columns.CurrentCells[0], "1", "ERROR", "ERROR", "failed");
-        AssertSequence("display parser multiline capture second cells", columns.CurrentCells[1], "1", "failed", "ERROR", "failed");
+        AssertSequence("display parser multiline capture headers", columns.ColumnHeaders, "#", "Text", "message");
+        AssertSequence("display parser multiline capture cells", columns.CurrentCells[0], "1", "failed", "failed");
+
+        using FilteredVisualRowReader crossLineReader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("ERROR\\nfailed", UseRegex: true, IgnoreCase: false),
+            parser);
+        AssertEqual("display parser regex does not cross parsed lines", crossLineReader.MatchedLineCount, 0L);
     }
 
     private static void RunSearchDoesNotWrapLongParsedLine(string tempRoot)
@@ -1386,12 +1398,128 @@ internal static class Program
             parser);
 
         reader.ReadFromPercentage(0d, 3);
-        AssertSequence("display parser search long explicit rows", reader.CurrentRows, first, "tail");
+        AssertSequence("display parser search long explicit rows", reader.CurrentRows, "tail");
         IReadOnlyList<ViewportSelectedRow> selected = ((ISelectableViewportReader)reader).ReadSelectedRows(
             selectAll: true,
             Array.Empty<ViewportRowSelectionRange>(),
             Array.Empty<ViewportRowSelectionKey>());
-        AssertSelectedRows("display parser search long explicit selection", selected, first, "tail");
+        AssertSelectedRows("display parser search long explicit selection", selected, "tail");
+    }
+
+    private static void RunSearchReturnsEachMatchingParsedLine(string tempRoot)
+    {
+        string path = WriteLog(
+            tempRoot,
+            "display-parser-search-multiple-explicit-lines.log",
+            "{\"First\":\"MATCH one\",\"Second\":\"skip\",\"Third\":\"MATCH two\"}\r\n");
+        DisplayParserRule parser = ParserRule(JsonStage("{First}\n{Second}\n{Third}"));
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("MATCH", UseRegex: false, IgnoreCase: false),
+            parser);
+        reader.ReadFromPercentage(0d, 3);
+
+        AssertSequence("display parser multiple matching rows", reader.CurrentRows, "MATCH one", "MATCH two");
+        IReadOnlyList<ViewportRowSelectionKey> keys = ((ISelectableViewportReader)reader).CurrentRowSelectionKeys;
+        AssertEqual("display parser multiple first segment", keys[0].SegmentIndex, 0);
+        AssertEqual("display parser multiple second segment", keys[1].SegmentIndex, 2);
+        AssertEqual("display parser multiple first ordinal", ((IRowOrdinalViewportReader)reader).TryGetRowOrdinal(keys[0], out long firstOrdinal), true);
+        AssertEqual("display parser multiple first ordinal value", firstOrdinal, 0L);
+        AssertEqual("display parser multiple second ordinal", ((IRowOrdinalViewportReader)reader).TryGetRowOrdinal(keys[1], out long secondOrdinal), true);
+        AssertEqual("display parser multiple second ordinal value", secondOrdinal, 1L);
+    }
+
+    private static void RunSearchInvertFiltersParsedLines(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "display-parser-search-invert-lines.log", "{\"Level\":\"ERROR\",\"Message\":\"failed\"}\r\n");
+        DisplayParserRule parser = ParserRule(JsonStage("{Level}\n{Message}"));
+
+        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("failed", UseRegex: false, IgnoreCase: false, InvertMatch: true),
+            parser);
+        reader.ReadFromPercentage(0d, 3);
+
+        AssertSequence("display parser invert rows", reader.CurrentRows, "ERROR");
+    }
+
+    private static void RunCascadedSearchDoesNotCrossParsedLines(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "display-parser-cascade-lines.log", "{\"Level\":\"ERROR\",\"Message\":\"failed\"}\r\n");
+        DisplayParserRule parser = ParserRule(JsonStage("{Level}\n{Message}"));
+        SearchOptions[] options =
+        {
+            new("ERROR", UseRegex: false, IgnoreCase: false),
+            new("failed", UseRegex: false, IgnoreCase: false)
+        };
+
+        FilteredVisualRowReader[] readers = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, options, parser);
+        try
+        {
+            AssertSequence("display parser cascade first rows", readers[0].CurrentRows, "ERROR");
+            AssertEqual("display parser cascade second count", readers[1].MatchedLineCount, 0L);
+        }
+        finally
+        {
+            DisposeReaders(readers);
+        }
+    }
+
+    private static void RunChangedCascadedSearchUsesMatchedParsedLine(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "display-parser-changed-cascade-lines.log", "{\"Level\":\"ERROR\",\"Message\":\"failed\"}\r\n");
+        DisplayParserRule parser = ParserRule(JsonStage("{Level}\n{Message}"));
+        SearchOptions[] initialOptions =
+        {
+            new("ERROR", UseRegex: false, IgnoreCase: false),
+            new("ERROR", UseRegex: false, IgnoreCase: false)
+        };
+        SearchOptions[] changedOptions =
+        {
+            new("ERROR", UseRegex: false, IgnoreCase: false),
+            new("failed", UseRegex: false, IgnoreCase: false)
+        };
+
+        FilteredVisualRowReader[] initial = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, initialOptions, parser);
+        try
+        {
+            StagedSearchProgressUpdate finalUpdate = default;
+            LogSearchBuilder.BuildChangedStagedFilteredReadersIncremental(
+                initial,
+                changedStageIndex: 1,
+                changedOptions,
+                new[] { 3, 3 },
+                update => finalUpdate = update,
+                CancellationToken.None,
+                parser);
+
+            using FilteredVisualRowReader changed = finalUpdate.Readers[1] ?? throw new InvalidOperationException("Changed parser cascade reader missing.");
+            AssertEqual("display parser changed cascade second count", changed.MatchedLineCount, 0L);
+        }
+        finally
+        {
+            DisposeReaders(initial);
+        }
+    }
+
+    private static void RunAppendSearchKeepsMatchedParsedLine(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "display-parser-append-lines.log", "{\"Level\":\"INFO\",\"Message\":\"ready\"}\r\n");
+        DisplayParserRule parser = ParserRule(JsonStage("{Level}\n{Message}"));
+        SearchOptions options = new("failed", UseRegex: false, IgnoreCase: false);
+        using FilteredVisualRowReader initial = LogSearchBuilder.BuildFilteredReader(path, Encoding.UTF8, dataOffset: 0, options, parser);
+        File.AppendAllText(path, "{\"Level\":\"ERROR\",\"Message\":\"failed\"}\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+        using FilteredVisualRowReader appended = BuildAppendedReader(initial, options, parser);
+        appended.ReadFromPercentage(0d, 3);
+
+        AssertSequence("display parser append matching row", appended.CurrentRows, "failed");
+        AssertEqual("display parser append matching segment", ((ISelectableViewportReader)appended).CurrentRowSelectionKeys[0].SegmentIndex, 1);
     }
 
     private static void RunVisualHighlightGroupsWrappedLine(string tempRoot)
@@ -1458,9 +1586,8 @@ internal static class Program
         IReadOnlyList<ViewportHighlightGroupKey> keys = highlightReader.CurrentHighlightGroupKeys;
         IReadOnlyList<ViewportHighlightGroup> groups = highlightReader.ReadCurrentHighlightGroups();
 
-        AssertEqual("highlight parser search row count", reader.CurrentRows.Count, 2);
-        AssertEqual("highlight parser search key count", keys.Count, 2);
-        AssertEqual("highlight parser search second key", keys[1], keys[0]);
+        AssertEqual("highlight parser search row count", reader.CurrentRows.Count, 1);
+        AssertEqual("highlight parser search key count", keys.Count, 1);
         AssertEqual("highlight parser search group count", groups.Count, 1);
         AssertEqual("highlight parser search group key", groups[0].Key, keys[0]);
         AssertEqual("highlight parser search group text", groups[0].Text, "ERROR\nfailed");
@@ -1534,13 +1661,15 @@ internal static class Program
         ITextSelectionViewportReader textReader = reader;
         IReadOnlyList<ViewportTextSegmentKey> keys = textReader.CurrentTextSegmentKeys;
 
-        AssertEqual("text selection parser search row count", keys.Count, 2);
-        AssertEqual("text selection parser search unique rows", keys[1] == keys[0], false);
-        AssertEqual("text selection parser search shared group", keys[1].GroupKey, keys[0].GroupKey);
-        AssertEqual("text selection parser search context available", textReader.TryReadTextSelectionContext(keys[1], out ViewportTextSelectionContext context), true);
+        AssertEqual("text selection parser search row count", keys.Count, 1);
+        AssertEqual("text selection parser search matched segment", keys[0].SegmentIndex, 1);
+        AssertEqual("text selection parser search context available", textReader.TryReadTextSelectionContext(keys[0], out ViewportTextSelectionContext context), true);
         AssertEqual("text selection parser search full text", context.Text, "ERROR\nfailed");
-        AssertEqual("text selection parser search first range", context.Segments[0], new ViewportTextSegmentRange(keys[0], 0, 5));
-        AssertEqual("text selection parser search second range", context.Segments[1], new ViewportTextSegmentRange(keys[1], 6, 6));
+        AssertEqual(
+            "text selection parser search first range",
+            context.Segments[0],
+            new ViewportTextSegmentRange(new ViewportTextSegmentKey(keys[0].GroupKey, 0), 0, 5));
+        AssertEqual("text selection parser search second range", context.Segments[1], new ViewportTextSegmentRange(keys[0], 6, 6));
     }
 
     private static void RunVisualSelectionRangeAcrossViewport(string tempRoot)

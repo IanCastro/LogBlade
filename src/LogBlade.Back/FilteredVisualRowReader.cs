@@ -59,7 +59,8 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
         {
             _descriptors[i] = descriptors[i];
             _descriptorRowStarts[i] = runningRows;
-            runningRows += GetDescriptorVisualRowCount(descriptors[i]);
+            int visualRowCount = GetDescriptorVisualRowCount(descriptors[i]);
+            runningRows += visualRowCount;
             FilteredCaptureGroups? captureGroups = descriptors[i].CaptureGroups;
             int captureGroupCount = captureGroups?.Values.Length ?? 0;
             if (_captureGroupHeaders.Length == 0 && captureGroupCount > 0)
@@ -269,14 +270,29 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
         HashSet<ViewportRowSelectionKey> excluded = new(excludedKeys);
         HashSet<ViewportRowSelectionKey> emitted = new();
         List<ViewportSelectedRow> rows = new();
+        FilteredLineDescriptor? cachedDescriptor = null;
+        string cachedText = string.Empty;
         for (int i = 0; i < _descriptors.Length; i++)
         {
             FilteredLineDescriptor descriptor = _descriptors[i];
-            string text = ReadDescriptorText(descriptor);
+            string text;
+            if (cachedDescriptor is FilteredLineDescriptor cached &&
+                cached.StartOffset == descriptor.StartOffset &&
+                cached.EndOffset == descriptor.EndOffset)
+            {
+                text = cachedText;
+            }
+            else
+            {
+                text = ReadDescriptorText(descriptor);
+                cachedDescriptor = descriptor;
+                cachedText = text;
+            }
+
             int visualRowCount = GetDescriptorVisualRowCount(descriptor);
             for (int segmentIndex = 0; segmentIndex < visualRowCount; segmentIndex++)
             {
-                ViewportRowSelectionKey key = new(descriptor.StartOffset, descriptor.EndOffset, segmentIndex);
+                ViewportRowSelectionKey key = CreateRowSelectionKey(descriptor, segmentIndex);
                 if (excluded.Contains(key) || !emitted.Add(key))
                 {
                     continue;
@@ -287,7 +303,9 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
                     continue;
                 }
 
-                string rowText = FilteredLineUtilities.GetExplicitRowText(text, segmentIndex);
+                string rowText = FilteredLineUtilities.GetExplicitRowText(
+                    text,
+                    GetExplicitRowIndex(descriptor, segmentIndex));
                 rows.Add(new ViewportSelectedRow(key, rowText, CreateSelectedCells(rowText, descriptor)));
             }
         }
@@ -338,7 +356,7 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
 
         FilteredLineDescriptor descriptor = _descriptors[descriptorIndex];
         string text = ReadDescriptorText(descriptor);
-        int segmentCount = GetDescriptorVisualRowCount(descriptor);
+        int segmentCount = FilteredLineUtilities.CountExplicitRows(text);
         ViewportTextSegmentRange[] segments = new ViewportTextSegmentRange[segmentCount];
         for (int i = 0; i < segmentCount; i++)
         {
@@ -573,32 +591,21 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
         while (low <= high)
         {
             int mid = low + ((high - low) / 2);
-            long startOffset = _descriptors[mid].StartOffset;
-            if (startOffset < key.StartOffset)
+            FilteredLineDescriptor descriptor = _descriptors[mid];
+            int comparison = CompareDescriptorToKey(descriptor, key);
+            if (comparison < 0)
             {
                 low = mid + 1;
                 continue;
             }
 
-            if (startOffset > key.StartOffset)
+            if (comparison > 0)
             {
                 high = mid - 1;
                 continue;
             }
 
-            FilteredLineDescriptor descriptor = _descriptors[mid];
-            if (descriptor.EndOffset != key.EndOffset)
-            {
-                return false;
-            }
-
-            int visualRowCount = GetDescriptorVisualRowCount(descriptor);
-            if (key.SegmentIndex >= visualRowCount)
-            {
-                return false;
-            }
-
-            rowOrdinal = _descriptorRowStarts[mid] + key.SegmentIndex;
+            rowOrdinal = _descriptorRowStarts[mid] + key.SegmentIndex - descriptor.ExplicitRowIndex;
             return true;
         }
 
@@ -728,17 +735,33 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
         int currentDescriptorIndex = descriptorIndex;
         long firstStart = _descriptors[descriptorIndex].StartOffset;
         long lastEnd = firstStart;
+        FilteredLineDescriptor? cachedDescriptor = null;
+        string cachedText = string.Empty;
 
         while (_currentRows.Count < visibleLines && currentDescriptorIndex < _descriptors.Length)
         {
             FilteredLineDescriptor descriptor = _descriptors[currentDescriptorIndex];
-            string text = ReadDescriptorText(descriptor);
+            string text;
+            if (cachedDescriptor is FilteredLineDescriptor cached &&
+                cached.StartOffset == descriptor.StartOffset &&
+                cached.EndOffset == descriptor.EndOffset)
+            {
+                text = cachedText;
+            }
+            else
+            {
+                text = ReadDescriptorText(descriptor);
+                cachedDescriptor = descriptor;
+                cachedText = text;
+            }
+
             int visualRowCount = GetDescriptorVisualRowCount(descriptor);
             while (_currentRows.Count < visibleLines && segmentIndex < visualRowCount)
             {
-                string rowText = FilteredLineUtilities.GetExplicitRowText(text, segmentIndex);
+                int explicitRowIndex = GetExplicitRowIndex(descriptor, segmentIndex);
+                string rowText = FilteredLineUtilities.GetExplicitRowText(text, explicitRowIndex);
                 _currentRows.Add(rowText);
-                _currentRowSelectionKeys.Add(new ViewportRowSelectionKey(descriptor.StartOffset, descriptor.EndOffset, segmentIndex));
+                _currentRowSelectionKeys.Add(CreateRowSelectionKey(descriptor, segmentIndex));
                 _currentCells.Add(CreateCells(rowText, descriptor, includeCaptureGroups: true));
                 segmentIndex++;
             }
@@ -810,6 +833,42 @@ public sealed class FilteredVisualRowReader : ILineNumberColumnViewportReader, I
 
     private static int GetDescriptorVisualRowCount(FilteredLineDescriptor descriptor) =>
         Math.Max(1, descriptor.VisualRowCount);
+
+    private static int GetExplicitRowIndex(FilteredLineDescriptor descriptor, int segmentIndex) =>
+        descriptor.ExplicitRowIndex + segmentIndex;
+
+    private static ViewportRowSelectionKey CreateRowSelectionKey(
+        FilteredLineDescriptor descriptor,
+        int segmentIndex) =>
+        new(
+            descriptor.StartOffset,
+            descriptor.EndOffset,
+            GetExplicitRowIndex(descriptor, segmentIndex));
+
+    private static int CompareDescriptorToKey(
+        FilteredLineDescriptor descriptor,
+        ViewportRowSelectionKey key)
+    {
+        int startComparison = descriptor.StartOffset.CompareTo(key.StartOffset);
+        if (startComparison != 0)
+        {
+            return startComparison;
+        }
+
+        int endComparison = descriptor.EndOffset.CompareTo(key.EndOffset);
+        if (endComparison != 0)
+        {
+            return endComparison;
+        }
+
+        if (key.SegmentIndex < descriptor.ExplicitRowIndex)
+        {
+            return 1;
+        }
+
+        int explicitRowEnd = descriptor.ExplicitRowIndex + GetDescriptorVisualRowCount(descriptor);
+        return key.SegmentIndex >= explicitRowEnd ? -1 : 0;
+    }
 
     private (int DescriptorIndex, int SegmentIndex) MapTopRow(long rowOrdinal)
     {
