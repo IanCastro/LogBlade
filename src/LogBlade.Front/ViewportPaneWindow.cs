@@ -3749,11 +3749,26 @@ internal sealed class ViewportPaneWindow : IDisposable
         int visibleColumns = GetHorizontalVisibleColumnCount();
         int visibleStart = _xOffsetChars;
         int visibleEnd = visibleStart + visibleColumns;
-        if (columnStart < visibleStart)
+        int columnWidth = columnEnd - columnStart;
+        if (columnWidth <= visibleColumns)
+        {
+            if (columnStart < visibleStart)
+            {
+                SetHorizontalOffset(columnStart);
+            }
+            else if (columnEnd > visibleEnd)
+            {
+                SetHorizontalOffset(columnEnd - visibleColumns);
+            }
+
+            return;
+        }
+
+        if (visibleStart < columnStart)
         {
             SetHorizontalOffset(columnStart);
         }
-        else if (columnEnd > visibleEnd)
+        else if (visibleEnd > columnEnd)
         {
             SetHorizontalOffset(columnEnd - visibleColumns);
         }
