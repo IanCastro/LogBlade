@@ -4571,7 +4571,7 @@ internal sealed class ViewportPaneWindow : IDisposable
     }
 
     private static string NormalizeClipboardCell(string value) =>
-        value.Replace('\r', ' ').Replace('\n', ' ').Replace('\t', ' ');
+        value.Replace('\t', ' ');
 
     private bool SetClipboardText(string text)
     {

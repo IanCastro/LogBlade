@@ -46,6 +46,13 @@ Alterar um nivel inferior, continuar uma busca, processar append ou retomar um c
 - `ExplicitRowIndex` distingue qual linha explicita gerou cada resultado.
 - Navegacao e sincronizacao usam os offsets originais; selecao e exibicao usam tambem o indice da linha explicita.
 
+## Selecao e copia
+
+- Quebras de linha geradas pelo parser sao preservadas ao copiar o texto exibido.
+- Segmentos visuais de 4096 caracteres sao reunidos sem inserir quebras de linha.
+- Ao copiar varias linhas ou resultados, cada item selecionado continua separado por uma quebra de linha do clipboard.
+- Tabs continuam sendo convertidos em um espaco na copia.
+
 ## Manutencao
 
 Qualquer mudanca nesses contratos deve atualizar este documento e os smoke tests correspondentes no mesmo trabalho. Em especial, os testes devem continuar cobrindo saida multiline, linhas maiores que 4096 caracteres, Regex e capturas por linha, `Invert match`, cascata, alteracao de nivel inferior e append.
