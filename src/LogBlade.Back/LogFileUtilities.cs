@@ -6,10 +6,11 @@ internal static class LogFileUtilities
 {
     private const int ReverseScanBlockBytes = 64 * 1024;
 
-    public static FileStream OpenSourceStream(string path) =>
-        new(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 16, FileOptions.SequentialScan);
+    public static Stream OpenSourceStream(string path) => LogContentSource.FromFile(path).OpenRead();
 
-    public static DetectedEncodingInfo DetectEncoding(FileStream fs)
+    public static Stream OpenSourceStream(LogContentSource source) => source.OpenRead();
+
+    public static DetectedEncodingInfo DetectEncoding(Stream fs)
     {
         fs.Position = 0;
         Span<byte> sample = stackalloc byte[3];
@@ -67,6 +68,18 @@ internal static class LogFileUtilities
         LogEncodingKind kind,
         long dataOffset,
         long fileSize,
+        long requestedOffset) => FindLineStartContaining(
+            LogContentSource.FromFile(filePath),
+            kind,
+            dataOffset,
+            fileSize,
+            requestedOffset);
+
+    public static long FindLineStartContaining(
+        LogContentSource source,
+        LogEncodingKind kind,
+        long dataOffset,
+        long fileSize,
         long requestedOffset)
     {
         if (fileSize <= dataOffset || requestedOffset <= dataOffset)
@@ -75,7 +88,7 @@ internal static class LogFileUtilities
         }
 
         long bounded = Math.Clamp(requestedOffset, dataOffset, fileSize);
-        using FileStream fs = OpenSourceStream(filePath);
+        using Stream fs = OpenSourceStream(source);
         return kind is LogEncodingKind.Utf16Le or LogEncodingKind.Utf16Be
             ? FindUtf16LineStart(fs, dataOffset, bounded, kind == LogEncodingKind.Utf16Le)
             : FindSingleByteLineStart(fs, dataOffset, bounded);
@@ -85,6 +98,16 @@ internal static class LogFileUtilities
         string filePath,
         LogEncodingKind kind,
         long dataOffset,
+        long currentLineStart) => FindPreviousLineStart(
+            LogContentSource.FromFile(filePath),
+            kind,
+            dataOffset,
+            currentLineStart);
+
+    public static long FindPreviousLineStart(
+        LogContentSource source,
+        LogEncodingKind kind,
+        long dataOffset,
         long currentLineStart)
     {
         if (currentLineStart <= dataOffset)
@@ -92,13 +115,13 @@ internal static class LogFileUtilities
             return dataOffset;
         }
 
-        using FileStream fs = OpenSourceStream(filePath);
+        using Stream fs = OpenSourceStream(source);
         return kind is LogEncodingKind.Utf16Le or LogEncodingKind.Utf16Be
             ? FindPreviousUtf16LineStart(fs, dataOffset, currentLineStart, kind == LogEncodingKind.Utf16Le)
             : FindPreviousSingleByteLineStart(fs, dataOffset, currentLineStart);
     }
 
-    private static long FindSingleByteLineStart(FileStream fs, long dataOffset, long scanEndExclusive)
+    private static long FindSingleByteLineStart(Stream fs, long dataOffset, long scanEndExclusive)
     {
         long blockEnd = scanEndExclusive;
         while (blockEnd > dataOffset)
@@ -119,7 +142,7 @@ internal static class LogFileUtilities
         return dataOffset;
     }
 
-    private static long FindUtf16LineStart(FileStream fs, long dataOffset, long scanEndExclusive, bool littleEndian)
+    private static long FindUtf16LineStart(Stream fs, long dataOffset, long scanEndExclusive, bool littleEndian)
     {
         long alignedEnd = AlignUtf16Offset(dataOffset, scanEndExclusive);
         long blockEnd = alignedEnd;
@@ -145,7 +168,7 @@ internal static class LogFileUtilities
         return dataOffset;
     }
 
-    private static long FindPreviousSingleByteLineStart(FileStream fs, long dataOffset, long currentLineStart)
+    private static long FindPreviousSingleByteLineStart(Stream fs, long dataOffset, long currentLineStart)
     {
         long cursor = currentLineStart;
         while (cursor > dataOffset)
@@ -163,7 +186,7 @@ internal static class LogFileUtilities
         return FindSingleByteLineStart(fs, dataOffset, cursor);
     }
 
-    private static long FindPreviousUtf16LineStart(FileStream fs, long dataOffset, long currentLineStart, bool littleEndian)
+    private static long FindPreviousUtf16LineStart(Stream fs, long dataOffset, long currentLineStart, bool littleEndian)
     {
         long cursor = AlignUtf16Offset(dataOffset, currentLineStart);
         Span<byte> bytes = stackalloc byte[2];
@@ -191,7 +214,7 @@ internal static class LogFileUtilities
         return dataOffset + (delta - (delta % 2));
     }
 
-    private static byte[] ReadWindow(FileStream fs, long startOffset, long endOffset)
+    private static byte[] ReadWindow(Stream fs, long startOffset, long endOffset)
     {
         int length = checked((int)Math.Max(0, endOffset - startOffset));
         byte[] buffer = new byte[length];

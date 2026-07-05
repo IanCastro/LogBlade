@@ -14,8 +14,11 @@ public readonly record struct DetectedEncodingInfo(LogEncodingKind Kind, Encodin
 public static class LogEncodingDetector
 {
     public static DetectedEncodingInfo DetectEncoding(string path)
+        => DetectEncoding(LogContentSource.FromFile(path));
+
+    public static DetectedEncodingInfo DetectEncoding(LogContentSource source)
     {
-        using FileStream fs = LogFileUtilities.OpenSourceStream(path);
+        using Stream fs = LogFileUtilities.OpenSourceStream(source);
         return LogFileUtilities.DetectEncoding(fs);
     }
 }

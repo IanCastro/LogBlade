@@ -13,6 +13,7 @@ internal static class Program
         try
         {
             Run("main projection", () => RunMainProjection(tempRoot));
+            Run("memory projection", RunMemoryProjection);
             Run("combined parser", () => RunCombinedParserProjection(tempRoot));
             Run("search projection", () => RunSearchProjection(tempRoot));
             Run("record navigation", () => RunRecordNavigation(tempRoot));
@@ -130,6 +131,34 @@ internal static class Program
             Array.Empty<ViewportRowSelectionKey>());
         AssertEqual("main copy record count", copied.Count, 1);
         AssertEqual("main copy preserves parser newlines", copied[0].Text, parsed);
+    }
+
+    private static void RunMemoryProjection()
+    {
+        string longValue = new('m', ProjectedViewport.VisibleSegmentChars + 5);
+        const string secondLine = "match ç";
+        string text = longValue + "\r\n" + secondLine + "\r\n";
+        LogContentSource content = LogContentSource.FromMemory("Pasted text", CreateUtf8BomContent(text));
+        DetectedEncodingInfo detected = LogEncodingDetector.DetectEncoding(content);
+
+        using (var viewport = new ProjectedViewport(
+            new LogRecordSource(content, detected.Encoding, detected.DataOffset),
+            wrapLongLines: true))
+        {
+            viewport.ReadFromPercentage(0d, 4);
+            AssertEqual("memory projection first segment", viewport.CurrentRows[0].Length, ProjectedViewport.VisibleSegmentChars);
+            AssertEqual("memory projection wrapped tail", viewport.CurrentRows[1], "mmmmm");
+            AssertEqual("memory projection unicode", viewport.CurrentRows[2], secondLine);
+        }
+
+        using FilteredLogRecordSource filtered = LogSearchBuilder.BuildFilteredReader(
+            content,
+            detected.Encoding,
+            detected.DataOffset,
+            new SearchOptions("match", UseRegex: false, IgnoreCase: false));
+        using var searchViewport = new FilteredProjectedViewport(filtered.CloneForWorker());
+        searchViewport.ReadFromPercentage(0d, 2);
+        AssertSequence("memory search projection", searchViewport.CurrentRows, secondLine);
     }
 
     private static void RunSearchProjection(string tempRoot)
@@ -616,6 +645,16 @@ internal static class Program
         string path = Path.Combine(tempRoot, name);
         File.WriteAllText(path, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         return path;
+    }
+
+    private static byte[] CreateUtf8BomContent(string text)
+    {
+        byte[] preamble = Encoding.UTF8.GetPreamble();
+        byte[] payload = Encoding.UTF8.GetBytes(text);
+        byte[] content = new byte[preamble.Length + payload.Length];
+        preamble.CopyTo(content, 0);
+        payload.CopyTo(content, preamble.Length);
+        return content;
     }
 
     private static void AssertEqual<T>(string name, T actual, T expected)

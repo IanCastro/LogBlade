@@ -324,9 +324,25 @@ internal static class DisplayParserRecordEvaluator
         long startOffset,
         long endOffset,
         long lineNumber,
+        DisplayParserRule? rule) => ReadRecordText(
+            LogContentSource.FromFile(filePath),
+            encoding,
+            kind,
+            startOffset,
+            endOffset,
+            lineNumber,
+            rule);
+
+    public static string ReadRecordText(
+        LogContentSource source,
+        Encoding encoding,
+        LogEncodingKind kind,
+        long startOffset,
+        long endOffset,
+        long lineNumber,
         DisplayParserRule? rule)
     {
-        using (FileStream fs = LogFileUtilities.OpenSourceStream(filePath))
+        using (Stream fs = LogFileUtilities.OpenSourceStream(source))
         {
             FilteredLineUtilities.ValidateLineRange(fs, encoding, startOffset, endOffset);
         }
@@ -334,7 +350,7 @@ internal static class DisplayParserRecordEvaluator
         DisplayParserRecordSequence sequence = new(rule);
         foreach (DisplayParserRecord record in sequence.Enumerate(
             SearchRealLineScanner.Enumerate(
-                filePath,
+                source,
                 encoding,
                 kind,
                 startOffset,

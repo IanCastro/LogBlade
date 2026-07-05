@@ -7,7 +7,7 @@ using System.Threading;
 
 public sealed class LogRecordSource : ILogRecordSource
 {
-    private readonly string _filePath;
+    private readonly LogContentSource _contentSource;
     private readonly LogEncodingKind _kind;
     private readonly Encoding _encoding;
     private readonly long _dataOffset;
@@ -22,14 +22,14 @@ public sealed class LogRecordSource : ILogRecordSource
     private bool _viewportLoaded;
 
     private LogRecordSource(
-        string filePath,
+        LogContentSource contentSource,
         LogEncodingKind kind,
         Encoding encoding,
         long dataOffset,
         long fileSize,
         DisplayParserRule? displayParserRule)
     {
-        _filePath = filePath;
+        _contentSource = contentSource;
         _kind = kind;
         _encoding = encoding;
         _dataOffset = dataOffset;
@@ -40,17 +40,22 @@ public sealed class LogRecordSource : ILogRecordSource
     }
 
     public LogRecordSource(string filePath, Encoding encoding, long dataOffset, DisplayParserRule? displayParserRule = null)
+        : this(LogContentSource.FromFile(filePath), encoding, dataOffset, displayParserRule)
+    {
+    }
+
+    public LogRecordSource(LogContentSource contentSource, Encoding encoding, long dataOffset, DisplayParserRule? displayParserRule = null)
         : this(
-            Path.GetFullPath(filePath),
+            contentSource,
             LogFileUtilities.InferKind(encoding, dataOffset),
             encoding,
             dataOffset,
-            new FileInfo(Path.GetFullPath(filePath)).Length,
+            contentSource.Length,
             displayParserRule)
     {
     }
 
-    public string FilePath => _filePath;
+    public string FilePath => _contentSource.FilePath ?? _contentSource.DisplayName;
     public string EncodingName => LogFileUtilities.DescribeEncoding(_kind);
     public long DataOffset => _dataOffset;
     public long FileSize => _observedZeroFileSize ? 0 : _fileSize;
@@ -98,6 +103,7 @@ public sealed class LogRecordSource : ILogRecordSource
 
     internal LogEncodingKind Kind => _kind;
     internal Encoding SourceEncoding => _encoding;
+    internal LogContentSource ContentSource => _contentSource;
     public bool HasExactDisplaySourceMapping => _displayParserRule is null;
 
     public bool TryGetSourceOffsetForDisplayCharacter(
@@ -251,7 +257,7 @@ public sealed class LogRecordSource : ILogRecordSource
 
         long bounded = Math.Clamp(offset, _dataOffset, _fileSize);
         long startOffset = LogFileUtilities.FindLineStartContaining(
-            _filePath,
+            _contentSource,
             _kind,
             _dataOffset,
             _fileSize,
@@ -319,7 +325,7 @@ public sealed class LogRecordSource : ILogRecordSource
         wasAtEndBeforeRefresh = IsAtConfirmedEnd;
         try
         {
-            currentSize = new FileInfo(_filePath).Length;
+            currentSize = _contentSource.Length;
         }
         catch (IOException)
         {
@@ -382,7 +388,7 @@ public sealed class LogRecordSource : ILogRecordSource
     public LogRecordSource CloneForWorker()
     {
         var clone = new LogRecordSource(
-            _filePath,
+            _contentSource,
             _kind,
             _encoding,
             _dataOffset,
@@ -478,7 +484,7 @@ public sealed class LogRecordSource : ILogRecordSource
         DisplayParserRecordSequence sequence = new(_displayParserRule);
         foreach (DisplayParserRecord record in sequence.Enumerate(
             SearchRealLineScanner.Enumerate(
-                _filePath,
+                _contentSource,
                 _encoding,
                 _kind,
                 startOffset,
@@ -507,7 +513,7 @@ public sealed class LogRecordSource : ILogRecordSource
             while (physicalLines < targetPhysicalLines && scanStart > _dataOffset)
             {
                 long previous = LogFileUtilities.FindPreviousLineStart(
-                    _filePath,
+                    _contentSource,
                     _kind,
                     _dataOffset,
                     scanStart);
@@ -557,7 +563,7 @@ public sealed class LogRecordSource : ILogRecordSource
         char[] chars = ArrayPool<char>.Shared.Rent(_encoding.GetMaxCharCount(BufferSize));
         try
         {
-            using FileStream fs = LogFileUtilities.OpenSourceStream(_filePath);
+            using Stream fs = LogFileUtilities.OpenSourceStream(_contentSource);
             fs.Position = startOffset;
             Decoder decoder = _encoding.GetDecoder();
             long characterCount = 0;

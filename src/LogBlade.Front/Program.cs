@@ -4,6 +4,7 @@ using System.IO;
 internal static class Program
 {
     internal const string AppTitle = "LogBlade";
+    internal const string PastedStdinArgument = "--pasted-stdin";
 
     private static int Main(string[] args)
     {
@@ -17,11 +18,12 @@ internal static class Program
             return 1;
         }
 
-        string path = Path.GetFullPath(args[0]);
-
         try
         {
-            var viewer = new ViewerWindow(path);
+            LogContentSource contentSource = string.Equals(args[0], PastedStdinArgument, StringComparison.Ordinal)
+                ? ReadPastedContent()
+                : LogContentSource.FromFile(args[0]);
+            var viewer = new ViewerWindow(contentSource);
             viewer.Run();
             return 0;
         }
@@ -39,6 +41,14 @@ internal static class Program
         {
             AppLog.Instance.Flush();
         }
+    }
+
+    private static LogContentSource ReadPastedContent()
+    {
+        using Stream input = Console.OpenStandardInput();
+        using var content = new MemoryStream();
+        input.CopyTo(content);
+        return LogContentSource.FromMemory("Pasted text", content.ToArray());
     }
 
     private static void OnUnhandledException(object sender, UnhandledExceptionEventArgs e)

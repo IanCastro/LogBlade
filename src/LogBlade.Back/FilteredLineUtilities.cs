@@ -25,7 +25,7 @@ internal readonly record struct ExplicitRowData(int Index, string Text);
 
 internal static class FilteredLineUtilities
 {
-    public static bool TryReadNextRealLine(FileStream fs, LogEncodingKind kind, Encoding encoding, long fileSize, out RealLineData line)
+    public static bool TryReadNextRealLine(Stream fs, LogEncodingKind kind, Encoding encoding, long fileSize, out RealLineData line)
     {
         if (fs.Position >= fileSize)
         {
@@ -50,11 +50,11 @@ internal static class FilteredLineUtilities
 
     public static string ReadLineText(string filePath, Encoding encoding, long startOffset, long endOffset)
     {
-        using FileStream fs = LogFileUtilities.OpenSourceStream(filePath);
+        using Stream fs = LogFileUtilities.OpenSourceStream(filePath);
         return ReadLineText(fs, encoding, startOffset, endOffset);
     }
 
-    public static string ReadLineText(FileStream fs, Encoding encoding, long startOffset, long endOffset)
+    public static string ReadLineText(Stream fs, Encoding encoding, long startOffset, long endOffset)
     {
         if (endOffset < startOffset)
         {
@@ -154,7 +154,7 @@ internal static class FilteredLineUtilities
         return false;
     }
 
-    private static byte[] ReadRange(FileStream fs, long startOffset, long endOffset)
+    private static byte[] ReadRange(Stream fs, long startOffset, long endOffset)
     {
         long bytesToRead = Math.Max(0, endOffset - startOffset);
         byte[] buffer = new byte[bytesToRead];
@@ -180,7 +180,7 @@ internal static class FilteredLineUtilities
         return buffer;
     }
 
-    public static void ValidateLineRange(FileStream fs, Encoding encoding, long startOffset, long endOffset)
+    public static void ValidateLineRange(Stream fs, Encoding encoding, long startOffset, long endOffset)
     {
         long fileSize = fs.Length;
         if (startOffset < 0 || endOffset < startOffset || endOffset > fileSize)
@@ -206,7 +206,7 @@ internal static class FilteredLineUtilities
         }
     }
 
-    private static bool IsLineStart(FileStream fs, Encoding encoding, long startOffset, int unitSize)
+    private static bool IsLineStart(Stream fs, Encoding encoding, long startOffset, int unitSize)
     {
         if (startOffset == 0 || IsEncodingDataOffset(fs, encoding, startOffset))
         {
@@ -221,7 +221,7 @@ internal static class FilteredLineUtilities
         return IsLineBreakAt(fs, encoding, startOffset - unitSize);
     }
 
-    private static bool IsLineEnd(FileStream fs, Encoding encoding, long endOffset, long fileSize, int unitSize)
+    private static bool IsLineEnd(Stream fs, Encoding encoding, long endOffset, long fileSize, int unitSize)
     {
         if (endOffset == fileSize)
         {
@@ -236,7 +236,7 @@ internal static class FilteredLineUtilities
         return IsLineBreakAt(fs, encoding, endOffset);
     }
 
-    private static bool IsLineBreakAt(FileStream fs, Encoding encoding, long offset)
+    private static bool IsLineBreakAt(Stream fs, Encoding encoding, long offset)
     {
         if (IsUtf16Encoding(encoding))
         {
@@ -274,7 +274,7 @@ internal static class FilteredLineUtilities
         return value is 0x0D or 0x0A;
     }
 
-    private static bool IsEncodingDataOffset(FileStream fs, Encoding encoding, long startOffset)
+    private static bool IsEncodingDataOffset(Stream fs, Encoding encoding, long startOffset)
     {
         if (startOffset == 3 && string.Equals(encoding.WebName, Encoding.UTF8.WebName, StringComparison.OrdinalIgnoreCase))
         {
@@ -294,7 +294,7 @@ internal static class FilteredLineUtilities
         return false;
     }
 
-    private static bool HasBom(FileStream fs, ReadOnlySpan<byte> bom)
+    private static bool HasBom(Stream fs, ReadOnlySpan<byte> bom)
     {
         if (fs.Length < bom.Length)
         {
@@ -318,7 +318,7 @@ internal static class FilteredLineUtilities
         return !string.Equals(encoding.WebName, Encoding.BigEndianUnicode.WebName, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool TryReadSingleByteRealLine(FileStream fs, Encoding encoding, long fileSize, long startOffset, out RealLineData line)
+    private static bool TryReadSingleByteRealLine(Stream fs, Encoding encoding, long fileSize, long startOffset, out RealLineData line)
     {
         List<byte> bytes = new(256);
         while (fs.Position < fileSize)
@@ -349,7 +349,7 @@ internal static class FilteredLineUtilities
         return true;
     }
 
-    private static bool TryReadUtf16RealLine(FileStream fs, bool littleEndian, long fileSize, long startOffset, out RealLineData line)
+    private static bool TryReadUtf16RealLine(Stream fs, bool littleEndian, long fileSize, long startOffset, out RealLineData line)
     {
         List<ushort> units = new(256);
         Span<byte> bytes = stackalloc byte[2];
@@ -395,7 +395,7 @@ internal static class FilteredLineUtilities
         return new string(chars);
     }
 
-    private static void TryConsumeSingleByteLf(FileStream fs, long fileSize)
+    private static void TryConsumeSingleByteLf(Stream fs, long fileSize)
     {
         if (fs.Position >= fileSize)
         {
@@ -409,7 +409,7 @@ internal static class FilteredLineUtilities
         }
     }
 
-    private static void TryConsumeUtf16Lf(FileStream fs, long fileSize, bool littleEndian)
+    private static void TryConsumeUtf16Lf(Stream fs, long fileSize, bool littleEndian)
     {
         if (fs.Position + 1 >= fileSize)
         {

@@ -10,15 +10,24 @@ internal static class SearchRealLineScanner
     private const int BlockBytes = 1024 * 1024;
 
     public static IEnumerable<RealLineData> Enumerate(string filePath, Encoding encoding, LogEncodingKind kind, long dataOffset, long fileSize)
-        => Enumerate(filePath, encoding, kind, dataOffset, fileSize, CancellationToken.None);
+        => Enumerate(LogContentSource.FromFile(filePath), encoding, kind, dataOffset, fileSize, CancellationToken.None);
 
     public static IEnumerable<RealLineData> Enumerate(string filePath, Encoding encoding, LogEncodingKind kind, long dataOffset, long fileSize, CancellationToken cancellationToken)
-        => Enumerate(filePath, encoding, kind, dataOffset, fileSize, cancellationToken, firstLineNumber: 1);
+        => Enumerate(LogContentSource.FromFile(filePath), encoding, kind, dataOffset, fileSize, cancellationToken, firstLineNumber: 1);
 
     public static IEnumerable<RealLineData> Enumerate(string filePath, Encoding encoding, LogEncodingKind kind, long dataOffset, long fileSize, CancellationToken cancellationToken, long firstLineNumber)
+        => Enumerate(LogContentSource.FromFile(filePath), encoding, kind, dataOffset, fileSize, cancellationToken, firstLineNumber);
+
+    public static IEnumerable<RealLineData> Enumerate(LogContentSource source, Encoding encoding, LogEncodingKind kind, long dataOffset, long fileSize)
+        => Enumerate(source, encoding, kind, dataOffset, fileSize, CancellationToken.None);
+
+    public static IEnumerable<RealLineData> Enumerate(LogContentSource source, Encoding encoding, LogEncodingKind kind, long dataOffset, long fileSize, CancellationToken cancellationToken)
+        => Enumerate(source, encoding, kind, dataOffset, fileSize, cancellationToken, firstLineNumber: 1);
+
+    public static IEnumerable<RealLineData> Enumerate(LogContentSource source, Encoding encoding, LogEncodingKind kind, long dataOffset, long fileSize, CancellationToken cancellationToken, long firstLineNumber)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        using FileStream fs = LogFileUtilities.OpenSourceStream(filePath);
+        using Stream fs = LogFileUtilities.OpenSourceStream(source);
         fs.Position = dataOffset;
         IEnumerable<RealLineData> lines = kind switch
         {
@@ -35,7 +44,7 @@ internal static class SearchRealLineScanner
         }
     }
 
-    private static IEnumerable<RealLineData> EnumerateSingleByte(FileStream fs, Encoding encoding, long dataOffset, long fileSize, CancellationToken cancellationToken, long firstLineNumber)
+    private static IEnumerable<RealLineData> EnumerateSingleByte(Stream fs, Encoding encoding, long dataOffset, long fileSize, CancellationToken cancellationToken, long firstLineNumber)
     {
         byte[] buffer = new byte[BlockBytes];
         ArrayBufferWriter<byte>? pendingLine = null;
@@ -122,7 +131,7 @@ internal static class SearchRealLineScanner
         }
     }
 
-    private static IEnumerable<RealLineData> EnumerateUtf16(FileStream fs, Encoding encoding, long dataOffset, long fileSize, bool littleEndian, CancellationToken cancellationToken, long firstLineNumber)
+    private static IEnumerable<RealLineData> EnumerateUtf16(Stream fs, Encoding encoding, long dataOffset, long fileSize, bool littleEndian, CancellationToken cancellationToken, long firstLineNumber)
     {
         byte[] buffer = new byte[BlockBytes + 1];
         ArrayBufferWriter<byte>? pendingLine = null;

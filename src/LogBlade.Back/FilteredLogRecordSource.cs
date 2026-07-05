@@ -5,7 +5,7 @@ using System.Text;
 
 public sealed class FilteredLogRecordSource : ILogRecordSource
 {
-    private string _filePath;
+    private readonly LogContentSource _contentSource;
     private LogEncodingKind _kind;
     private Encoding _encoding;
     private long _dataOffset;
@@ -27,7 +27,7 @@ public sealed class FilteredLogRecordSource : ILogRecordSource
     private bool _disposed;
 
     internal FilteredLogRecordSource(
-        string filePath,
+        LogContentSource contentSource,
         LogEncodingKind kind,
         Encoding encoding,
         long dataOffset,
@@ -38,7 +38,7 @@ public sealed class FilteredLogRecordSource : ILogRecordSource
         long parserRescanOffset = -1,
         long parserRescanLineNumber = 0)
     {
-        _filePath = filePath;
+        _contentSource = contentSource;
         _kind = kind;
         _encoding = encoding;
         _dataOffset = dataOffset;
@@ -75,7 +75,7 @@ public sealed class FilteredLogRecordSource : ILogRecordSource
         }
     }
 
-    public string FilePath => _filePath;
+    public string FilePath => _contentSource.FilePath ?? _contentSource.DisplayName;
     public string EncodingName => LogFileUtilities.DescribeEncoding(_kind);
     public long DataOffset => _dataOffset;
     public long FileSize => _observedZeroFileSize ? 0 : _fileSize;
@@ -158,6 +158,7 @@ public sealed class FilteredLogRecordSource : ILogRecordSource
 
     internal LogEncodingKind Kind => _kind;
     internal Encoding SourceEncoding => _encoding;
+    internal LogContentSource ContentSource => _contentSource;
     internal long TotalLineCount => _totalLineCount;
     internal long ParserRescanOffset => _parserRescanOffset;
     internal long ParserRescanLineNumber => _parserRescanLineNumber;
@@ -252,7 +253,7 @@ public sealed class FilteredLogRecordSource : ILogRecordSource
         bool wasAtEnd = IsAtConfirmedEnd;
         try
         {
-            long currentSize = new FileInfo(_filePath).Length;
+            long currentSize = _contentSource.Length;
             if (currentSize == 0 && _fileSize > _dataOffset)
             {
                 MarkObservedZeroFileSize();
@@ -298,7 +299,7 @@ public sealed class FilteredLogRecordSource : ILogRecordSource
         }
 
         FilteredLineDescriptor descriptor = _descriptors[(int)ordinal];
-        using FileStream fs = LogFileUtilities.OpenSourceStream(_filePath);
+        using Stream fs = LogFileUtilities.OpenSourceStream(_contentSource);
         FilteredLineUtilities.ValidateLineRange(fs, _encoding, descriptor.StartOffset, descriptor.EndOffset);
         startOffset = descriptor.StartOffset;
         return true;
@@ -368,7 +369,7 @@ public sealed class FilteredLogRecordSource : ILogRecordSource
     {
         ThrowIfDisposed();
         var clone = new FilteredLogRecordSource(
-            _filePath,
+            _contentSource,
             _kind,
             _encoding,
             _dataOffset,
@@ -422,7 +423,6 @@ public sealed class FilteredLogRecordSource : ILogRecordSource
         _descriptors = Array.Empty<FilteredLineDescriptor>();
         _columnHeaders = Array.Empty<string>();
         _captureGroupHeaders = Array.Empty<string>();
-        _filePath = string.Empty;
         _encoding = Encoding.UTF8;
         _disposed = true;
     }
@@ -512,7 +512,7 @@ public sealed class FilteredLogRecordSource : ILogRecordSource
 
     private string ReadDescriptorText(FilteredLineDescriptor descriptor) =>
         DisplayParserRecordEvaluator.ReadRecordText(
-            _filePath,
+            _contentSource,
             _encoding,
             _kind,
             descriptor.StartOffset,

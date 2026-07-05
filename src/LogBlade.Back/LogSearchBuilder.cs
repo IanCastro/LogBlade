@@ -49,9 +49,14 @@ public static class LogSearchBuilder
         => BuildFilteredReader(filePath, encoding, dataOffset, new[] { options }, displayParserRule);
 
     public static FilteredLogRecordSource BuildFilteredReader(string filePath, Encoding encoding, long dataOffset, IReadOnlyList<SearchOptions> options, DisplayParserRule? displayParserRule = null)
+        => BuildFilteredReader(LogContentSource.FromFile(filePath), encoding, dataOffset, options, displayParserRule);
+
+    public static FilteredLogRecordSource BuildFilteredReader(LogContentSource contentSource, Encoding encoding, long dataOffset, SearchOptions options, DisplayParserRule? displayParserRule = null)
+        => BuildFilteredReader(contentSource, encoding, dataOffset, new[] { options }, displayParserRule);
+
+    public static FilteredLogRecordSource BuildFilteredReader(LogContentSource contentSource, Encoding encoding, long dataOffset, IReadOnlyList<SearchOptions> options, DisplayParserRule? displayParserRule = null)
     {
-        string fullPath = Path.GetFullPath(filePath);
-        long fileSize = new FileInfo(fullPath).Length;
+        long fileSize = contentSource.Length;
         LogEncodingKind kind = LogFileUtilities.InferKind(encoding, dataOffset);
         List<FilteredLineDescriptor> descriptors = new();
         SearchMatcherCascade matcher = SearchMatcherCascade.Create(options);
@@ -60,7 +65,7 @@ public static class LogSearchBuilder
 
         DisplayParserRecordSequence recordSequence = new(parserRule);
         foreach (DisplayParserRecord record in recordSequence.Enumerate(
-            SearchRealLineScanner.Enumerate(fullPath, encoding, kind, dataOffset, fileSize)))
+            SearchRealLineScanner.Enumerate(contentSource, encoding, kind, dataOffset, fileSize)))
         {
             totalLineCount = record.LastLineNumber;
             AddDescriptorIfIncluded(descriptors, record, matcher);
@@ -68,7 +73,7 @@ public static class LogSearchBuilder
         totalLineCount = Math.Max(totalLineCount, recordSequence.LastLineNumberSeen);
 
         return new FilteredLogRecordSource(
-            fullPath,
+            contentSource,
             kind,
             encoding,
             dataOffset,
@@ -81,9 +86,11 @@ public static class LogSearchBuilder
     }
 
     public static FilteredLogRecordSource[] BuildStagedFilteredReaders(string filePath, Encoding encoding, long dataOffset, IReadOnlyList<SearchOptions> options, DisplayParserRule? displayParserRule = null)
+        => BuildStagedFilteredReaders(LogContentSource.FromFile(filePath), encoding, dataOffset, options, displayParserRule);
+
+    public static FilteredLogRecordSource[] BuildStagedFilteredReaders(LogContentSource contentSource, Encoding encoding, long dataOffset, IReadOnlyList<SearchOptions> options, DisplayParserRule? displayParserRule = null)
     {
-        string fullPath = Path.GetFullPath(filePath);
-        long fileSize = new FileInfo(fullPath).Length;
+        long fileSize = contentSource.Length;
         LogEncodingKind kind = LogFileUtilities.InferKind(encoding, dataOffset);
         List<FilteredLineDescriptor>[] descriptors = CreateDescriptorLists(options.Count);
         SearchMatcherCascade matcher = SearchMatcherCascade.Create(options);
@@ -92,7 +99,7 @@ public static class LogSearchBuilder
 
         DisplayParserRecordSequence recordSequence = new(parserRule);
         foreach (DisplayParserRecord record in recordSequence.Enumerate(
-            SearchRealLineScanner.Enumerate(fullPath, encoding, kind, dataOffset, fileSize)))
+            SearchRealLineScanner.Enumerate(contentSource, encoding, kind, dataOffset, fileSize)))
         {
             totalLineCount = record.LastLineNumber;
             AddDescriptorsByStage(descriptors, record, matcher);
@@ -100,7 +107,7 @@ public static class LogSearchBuilder
         totalLineCount = Math.Max(totalLineCount, recordSequence.LastLineNumberSeen);
 
         return BuildReaders(
-            fullPath,
+            contentSource,
             kind,
             encoding,
             dataOffset,
@@ -129,10 +136,12 @@ public static class LogSearchBuilder
         => BuildFilteredReaderIncremental(filePath, encoding, dataOffset, options, preloadedVisibleLines, onProgress, CancellationToken.None, displayParserRule);
 
     public static void BuildFilteredReaderIncremental(string filePath, Encoding encoding, long dataOffset, IReadOnlyList<SearchOptions> options, int preloadedVisibleLines, Action<SearchProgressUpdate> onProgress, CancellationToken cancellationToken, DisplayParserRule? displayParserRule = null)
+        => BuildFilteredReaderIncremental(LogContentSource.FromFile(filePath), encoding, dataOffset, options, preloadedVisibleLines, onProgress, cancellationToken, displayParserRule);
+
+    public static void BuildFilteredReaderIncremental(LogContentSource contentSource, Encoding encoding, long dataOffset, IReadOnlyList<SearchOptions> options, int preloadedVisibleLines, Action<SearchProgressUpdate> onProgress, CancellationToken cancellationToken, DisplayParserRule? displayParserRule = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        string fullPath = Path.GetFullPath(filePath);
-        long fileSize = new FileInfo(fullPath).Length;
+        long fileSize = contentSource.Length;
         LogEncodingKind kind = LogFileUtilities.InferKind(encoding, dataOffset);
         List<FilteredLineDescriptor> descriptors = new();
         long lastPublishedTick = Environment.TickCount64;
@@ -146,7 +155,7 @@ public static class LogSearchBuilder
         long totalLineCount = 0;
         DisplayParserRecordSequence recordSequence = new(parserRule);
         foreach (DisplayParserRecord record in recordSequence.Enumerate(
-            SearchRealLineScanner.Enumerate(fullPath, encoding, kind, dataOffset, fileSize, cancellationToken),
+            SearchRealLineScanner.Enumerate(contentSource, encoding, kind, dataOffset, fileSize, cancellationToken),
             cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -182,7 +191,7 @@ public static class LogSearchBuilder
             if (shouldBuildReader && (descriptors.Count > 0 || isFinal))
             {
                 reader = new FilteredLogRecordSource(
-                    fullPath,
+                    contentSource,
                     kind,
                     encoding,
                     dataOffset,
@@ -212,9 +221,27 @@ public static class LogSearchBuilder
         Action<StagedSearchProgressUpdate> onProgress,
         CancellationToken cancellationToken,
         DisplayParserRule? displayParserRule = null)
+        => BuildStagedFilteredReadersIncremental(
+            LogContentSource.FromFile(filePath),
+            encoding,
+            dataOffset,
+            options,
+            preloadedVisibleLines,
+            onProgress,
+            cancellationToken,
+            displayParserRule);
+
+    public static void BuildStagedFilteredReadersIncremental(
+        LogContentSource contentSource,
+        Encoding encoding,
+        long dataOffset,
+        IReadOnlyList<SearchOptions> options,
+        IReadOnlyList<int> preloadedVisibleLines,
+        Action<StagedSearchProgressUpdate> onProgress,
+        CancellationToken cancellationToken,
+        DisplayParserRule? displayParserRule = null)
     {
-        string fullPath = Path.GetFullPath(filePath);
-        long fileSize = new FileInfo(fullPath).Length;
+        long fileSize = contentSource.Length;
         LogEncodingKind kind = LogFileUtilities.InferKind(encoding, dataOffset);
         List<FilteredLineDescriptor>[] descriptors = CreateDescriptorLists(options.Count);
         long lastPublishedTick = Environment.TickCount64;
@@ -231,7 +258,7 @@ public static class LogSearchBuilder
         {
             cancellationToken.ThrowIfCancellationRequested();
             foreach (DisplayParserRecord record in recordSequence.Enumerate(
-                SearchRealLineScanner.Enumerate(fullPath, encoding, kind, dataOffset, fileSize, cancellationToken),
+                SearchRealLineScanner.Enumerate(contentSource, encoding, kind, dataOffset, fileSize, cancellationToken),
                 cancellationToken))
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -282,7 +309,7 @@ public static class LogSearchBuilder
                 if (shouldBuildReader && (descriptors[i].Count > 0 || isFinal))
                 {
                     readers[i] = new FilteredLogRecordSource(
-                        fullPath,
+                        contentSource,
                         kind,
                         encoding,
                         dataOffset,
@@ -303,7 +330,7 @@ public static class LogSearchBuilder
                 else if (isPaused)
                 {
                     readers[i] = new FilteredLogRecordSource(
-                        fullPath,
+                        contentSource,
                         kind,
                         encoding,
                         dataOffset,
@@ -372,7 +399,7 @@ public static class LogSearchBuilder
         }
 
         FilteredLogRecordSource sourceReader = previousReaders[changedStageIndex - 1];
-        string fullPath = sourceReader.FilePath;
+        LogContentSource contentSource = sourceReader.ContentSource;
         LogEncodingKind kind = sourceReader.Kind;
         Encoding encoding = sourceReader.SourceEncoding;
         long dataOffset = sourceReader.DataOffset;
@@ -409,7 +436,7 @@ public static class LogSearchBuilder
                 else
                 {
                     recordText = DisplayParserRecordEvaluator.ReadRecordText(
-                        fullPath,
+                        contentSource,
                         encoding,
                         kind,
                         sourceDescriptor.StartOffset,
@@ -470,7 +497,7 @@ public static class LogSearchBuilder
                 if (shouldBuildReader)
                 {
                     readers[i] = new FilteredLogRecordSource(
-                        fullPath,
+                        contentSource,
                         kind,
                         encoding,
                         dataOffset,
@@ -528,13 +555,13 @@ public static class LogSearchBuilder
         DisplayParserRule? displayParserRule = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        string fullPath = previousReader.FilePath;
+        LogContentSource contentSource = previousReader.ContentSource;
         long oldFileSize = previousReader.ConfirmedFileSize;
         DisplayParserRule? parserRule = DisplayParserEvaluator.CloneRule(displayParserRule);
         if (newFileSize <= oldFileSize)
         {
             FilteredLogRecordSource unchanged = new(
-                fullPath,
+                contentSource,
                 previousReader.Kind,
                 previousReader.SourceEncoding,
                 previousReader.DataOffset,
@@ -552,7 +579,7 @@ public static class LogSearchBuilder
         LogEncodingKind kind = previousReader.Kind;
         Encoding encoding = previousReader.SourceEncoding;
         long dataOffset = previousReader.DataOffset;
-        long rescanStartOffset = GetAppendRescanStart(fullPath, kind, dataOffset, oldFileSize);
+        long rescanStartOffset = GetAppendRescanStart(contentSource, kind, dataOffset, oldFileSize);
         long firstLineNumber;
         if (previousReader.ParserRescanOffset >= dataOffset &&
             previousReader.ParserRescanOffset < rescanStartOffset)
@@ -577,7 +604,7 @@ public static class LogSearchBuilder
 
         DisplayParserRecordSequence recordSequence = new(parserRule);
         foreach (DisplayParserRecord record in recordSequence.Enumerate(
-            SearchRealLineScanner.Enumerate(fullPath, encoding, kind, rescanStartOffset, newFileSize, cancellationToken, firstLineNumber),
+            SearchRealLineScanner.Enumerate(contentSource, encoding, kind, rescanStartOffset, newFileSize, cancellationToken, firstLineNumber),
             cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -611,7 +638,7 @@ public static class LogSearchBuilder
             if (shouldBuildReader)
             {
                 reader = new FilteredLogRecordSource(
-                    fullPath,
+                    contentSource,
                     kind,
                     encoding,
                     dataOffset,
@@ -661,7 +688,7 @@ public static class LogSearchBuilder
         }
 
         FilteredLogRecordSource firstReader = previousReaders[0];
-        string fullPath = firstReader.FilePath;
+        LogContentSource contentSource = firstReader.ContentSource;
         long oldFileSize = firstReader.ConfirmedFileSize;
         LogEncodingKind kind = firstReader.Kind;
         Encoding encoding = firstReader.SourceEncoding;
@@ -673,7 +700,7 @@ public static class LogSearchBuilder
             for (int i = 0; i < previousReaders.Count; i++)
             {
                 unchangedReaders[i] = new FilteredLogRecordSource(
-                    fullPath,
+                    contentSource,
                     kind,
                     encoding,
                     dataOffset,
@@ -699,7 +726,7 @@ public static class LogSearchBuilder
             return;
         }
 
-        long rescanStartOffset = GetAppendRescanStart(fullPath, kind, dataOffset, oldFileSize);
+        long rescanStartOffset = GetAppendRescanStart(contentSource, kind, dataOffset, oldFileSize);
         long firstLineNumber;
         if (firstReader.ParserRescanOffset >= dataOffset &&
             firstReader.ParserRescanOffset < rescanStartOffset)
@@ -737,7 +764,7 @@ public static class LogSearchBuilder
         {
             cancellationToken.ThrowIfCancellationRequested();
             foreach (DisplayParserRecord record in recordSequence.Enumerate(
-                SearchRealLineScanner.Enumerate(fullPath, encoding, kind, rescanStartOffset, newFileSize, cancellationToken, firstLineNumber),
+                SearchRealLineScanner.Enumerate(contentSource, encoding, kind, rescanStartOffset, newFileSize, cancellationToken, firstLineNumber),
                 cancellationToken))
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -785,7 +812,7 @@ public static class LogSearchBuilder
                 if (shouldBuildReader)
                 {
                     readers[i] = new FilteredLogRecordSource(
-                        fullPath,
+                        contentSource,
                         kind,
                         encoding,
                         dataOffset,
@@ -854,16 +881,16 @@ public static class LogSearchBuilder
         }
 
         FilteredLogRecordSource firstReader = pausedReaders[0];
-        string fullPath = firstReader.FilePath;
+        LogContentSource contentSource = firstReader.ContentSource;
         LogEncodingKind kind = firstReader.Kind;
         Encoding encoding = firstReader.SourceEncoding;
         long dataOffset = firstReader.DataOffset;
         long boundedProcessedOffset = Math.Clamp(processedOffset, dataOffset, newFileSize);
-        long normalizedProcessedOffset = NormalizeResumeStartOffset(fullPath, kind, dataOffset, boundedProcessedOffset, newFileSize);
-        bool processedCompleteLine = EndsWithLineBreakAt(fullPath, kind, dataOffset, normalizedProcessedOffset);
+        long normalizedProcessedOffset = NormalizeResumeStartOffset(contentSource, kind, dataOffset, boundedProcessedOffset, newFileSize);
+        bool processedCompleteLine = EndsWithLineBreakAt(contentSource, kind, dataOffset, normalizedProcessedOffset);
         long resumeStartOffset = processedCompleteLine
             ? normalizedProcessedOffset
-            : GetAppendRescanStart(fullPath, kind, dataOffset, normalizedProcessedOffset);
+            : GetAppendRescanStart(contentSource, kind, dataOffset, normalizedProcessedOffset);
         long firstLineNumber;
         if (firstReader.ParserRescanOffset >= dataOffset &&
             firstReader.ParserRescanOffset < resumeStartOffset)
@@ -901,7 +928,7 @@ public static class LogSearchBuilder
         {
             cancellationToken.ThrowIfCancellationRequested();
             foreach (DisplayParserRecord record in recordSequence.Enumerate(
-                SearchRealLineScanner.Enumerate(fullPath, encoding, kind, resumeStartOffset, newFileSize, cancellationToken, firstLineNumber),
+                SearchRealLineScanner.Enumerate(contentSource, encoding, kind, resumeStartOffset, newFileSize, cancellationToken, firstLineNumber),
                 cancellationToken))
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -949,7 +976,7 @@ public static class LogSearchBuilder
                 if (shouldBuildReader)
                 {
                     readers[i] = new FilteredLogRecordSource(
-                        fullPath,
+                        contentSource,
                         kind,
                         encoding,
                         dataOffset,
@@ -992,14 +1019,14 @@ public static class LogSearchBuilder
         return Math.Clamp(((processedOffset - dataOffset) * 100d) / Math.Max(1, targetFileSize - dataOffset), 0d, 100d);
     }
 
-    private static long NormalizeResumeStartOffset(string filePath, LogEncodingKind kind, long dataOffset, long processedOffset, long fileSize)
+    private static long NormalizeResumeStartOffset(LogContentSource contentSource, LogEncodingKind kind, long dataOffset, long processedOffset, long fileSize)
     {
         if (processedOffset <= dataOffset || processedOffset >= fileSize)
         {
             return processedOffset;
         }
 
-        using FileStream fs = LogFileUtilities.OpenSourceStream(filePath);
+        using Stream fs = LogFileUtilities.OpenSourceStream(contentSource);
         if (kind is LogEncodingKind.Utf16Le or LogEncodingKind.Utf16Be)
         {
             if (processedOffset - dataOffset < 2 || processedOffset + 2 > fileSize)
@@ -1041,20 +1068,20 @@ public static class LogSearchBuilder
             : processedOffset;
     }
 
-    private static bool EndsWithLineBreakAt(string filePath, LogEncodingKind kind, long dataOffset, long offset)
+    private static bool EndsWithLineBreakAt(LogContentSource contentSource, LogEncodingKind kind, long dataOffset, long offset)
     {
-        using FileStream fs = LogFileUtilities.OpenSourceStream(filePath);
+        using Stream fs = LogFileUtilities.OpenSourceStream(contentSource);
         return EndsWithLineBreak(fs, kind, dataOffset, offset);
     }
 
-    private static long GetAppendRescanStart(string filePath, LogEncodingKind kind, long dataOffset, long oldFileSize)
+    private static long GetAppendRescanStart(LogContentSource contentSource, LogEncodingKind kind, long dataOffset, long oldFileSize)
     {
         if (oldFileSize <= dataOffset)
         {
             return dataOffset;
         }
 
-        using FileStream fs = LogFileUtilities.OpenSourceStream(filePath);
+        using Stream fs = LogFileUtilities.OpenSourceStream(contentSource);
         if (EndsWithLineBreak(fs, kind, dataOffset, oldFileSize))
         {
             return oldFileSize;
@@ -1152,7 +1179,7 @@ public static class LogSearchBuilder
     }
 
     private static FilteredLogRecordSource[] BuildReaders(
-        string fullPath,
+        LogContentSource contentSource,
         LogEncodingKind kind,
         Encoding encoding,
         long dataOffset,
@@ -1168,7 +1195,7 @@ public static class LogSearchBuilder
         for (int i = 0; i < readers.Length; i++)
         {
             readers[i] = new FilteredLogRecordSource(
-                fullPath,
+                contentSource,
                 kind,
                 encoding,
                 dataOffset,
@@ -1278,7 +1305,7 @@ public static class LogSearchBuilder
         return 1;
     }
 
-    private static bool EndsWithLineBreak(FileStream fs, LogEncodingKind kind, long dataOffset, long oldFileSize)
+    private static bool EndsWithLineBreak(Stream fs, LogEncodingKind kind, long dataOffset, long oldFileSize)
     {
         if (oldFileSize <= dataOffset)
         {
@@ -1307,7 +1334,7 @@ public static class LogSearchBuilder
         return value is 0x0D or 0x0A;
     }
 
-    private static long FindPreviousSingleByteLineStart(FileStream fs, long dataOffset, long oldFileSize)
+    private static long FindPreviousSingleByteLineStart(Stream fs, long dataOffset, long oldFileSize)
     {
         byte[] buffer = new byte[BackwardScanBlockBytes];
         long cursor = oldFileSize;
@@ -1331,7 +1358,7 @@ public static class LogSearchBuilder
         return dataOffset;
     }
 
-    private static long FindPreviousUtf16LineStart(FileStream fs, long dataOffset, long oldFileSize, bool littleEndian)
+    private static long FindPreviousUtf16LineStart(Stream fs, long dataOffset, long oldFileSize, bool littleEndian)
     {
         byte[] buffer = new byte[BackwardScanBlockBytes];
         long cursor = oldFileSize - ((oldFileSize - dataOffset) % 2);

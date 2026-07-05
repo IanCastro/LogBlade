@@ -47,6 +47,7 @@ internal static class Program
             RunDisplayParserRegexReplaceNoMatchAllowsNextStage();
             RunDisplayParserRegexReplaceThenJsonTemplate();
             RunDisplayParserRegexReplaceInvalidRegexValidation();
+            RunMemoryContentSource();
             RunSearchUsesDisplayParserLiteral(tempRoot);
             RunSearchUsesDisplayParserRegexCaptures(tempRoot);
             RunAppendSearchUsesDisplayParser(tempRoot);
@@ -3028,6 +3029,126 @@ internal static class Program
             Rule = pattern,
             Template = replacement
         };
+    }
+
+    private static void RunMemoryContentSource()
+    {
+        const string text =
+            "{\"Level\":\"Info\",\"Message\":\"início\"}\r\n" +
+            "{\"Level\":\"Error\",\"Message\":\"alpha\"}\r\n" +
+            "{\"Level\":\"Error\",\"Message\":\"beta\"}\r\n";
+        LogContentSource content = LogContentSource.FromMemory("Pasted text", CreateUtf8BomContent(text));
+        AssertEqual("memory source is not file", content.IsFile, false);
+        AssertEqual("memory source has no path", content.FilePath, null);
+
+        using (Stream first = content.OpenRead())
+        using (Stream second = content.OpenRead())
+        {
+            first.Position = 5;
+            AssertEqual("memory streams have independent positions", second.Position, 0L);
+        }
+
+        DetectedEncodingInfo detected = LogEncodingDetector.DetectEncoding(content);
+        AssertEqual("memory source encoding", detected.Kind, LogEncodingKind.Utf8);
+        AssertEqual("memory source data offset", detected.DataOffset, 3L);
+
+        DisplayParserRule parser = new()
+        {
+            Name = "memory-json",
+            Stages = new List<DisplayParserStage>
+            {
+                new()
+                {
+                    Mode = DisplayParserMode.Json,
+                    Rule = "{upper:Level} {Message}"
+                }
+            }
+        };
+
+        using (var source = new LogRecordSource(content, detected.Encoding, detected.DataOffset, parser))
+        {
+            source.ReadFromPercentage(0d, 10);
+            AssertSequence("memory parsed records", source.CurrentDisplayTexts, "INFO início", "ERROR alpha", "ERROR beta");
+        }
+
+        FilteredLogRecordSource[] readers = LogSearchBuilder.BuildStagedFilteredReaders(
+            content,
+            detected.Encoding,
+            detected.DataOffset,
+            new[]
+            {
+                new SearchOptions("ERROR", UseRegex: false, IgnoreCase: false),
+                new SearchOptions("beta", UseRegex: false, IgnoreCase: false)
+            },
+            parser);
+        try
+        {
+            AssertEqual("memory first search count", readers[0].MatchedLineCount, 2L);
+            AssertEqual("memory cascaded search count", readers[1].MatchedLineCount, 1L);
+            readers[1].ReadFromPercentage(0d, 1);
+            AssertSequence("memory cascaded search text", readers[1].CurrentDisplayTexts, "ERROR beta");
+            AssertEqual("memory result offset is after BOM", readers[1].TopOffset > detected.DataOffset, true);
+        }
+        finally
+        {
+            foreach (FilteredLogRecordSource reader in readers)
+            {
+                reader.Dispose();
+            }
+        }
+
+        FilteredLogRecordSource?[]? incrementalReaders = null;
+        LogSearchBuilder.BuildStagedFilteredReadersIncremental(
+            content,
+            detected.Encoding,
+            detected.DataOffset,
+            new[]
+            {
+                new SearchOptions("ERROR", UseRegex: false, IgnoreCase: false),
+                new SearchOptions("beta", UseRegex: false, IgnoreCase: false)
+            },
+            new[] { 2, 2 },
+            update =>
+            {
+                if (update.IsFinal)
+                {
+                    incrementalReaders = update.Readers;
+                    return;
+                }
+
+                foreach (FilteredLogRecordSource? reader in update.Readers)
+                {
+                    reader?.Dispose();
+                }
+            },
+            CancellationToken.None,
+            parser);
+        AssertEqual("memory incremental readers published", incrementalReaders is not null, true);
+        try
+        {
+            AssertEqual("memory incremental first count", incrementalReaders![0]!.MatchedLineCount, 2L);
+            AssertEqual("memory incremental cascaded count", incrementalReaders[1]!.MatchedLineCount, 1L);
+        }
+        finally
+        {
+            if (incrementalReaders is not null)
+            {
+                foreach (FilteredLogRecordSource? reader in incrementalReaders)
+                {
+                    reader?.Dispose();
+                }
+            }
+        }
+    }
+
+    private static byte[] CreateUtf8BomContent(string text)
+    {
+        byte[] preamble = Encoding.UTF8.GetPreamble();
+        byte[] payload = Encoding.UTF8.GetBytes(text);
+        byte[] content = new byte[preamble.Length + payload.Length];
+        preamble.CopyTo(content, 0);
+        payload.CopyTo(content, preamble.Length);
+        return content;
     }
 
     private static string WriteLog(string tempRoot, string name, string content)

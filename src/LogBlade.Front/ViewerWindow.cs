@@ -63,7 +63,7 @@ internal sealed class ViewerWindow
     private const string SearchResizeGripClassName = "LogBladeSearchResizeGripWindow";
     private const string ConfigureParserText = "Configure";
 
-    private readonly string _path;
+    private readonly LogContentSource _contentSource;
     private IntPtr _hwnd;
     private IntPtr _font;
     private IntPtr _boldFont;
@@ -183,8 +183,13 @@ internal sealed class ViewerWindow
         NativeMethods.RECT SearchProgressRect);
 
     public ViewerWindow(string path)
+        : this(LogContentSource.FromFile(path))
     {
-        _path = path;
+    }
+
+    public ViewerWindow(LogContentSource contentSource)
+    {
+        _contentSource = contentSource;
     }
 
     public void Run()
@@ -274,8 +279,13 @@ internal sealed class ViewerWindow
 
     private string ComposeWindowTitle()
     {
-        string fileName = Path.GetFileName(_path);
-        string directory = Path.GetDirectoryName(_path) ?? string.Empty;
+        if (_contentSource.FilePath is not string path)
+        {
+            return Program.AppTitle + " - " + _contentSource.DisplayName;
+        }
+
+        string fileName = Path.GetFileName(path);
+        string directory = Path.GetDirectoryName(path) ?? string.Empty;
         return fileName + " - " + Program.AppTitle + " - " + directory;
     }
 
@@ -764,9 +774,9 @@ internal sealed class ViewerWindow
             return;
         }
 
+        Process? process = null;
         try
         {
-            string path = WritePastedTextFile(text);
             string? executable = Environment.ProcessPath;
             if (string.IsNullOrEmpty(executable))
             {
@@ -776,29 +786,43 @@ internal sealed class ViewerWindow
             ProcessStartInfo startInfo = new()
             {
                 FileName = executable,
-                UseShellExecute = false
+                UseShellExecute = false,
+                RedirectStandardInput = true,
+                StandardInputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+                CreateNoWindow = true
             };
-            startInfo.ArgumentList.Add(path);
-            Process? process = Process.Start(startInfo);
+            startInfo.ArgumentList.Add(Program.PastedStdinArgument);
+            process = Process.Start(startInfo);
             if (process is null)
             {
                 throw new InvalidOperationException("Process.Start returned null.");
             }
 
+            Stream input = process.StandardInput.BaseStream;
+            input.Write(Encoding.UTF8.GetPreamble());
+            process.StandardInput.Write(text);
+            process.StandardInput.Close();
+
             AppLog.Instance.Info(
                 "paste.open_window",
                 "opened",
-                new LogField("path", path),
+                new LogField("storage", "memory"),
+                new LogField("characterCount", text.Length.ToString()),
                 new LogField("pid", process.Id.ToString()));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
         {
+            TryTerminatePastedProcess(process);
             AppLog.Instance.Error(
                 "paste.open_window.failed",
                 "failed",
                 new LogField("type", ex.GetType().FullName ?? ex.GetType().Name),
                 new LogField("message", ex.Message));
             NativeMethods.MessageBoxW(_hwnd, "Failed to open pasted text: " + ex.Message, Program.AppTitle, NativeMethods.MB_OK | NativeMethods.MB_ICONERROR);
+        }
+        finally
+        {
+            process?.Dispose();
         }
     }
 
@@ -841,47 +865,17 @@ internal sealed class ViewerWindow
         }
     }
 
-    private static string WritePastedTextFile(string text)
+    private static void TryTerminatePastedProcess(Process? process)
     {
-        string directory = GetPastedTextDirectory();
-        string fileName = "pasted-" +
-            DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff", System.Globalization.CultureInfo.InvariantCulture) +
-            "-" +
-            Guid.NewGuid().ToString("N") +
-            ".log";
-        string path = Path.Combine(directory, fileName);
-        File.WriteAllText(path, text, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
-        return path;
-    }
-
-    private static string GetPastedTextDirectory()
-    {
-        string? localAppData = Environment.GetEnvironmentVariable("LOCALAPPDATA");
-        if (!string.IsNullOrWhiteSpace(localAppData) && TryCreatePastedTextDirectory(localAppData, out string directory))
-        {
-            return directory;
-        }
-
-        if (TryCreatePastedTextDirectory(Path.GetTempPath(), out directory))
-        {
-            return directory;
-        }
-
-        throw new IOException("Could not create pasted text directory.");
-    }
-
-    private static bool TryCreatePastedTextDirectory(string basePath, out string directory)
-    {
-        directory = Path.Combine(basePath, "LogBlade", "pasted");
         try
         {
-            Directory.CreateDirectory(directory);
-            return true;
+            if (process is not null && !process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
         }
         catch
         {
-            directory = string.Empty;
-            return false;
         }
     }
 
@@ -894,7 +888,7 @@ internal sealed class ViewerWindow
 
         try
         {
-            using FileStream fs = new(_path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 16, FileOptions.SequentialScan);
+            using Stream fs = _contentSource.OpenRead();
             if (detected.DataOffset > 0)
             {
                 fs.Seek(Math.Min(detected.DataOffset, fs.Length), SeekOrigin.Begin);
@@ -951,7 +945,7 @@ internal sealed class ViewerWindow
                 DisplayParserEvaluator.ValidateRule(parserRule);
             }
 
-            LogRecordSource source = new(_path, detected.Encoding, detected.DataOffset, parserRule);
+            LogRecordSource source = new(_contentSource, detected.Encoding, detected.DataOffset, parserRule);
             var reader = new ProjectedViewport(source, wrapLongLines: true);
             reader.ReadFromPercentage(scrollPercentage, visibleLines);
             _mainPane.SetReader(reader, visibleLines, preserveSelection: true);
@@ -1150,22 +1144,22 @@ internal sealed class ViewerWindow
         SetActiveSearchResultStatus(string.Empty);
         InvalidateHost();
 
-        if (!File.Exists(_path))
+        if (!_contentSource.Exists)
         {
-            AppLog.Instance.Info("file.open.begin", "begin", new LogField("path", _path));
+            AppLog.Instance.Info("file.open.begin", "begin", new LogField("source", _contentSource.DisplayName));
             AppLog.Instance.Error(
                 "file.open.failed",
                 "failed",
-                new LogField("path", _path),
+                new LogField("source", _contentSource.DisplayName),
                 new LogField("stage", "missing_file"),
-                new LogField("reason", "File not found"));
+                new LogField("reason", "Source not found"));
 
             _mainPane.SetStatus("File not found.");
-            NativeMethods.MessageBoxW(_hwnd, "File not found: " + _path, Program.AppTitle, NativeMethods.MB_OK | NativeMethods.MB_ICONERROR);
+            NativeMethods.MessageBoxW(_hwnd, "Source not found: " + _contentSource.DisplayName, Program.AppTitle, NativeMethods.MB_OK | NativeMethods.MB_ICONERROR);
             return;
         }
 
-        string workerPath = _path;
+        LogContentSource workerSource = _contentSource;
         IntPtr hwnd = _hwnd;
         int visibleLines = _mainPane.VisibleLineCount;
         DisplayParserRule? workerParserRule = GetEffectiveParserRule();
@@ -1174,9 +1168,9 @@ internal sealed class ViewerWindow
             var result = new OpenWorkerResult();
             try
             {
-                AppLog.Instance.Info("file.open.begin", "begin", new LogField("path", workerPath));
-                result.DetectedEncoding = LogEncodingDetector.DetectEncoding(workerPath);
-                result.Reader = new LogRecordSource(workerPath, result.DetectedEncoding.Value.Encoding, result.DetectedEncoding.Value.DataOffset, workerParserRule);
+                AppLog.Instance.Info("file.open.begin", "begin", new LogField("source", workerSource.DisplayName));
+                result.DetectedEncoding = LogEncodingDetector.DetectEncoding(workerSource);
+                result.Reader = new LogRecordSource(workerSource, result.DetectedEncoding.Value.Encoding, result.DetectedEncoding.Value.DataOffset, workerParserRule);
                 result.Reader.ReadFromPercentage(0d, visibleLines + 1);
                 result.Success = true;
                 result.PreloadedVisibleLines = visibleLines;
@@ -1250,8 +1244,13 @@ internal sealed class ViewerWindow
     {
         StopFileWatcher();
 
-        string? directory = Path.GetDirectoryName(_path);
-        string fileName = Path.GetFileName(_path);
+        if (_contentSource.FilePath is not string path)
+        {
+            return;
+        }
+
+        string? directory = Path.GetDirectoryName(path);
+        string fileName = Path.GetFileName(path);
         if (string.IsNullOrEmpty(directory) || string.IsNullOrEmpty(fileName))
         {
             return;
@@ -1274,7 +1273,7 @@ internal sealed class ViewerWindow
             AppLog.Instance.Error(
                 "file.watch.failed",
                 "failed",
-                new LogField("path", _path),
+                new LogField("path", path),
                 new LogField("reason", ex.Message));
         }
     }
@@ -2876,7 +2875,7 @@ internal sealed class ViewerWindow
         }
 
         int[] visibleLines = GetActiveSearchVisibleLineCounts();
-        string workerPath = _path;
+        LogContentSource workerSource = _contentSource;
         IntPtr hwnd = _hwnd;
         SearchOptions[] workerOptions = CopySearchOptions(options);
         string query = FormatSearchQuerySummary(workerOptions);
@@ -2911,7 +2910,7 @@ internal sealed class ViewerWindow
 
             try
             {
-                LogSearchBuilder.BuildStagedFilteredReadersIncremental(workerPath, detected.Encoding, detected.DataOffset, workerOptions, visibleLines, update =>
+                LogSearchBuilder.BuildStagedFilteredReadersIncremental(workerSource, detected.Encoding, detected.DataOffset, workerOptions, visibleLines, update =>
                 {
                     ThrowIfCancelledBeforePostingUpdate(update, cancellationToken);
                     lastMatchedLineCount = GetFinalMatchedLineCount(update.MatchedLineCounts);
@@ -3304,7 +3303,7 @@ internal sealed class ViewerWindow
     {
         try
         {
-            currentFileSize = new FileInfo(_path).Length;
+            currentFileSize = _contentSource.Length;
             return true;
         }
         catch (IOException)
