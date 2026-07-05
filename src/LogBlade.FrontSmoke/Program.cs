@@ -1,0 +1,771 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text;
+
+internal static class Program
+{
+    private static int Main()
+    {
+        string tempBase = Environment.GetEnvironmentVariable("LOGBLADE_TEST_TEMP") ?? Path.GetTempPath();
+        string tempRoot = Path.Combine(tempBase, "logblade-front-smoke-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        try
+        {
+            Run("main projection", () => RunMainProjection(tempRoot));
+            Run("combined parser", () => RunCombinedParserProjection(tempRoot));
+            Run("search projection", () => RunSearchProjection(tempRoot));
+            Run("record navigation", () => RunRecordNavigation(tempRoot));
+            Run("batched navigation", RunBatchedNavigation);
+            Run("mixed wrapped batched navigation", RunMixedWrappedBatchedNavigation);
+            Run("large line scrollbar", () => RunLargeLineScrollbar(tempRoot));
+            Run("parsed scrollbar", () => RunParsedScrollbar(tempRoot));
+            Run("encoded scrollbar offsets", () => RunEncodedScrollbarOffsets(tempRoot));
+            Run("selection", () => RunSelectionAcrossRecords(tempRoot));
+            Run("zero", () => RunZeroProjection(tempRoot));
+            Run("word boundary", () => RunWordAcrossSegmentBoundary(tempRoot));
+            Console.WriteLine("Front smoke tests passed.");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine("Front smoke tests failed.");
+            Console.Error.WriteLine(ex);
+            return 1;
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(tempRoot, recursive: true);
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    private static void Run(string name, Action action)
+    {
+        Console.WriteLine("Running " + name + "...");
+        action();
+    }
+
+    private static void RunCombinedParserProjection(string tempRoot)
+    {
+        string firstLine = "a[0]: {\"Level\":\"Inf\r\n";
+        string path = WriteLog(
+            tempRoot,
+            "combined-parser.log",
+            firstLine +
+            "a[1]: o\",\"Message\":\"run\r\n" +
+            "a[2]: ning\"}\r\n" +
+            "plain\r\n");
+        DisplayParserRule parser = new()
+        {
+            Name = "combined",
+            Stages = new List<DisplayParserStage>
+            {
+                new()
+                {
+                    Mode = DisplayParserMode.Regex,
+                    Rule = @": (?<json>.*)",
+                    Template = "{json}"
+                },
+                new()
+                {
+                    Mode = DisplayParserMode.Json,
+                    Rule = "{upper:Level} - {Message}"
+                }
+            }
+        };
+
+        using var viewport = new ProjectedViewport(new LogRecordSource(path, Encoding.UTF8, 0, parser), wrapLongLines: true);
+        viewport.ReadFromPercentage(0d, 4);
+        AssertSequence("combined parser records", viewport.CurrentRows, "INFO - running", "plain");
+
+        viewport.ReadFromOffset(Encoding.UTF8.GetByteCount(firstLine), 2);
+        AssertSequence(
+            "combined parser does not backscan from continuation",
+            viewport.CurrentRows,
+            "o\",\"Message\":\"run",
+            "ning\"}");
+    }
+
+    private static void RunMainProjection(string tempRoot)
+    {
+        string first = new('a', ProjectedViewport.VisibleSegmentChars + 3);
+        string parsed = first + "\r\n\nend";
+        string path = WriteLog(tempRoot, "main-projection.log", "{\"First\":\"" + first + "\",\"Last\":\"end\"}\r\n");
+        DisplayParserRule parser = JsonParser("{First}\r\n\n{Last}");
+
+        using var viewport = new ProjectedViewport(new LogRecordSource(path, Encoding.UTF8, 0, parser), wrapLongLines: true);
+        viewport.ReadFromPercentage(0d, 10);
+
+        AssertEqual("main projection is not a grid", viewport is IColumnViewportReader, false);
+        using IViewportReader mainWorker = viewport.CloneForWorker();
+        AssertEqual("main worker is not a grid", mainWorker is IColumnViewportReader, false);
+        AssertEqual("main projected row count", viewport.CurrentRows.Count, 4);
+        AssertEqual("main first segment length", viewport.CurrentRows[0].Length, ProjectedViewport.VisibleSegmentChars);
+        AssertEqual("main second segment", viewport.CurrentRows[1], "aaa");
+        AssertEqual("main empty explicit row", viewport.CurrentRows[2], string.Empty);
+        AssertEqual("main final explicit row", viewport.CurrentRows[3], "end");
+
+        IReadOnlyList<ViewportHighlightGroup> groups = viewport.ReadCurrentHighlightGroups();
+        AssertEqual("main highlight group count", groups.Count, 1);
+        AssertEqual("main highlight logical text", groups[0].Text, parsed);
+        AssertEqual("main shared highlight key", viewport.CurrentHighlightGroupKeys[0], viewport.CurrentHighlightGroupKeys[3]);
+
+        ViewportTextSegmentKey secondKey = viewport.CurrentTextSegmentKeys[1];
+        AssertEqual("main second text segment index", secondKey.SegmentIndex, 1);
+        AssertEqual("main text context available", viewport.TryReadTextSelectionContext(secondKey, out ViewportTextSelectionContext context), true);
+        AssertEqual("main text context", context.Text, parsed);
+        AssertEqual("main text segment count", context.Segments.Count, 4);
+        AssertEqual("main second text start", context.Segments[1].Start, ProjectedViewport.VisibleSegmentChars);
+        AssertEqual("main empty text start", context.Segments[2].Start, first.Length + 2);
+
+        IReadOnlyList<ViewportSelectedRow> copied = viewport.ReadSelectedRows(
+            selectAll: true,
+            Array.Empty<ViewportRowSelectionRange>(),
+            Array.Empty<ViewportRowSelectionKey>());
+        AssertEqual("main copy record count", copied.Count, 1);
+        AssertEqual("main copy preserves parser newlines", copied[0].Text, parsed);
+    }
+
+    private static void RunSearchProjection(string tempRoot)
+    {
+        string longValue = new('x', ProjectedViewport.VisibleSegmentChars + 100);
+        string path = WriteLog(
+            tempRoot,
+            "search-projection.log",
+            "{\"First\":\"" + longValue + "\",\"Second\":\"match\"}\r\n");
+        DisplayParserRule parser = JsonParser("{First}\n{Second}");
+
+        using FilteredLogRecordSource source = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            0,
+            new SearchOptions("match", UseRegex: false, IgnoreCase: false),
+            parser);
+        using var viewport = new FilteredProjectedViewport(source.CloneForWorker());
+        viewport.ReadFromPercentage(0d, 5);
+
+        AssertEqual("search projection is a grid", viewport is IColumnViewportReader, true);
+        using IViewportReader searchWorker = viewport.CloneForWorker();
+        AssertEqual("search worker remains a grid", searchWorker is IColumnViewportReader, true);
+        AssertEqual("search projected row count", viewport.CurrentRows.Count, 1);
+        AssertEqual("search projected text", viewport.CurrentRows[0], "match");
+        AssertEqual("search explicit selection index", viewport.CurrentRowSelectionKeys[0].SegmentIndex, 1);
+        AssertEqual("search explicit text index", viewport.CurrentTextSegmentKeys[0].SegmentIndex, 1);
+        AssertEqual(
+            "search text context available",
+            viewport.TryReadTextSelectionContext(viewport.CurrentTextSegmentKeys[0], out ViewportTextSelectionContext context),
+            true);
+        AssertEqual("search text context uses logical record", context.Text, longValue + "\nmatch");
+        AssertEqual("search text context explicit rows", context.Segments.Count, 2);
+        AssertEqual("search text context matching row", context.Segments[1].Key, viewport.CurrentTextSegmentKeys[0]);
+
+        IReadOnlyList<ViewportHighlightGroup> groups = viewport.ReadCurrentHighlightGroups();
+        AssertEqual("search highlight uses full logical text", groups[0].Text, longValue + "\nmatch");
+
+        IReadOnlyList<ViewportSelectedRow> copied = viewport.ReadSelectedRows(
+            selectAll: true,
+            Array.Empty<ViewportRowSelectionRange>(),
+            Array.Empty<ViewportRowSelectionKey>());
+        AssertEqual("search copy only matched explicit row", copied[0].Text, "match");
+
+        string rawLong = new string('q', ProjectedViewport.VisibleSegmentChars + 500) + "needle";
+        string rawPath = WriteLog(tempRoot, "search-long-row.log", rawLong + "\r\n");
+        using FilteredLogRecordSource rawSource = LogSearchBuilder.BuildFilteredReader(
+            rawPath,
+            Encoding.UTF8,
+            0,
+            new SearchOptions("needle", UseRegex: false, IgnoreCase: false));
+        using var rawViewport = new FilteredProjectedViewport(rawSource.CloneForWorker());
+        rawViewport.ReadFromPercentage(0d, 3);
+        AssertEqual("search long row is not wrapped", rawViewport.CurrentRows.Count, 1);
+        AssertEqual("search long row remains complete", rawViewport.CurrentRows[0], rawLong);
+
+        string endPath = WriteLog(tempRoot, "search-end.log", "match-0\r\nmatch-1\r\nmatch-2\r\nmatch-3\r\n");
+        using FilteredLogRecordSource endSource = LogSearchBuilder.BuildFilteredReader(
+            endPath,
+            Encoding.UTF8,
+            0,
+            new SearchOptions("match", UseRegex: false, IgnoreCase: false));
+        using var endViewport = new FilteredProjectedViewport(endSource.CloneForWorker());
+        endViewport.ReadFromPercentage(100d, 2);
+        AssertSequence("search end includes final records", endViewport.CurrentRows, "match-2", "match-3");
+
+        var percentageContent = new StringBuilder();
+        for (int i = 0; i < 100; i++)
+        {
+            percentageContent.Append("match-").Append(i).Append("\r\n");
+        }
+
+        string percentagePath = WriteLog(tempRoot, "search-percentage.log", percentageContent.ToString());
+        using FilteredLogRecordSource percentageSource = LogSearchBuilder.BuildFilteredReader(
+            percentagePath,
+            Encoding.UTF8,
+            0,
+            new SearchOptions("match", UseRegex: false, IgnoreCase: false));
+        using var percentageViewport = new FilteredProjectedViewport(percentageSource.CloneForWorker());
+        percentageViewport.ReadFromPercentage(50d, 20);
+        AssertEqual("search percentage uses max top", percentageViewport.TopRowOrdinal, 40L);
+        AssertNear("search percentage round trip", percentageViewport.ScrollPercentage, 50d, 0.0001d);
+    }
+
+    private static void RunRecordNavigation(string tempRoot)
+    {
+        string longLine = new('z', (ProjectedViewport.VisibleSegmentChars * 2) + 8);
+        string path = WriteLog(tempRoot, "navigation.log", longLine + "\r\nlast\r\n");
+        using var viewport = new ProjectedViewport(new LogRecordSource(path, Encoding.UTF8, 0), wrapLongLines: true);
+
+        viewport.ReadFromPercentage(0d, 2);
+        AssertEqual("navigation initial first length", viewport.CurrentRows[0].Length, ProjectedViewport.VisibleSegmentChars);
+        AssertEqual("navigation initial second length", viewport.CurrentRows[1].Length, ProjectedViewport.VisibleSegmentChars);
+
+        viewport.ReadNext(1);
+        AssertEqual("navigation inside record first length", viewport.CurrentRows[0].Length, ProjectedViewport.VisibleSegmentChars);
+        AssertEqual("navigation inside record second tail", viewport.CurrentRows[1], "zzzzzzzz");
+
+        viewport.ReadNext(1);
+        AssertEqual("navigation crosses record first", viewport.CurrentRows[0], "zzzzzzzz");
+        AssertEqual("navigation crosses record second", viewport.CurrentRows[1], "last");
+
+        viewport.ReadPrevious(1);
+        AssertEqual("navigation previous stays in logical record", viewport.CurrentRows[0].Length, ProjectedViewport.VisibleSegmentChars);
+
+        viewport.ReadFromOffset(ProjectedViewport.VisibleSegmentChars + 20, 2);
+        AssertEqual("navigation offset starts in middle segment", viewport.CurrentRows[0].Length, ProjectedViewport.VisibleSegmentChars);
+        AssertEqual("navigation offset follows with tail", viewport.CurrentRows[1], "zzzzzzzz");
+
+        viewport.ReadFromOffset(ProjectedViewport.VisibleSegmentChars, 2);
+        AssertEqual("navigation exact boundary starts next segment", viewport.CurrentRows[0].Length, ProjectedViewport.VisibleSegmentChars);
+        AssertEqual("navigation exact boundary follows with tail", viewport.CurrentRows[1], "zzzzzzzz");
+
+        viewport.ReadFromPercentage(50d, 2);
+        AssertEqual("navigation percentage starts in middle segment", viewport.CurrentRows[0].Length, ProjectedViewport.VisibleSegmentChars);
+        AssertEqual("navigation percentage follows with tail", viewport.CurrentRows[1], "zzzzzzzz");
+
+        viewport.ReadNext(2);
+        viewport.ReadPrevious(3);
+        AssertEqual("navigation page up clamps to first segment", viewport.CurrentRows[0].Length, ProjectedViewport.VisibleSegmentChars);
+        AssertEqual("navigation page up keeps second segment", viewport.CurrentRows[1].Length, ProjectedViewport.VisibleSegmentChars);
+    }
+
+    private static void RunSelectionAcrossRecords(string tempRoot)
+    {
+        string wrapped = new string('w', ProjectedViewport.VisibleSegmentChars) + "tail";
+        string path = WriteLog(tempRoot, "selection.log", wrapped + "\r\nline-1\r\nline-2\r\n");
+        using var viewport = new ProjectedViewport(new LogRecordSource(path, Encoding.UTF8, 0), wrapLongLines: true);
+        viewport.ReadFromPercentage(0d, 3);
+        ViewportRowSelectionKey wrappedSegment = viewport.CurrentRowSelectionKeys[1];
+        ViewportRowSelectionKey secondLine = viewport.CurrentRowSelectionKeys[2];
+
+        IReadOnlyList<ViewportSelectedRow> wrappedRange = viewport.ReadSelectedRows(
+            selectAll: false,
+            new[] { new ViewportRowSelectionRange(wrappedSegment, secondLine) },
+            Array.Empty<ViewportRowSelectionKey>());
+        AssertSelectedRows("selection joins wrapped row", wrappedRange, wrapped, "line-1");
+
+        viewport.ReadFromPercentage(100d, 2);
+        ViewportRowSelectionKey last = viewport.CurrentRowSelectionKeys[1];
+        IReadOnlyList<ViewportSelectedRow> fullRange = viewport.ReadSelectedRows(
+            selectAll: false,
+            new[] { new ViewportRowSelectionRange(wrappedSegment, last) },
+            Array.Empty<ViewportRowSelectionKey>());
+        AssertSelectedRows("selection spans unloaded records", fullRange, wrapped, "line-1", "line-2");
+
+        IReadOnlyList<ViewportSelectedRow> excluded = viewport.ReadSelectedRows(
+            selectAll: true,
+            Array.Empty<ViewportRowSelectionRange>(),
+            new[] { wrappedSegment });
+        AssertSelectedRows("selection exclusion removes logical record", excluded, "line-1", "line-2");
+
+        string capturePath = WriteLog(tempRoot, "selection-captures.log", "aaabccc xx aabcc\r\nplain\r\n");
+        using FilteredLogRecordSource captureSource = LogSearchBuilder.BuildFilteredReader(
+            capturePath,
+            Encoding.UTF8,
+            0,
+            new SearchOptions("(a+)b(c+)", UseRegex: true, IgnoreCase: false));
+        using var captureViewport = new FilteredProjectedViewport(captureSource.CloneForWorker());
+        IReadOnlyList<ViewportSelectedRow> captured = captureViewport.ReadSelectedRows(
+            selectAll: true,
+            Array.Empty<ViewportRowSelectionRange>(),
+            Array.Empty<ViewportRowSelectionKey>());
+        AssertEqual("selection capture row count", captured.Count, 1);
+        AssertSequence(
+            "selection capture cells",
+            captured[0].Cells ?? Array.Empty<string>(),
+            "aaabccc xx aabcc",
+            "aaa",
+            "ccc");
+    }
+
+    private static void RunLargeLineScrollbar(string tempRoot)
+    {
+        string longLine = new('x', ProjectedViewport.VisibleSegmentChars * 1000);
+        string path = WriteLog(tempRoot, "large-line-scrollbar.log", longLine + "\r\nnext\r\n");
+        using var viewport = new ProjectedViewport(new LogRecordSource(path, Encoding.UTF8, 0), wrapLongLines: true);
+        viewport.ReadFromPercentage(0d, 20);
+        AssertNear("large line initial percentage", viewport.ScrollPercentage, 0d, 0.0001d);
+
+        viewport.ReadNext(1);
+        double firstMovement = viewport.ScrollPercentage;
+        AssertEqual("large line first movement advances percentage", firstMovement > 0d, true);
+        AssertEqual("large line first movement keeps physical offset", viewport.TopOffset, 0L);
+
+        viewport.ReadNext(499);
+        int segmentIndex = viewport.CurrentTextSegmentKeys[0].SegmentIndex;
+        double middlePercentage = viewport.ScrollPercentage;
+        AssertEqual("large line middle segment", segmentIndex, 500);
+        AssertEqual("large line middle percentage", middlePercentage > 49d && middlePercentage < 51d, true);
+
+        viewport.ReadFromPercentage(middlePercentage, 20);
+        AssertEqual("large line percentage round trip segment", viewport.CurrentTextSegmentKeys[0].SegmentIndex, segmentIndex);
+        AssertNear("large line percentage round trip value", viewport.ScrollPercentage, middlePercentage, 0.0001d);
+
+        viewport.ReadFromPercentage(100d, 20);
+        AssertNear("large line end percentage", viewport.ScrollPercentage, 100d, 0.0001d);
+        viewport.ReadNext(19);
+        AssertEqual("large line transitions to next record", viewport.CurrentRows[0], "next");
+
+        var resizeContent = new StringBuilder();
+        for (int i = 0; i < 50; i++)
+        {
+            resizeContent.Append("line-").Append(i).Append("\r\n");
+        }
+
+        string resizePath = WriteLog(tempRoot, "viewport-resize.log", resizeContent.ToString());
+        using var resizeViewport = new ProjectedViewport(
+            new LogRecordSource(resizePath, Encoding.UTF8, 0),
+            wrapLongLines: true);
+        resizeViewport.ReadFromPercentage(0d, 10);
+        AssertEqual("viewport initial height", resizeViewport.CurrentRows.Count, 10);
+        resizeViewport.ReadFromPercentage(0d, 30);
+        AssertEqual("viewport grows loaded window", resizeViewport.CurrentRows.Count, 30);
+        AssertEqual("viewport grown final row", resizeViewport.CurrentRows[29], "line-29");
+    }
+
+    private static void RunParsedScrollbar(string tempRoot)
+    {
+        string generated = new('p', ProjectedViewport.VisibleSegmentChars * 100);
+        string path = WriteLog(tempRoot, "parsed-scrollbar.log", "{\"Value\":\"x\"}\r\nnext\r\n");
+        DisplayParserRule parser = JsonParser(generated + "{Value}");
+        using var viewport = new ProjectedViewport(new LogRecordSource(path, Encoding.UTF8, 0, parser), wrapLongLines: true);
+        viewport.ReadFromPercentage(0d, 10);
+        viewport.ReadNext(50);
+
+        int segmentIndex = viewport.CurrentTextSegmentKeys[0].SegmentIndex;
+        double percentage = viewport.ScrollPercentage;
+        AssertEqual("parsed scrollbar segment", segmentIndex, 50);
+        AssertEqual("parsed scrollbar percentage advances", percentage > 0d, true);
+        viewport.ReadFromPercentage(percentage, 10);
+        AssertEqual("parsed scrollbar round trip", viewport.CurrentTextSegmentKeys[0].SegmentIndex, segmentIndex);
+
+        string fragment = new('j', ProjectedViewport.VisibleSegmentChars * 3);
+        string firstHalf = fragment.Substring(0, fragment.Length / 2);
+        string secondHalf = fragment.Substring(fragment.Length / 2);
+        string combinedPath = WriteLog(
+            tempRoot,
+            "combined-parsed-scrollbar.log",
+            "a[0]: {\"Value\":\"" + firstHalf + "\r\n" +
+            "a[1]: " + secondHalf + "\"}\r\nnext\r\n");
+        DisplayParserRule combinedParser = new()
+        {
+            Name = "combined-scroll",
+            Stages = new List<DisplayParserStage>
+            {
+                new()
+                {
+                    Mode = DisplayParserMode.Regex,
+                    Rule = @": (?<json>.*)",
+                    Template = "{json}"
+                },
+                new()
+                {
+                    Mode = DisplayParserMode.Json,
+                    Rule = "{Value}"
+                }
+            }
+        };
+        using var combinedViewport = new ProjectedViewport(
+            new LogRecordSource(combinedPath, Encoding.UTF8, 0, combinedParser),
+            wrapLongLines: true);
+        combinedViewport.ReadFromPercentage(0d, 2);
+        combinedViewport.ReadNext(1);
+        int combinedSegment = combinedViewport.CurrentTextSegmentKeys[0].SegmentIndex;
+        double combinedPercentage = combinedViewport.ScrollPercentage;
+        combinedViewport.ReadFromPercentage(combinedPercentage, 2);
+        AssertEqual("combined parser scrollbar round trip", combinedViewport.CurrentTextSegmentKeys[0].SegmentIndex, combinedSegment);
+    }
+
+    private static void RunEncodedScrollbarOffsets(string tempRoot)
+    {
+        string line = new string('a', ProjectedViewport.VisibleSegmentChars - 1) + "á" + new string('b', ProjectedViewport.VisibleSegmentChars);
+
+        string utf8Path = Path.Combine(tempRoot, "scrollbar-utf8.log");
+        File.WriteAllText(utf8Path, line + "\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+        using (var utf8Viewport = new ProjectedViewport(
+            new LogRecordSource(utf8Path, Encoding.UTF8, Encoding.UTF8.GetPreamble().Length),
+            wrapLongLines: true))
+        {
+            long middleOfMultibyteCharacter = Encoding.UTF8.GetPreamble().Length + ProjectedViewport.VisibleSegmentChars;
+            utf8Viewport.ReadFromOffset(middleOfMultibyteCharacter, 1);
+            AssertEqual("utf8 partial character stays in prior segment", utf8Viewport.CurrentTextSegmentKeys[0].SegmentIndex, 0);
+
+            long secondSegmentOffset = Encoding.UTF8.GetPreamble().Length + Encoding.UTF8.GetByteCount(line.AsSpan(0, ProjectedViewport.VisibleSegmentChars));
+            utf8Viewport.ReadFromOffset(secondSegmentOffset, 1);
+            AssertEqual("utf8 exact segment offset", utf8Viewport.CurrentTextSegmentKeys[0].SegmentIndex, 1);
+            double percentage = utf8Viewport.ScrollPercentage;
+            utf8Viewport.ReadFromPercentage(percentage, 1);
+            AssertEqual("utf8 exact percentage round trip", utf8Viewport.CurrentTextSegmentKeys[0].SegmentIndex, 1);
+        }
+
+        string utf16Path = Path.Combine(tempRoot, "scrollbar-utf16.log");
+        File.WriteAllText(utf16Path, line + "\r\n", new UnicodeEncoding(bigEndian: false, byteOrderMark: true));
+        using var utf16Viewport = new ProjectedViewport(
+            new LogRecordSource(utf16Path, Encoding.Unicode, Encoding.Unicode.GetPreamble().Length),
+            wrapLongLines: true);
+        long utf16SecondSegmentOffset = Encoding.Unicode.GetPreamble().Length + Encoding.Unicode.GetByteCount(line.AsSpan(0, ProjectedViewport.VisibleSegmentChars));
+        utf16Viewport.ReadFromOffset(utf16SecondSegmentOffset, 1);
+        AssertEqual("utf16 exact segment offset", utf16Viewport.CurrentTextSegmentKeys[0].SegmentIndex, 1);
+        double utf16Percentage = utf16Viewport.ScrollPercentage;
+        utf16Viewport.ReadFromPercentage(utf16Percentage, 1);
+        AssertEqual("utf16 exact percentage round trip", utf16Viewport.CurrentTextSegmentKeys[0].SegmentIndex, 1);
+    }
+
+    private static void RunBatchedNavigation()
+    {
+        var records = new List<LogViewportRecord>();
+        for (int i = 0; i < 40; i++)
+        {
+            records.Add(new LogViewportRecord(
+                new LogRecordKey(i * 10, (i * 10) + 5),
+                (i * 10) + 10,
+                "row-" + i,
+                "row-" + i));
+        }
+
+        var source = new CountingRecordSource(records);
+        using var viewport = new ProjectedViewport(source, wrapLongLines: true);
+        viewport.ReadFromPercentage(0d, 10);
+
+        source.ResetCalls();
+        viewport.ReadNext(3);
+        AssertEqual("batched wheel source calls", source.NextCalls, 1);
+        AssertEqual("batched wheel source count", source.LastNextCount, 3);
+        AssertEqual("batched wheel target", viewport.CurrentRows[0], "row-3");
+
+        source.ResetCalls();
+        viewport.ReadNext(10);
+        AssertEqual("batched page down source calls", source.NextCalls, 1);
+        AssertEqual("batched page down source count", source.LastNextCount, 10);
+        AssertEqual("batched page down target", viewport.CurrentRows[0], "row-13");
+
+        source.ResetCalls();
+        viewport.ReadPrevious(10);
+        AssertEqual("batched page up previous calls", source.PreviousCalls, 1);
+        AssertEqual("batched page up total calls", source.PreviousCalls + source.NextCalls <= 2, true);
+        AssertEqual("batched page up target", viewport.CurrentRows[0], "row-3");
+
+        var searchSource = new CountingRecordSource(records);
+        using var searchViewport = new ProjectedViewport(searchSource, wrapLongLines: false);
+        searchViewport.ReadFromPercentage(0d, 10);
+        searchSource.ResetCalls();
+        searchViewport.ReadNext(10);
+        AssertEqual("batched search page down calls", searchSource.NextCalls, 1);
+        AssertEqual("batched search page down count", searchSource.LastNextCount, 10);
+
+        string wrappedText = new('x', (ProjectedViewport.VisibleSegmentChars * 3) + 1);
+        var wrappedSource = new CountingRecordSource(new[]
+        {
+            new LogViewportRecord(new LogRecordKey(0, wrappedText.Length), wrappedText.Length, wrappedText, wrappedText)
+        });
+        using var wrappedViewport = new ProjectedViewport(wrappedSource, wrapLongLines: true);
+        wrappedViewport.ReadFromPercentage(0d, 2);
+        wrappedSource.ResetCalls();
+        wrappedViewport.ReadNext(1);
+        AssertEqual("wrapped movement stays in projection", wrappedSource.NextCalls, 0);
+        wrappedSource.ResetCalls();
+        wrappedViewport.ReadPrevious(1);
+        AssertEqual("wrapped reverse movement stays in projection", wrappedSource.PreviousCalls, 0);
+    }
+
+    private static void RunMixedWrappedBatchedNavigation()
+    {
+        int[] segmentCounts = { 3, 1, 4, 2, 3, 1, 4, 2, 3, 1, 4, 2 };
+        const string labels = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        var records = new List<LogViewportRecord>(segmentCounts.Length);
+        int labelIndex = 0;
+        for (int i = 0; i < segmentCounts.Length; i++)
+        {
+            records.Add(CreateSegmentedRecord(i, segmentCounts[i], labels, ref labelIndex));
+        }
+
+        var source = new CountingRecordSource(records);
+        using var viewport = new ProjectedViewport(source, wrapLongLines: true);
+        viewport.ReadFromPercentage(0d, 3);
+        viewport.ReadNext(1);
+        AssertEqual("mixed wrapped setup starts on second segment", viewport.CurrentRows[0][0], 'B');
+
+        source.ResetCalls();
+        viewport.ReadNext(5);
+        AssertEqual("mixed wrapped page down target", viewport.CurrentRows[0][0], 'G');
+        AssertEqual("mixed wrapped page down source calls", source.NextCalls, 1);
+
+        source.ResetCalls();
+        viewport.ReadPrevious(5);
+        AssertEqual("mixed wrapped page up target", viewport.CurrentRows[0][0], 'B');
+        AssertEqual("mixed wrapped page up source calls", source.PreviousCalls, 1);
+        AssertEqual("mixed wrapped page up forward corrections", source.NextCalls, 0);
+
+        viewport.ReadFromPercentage(0d, 3);
+        source.ResetCalls();
+        viewport.ReadNext(22);
+        AssertEqual("mixed wrapped multi-batch page down target", viewport.CurrentRows[0][0], 'W');
+        AssertEqual("mixed wrapped multi-batch page down source calls", source.NextCalls, 2);
+        AssertEqual("mixed wrapped multi-batch avoids per-row calls", source.NextCalls < 22, true);
+
+        source.ResetCalls();
+        viewport.ReadPrevious(22);
+        AssertEqual("mixed wrapped multi-batch page up target", viewport.CurrentRows[0][0], 'A');
+        AssertEqual("mixed wrapped multi-batch page up source calls", source.PreviousCalls, 3);
+        AssertEqual("mixed wrapped multi-batch page up forward corrections", source.NextCalls, 0);
+        AssertEqual("mixed wrapped reverse avoids per-row calls", source.PreviousCalls < 22, true);
+    }
+
+    private static LogViewportRecord CreateSegmentedRecord(
+        int recordIndex,
+        int segmentCount,
+        string labels,
+        ref int labelIndex)
+    {
+        var text = new StringBuilder(segmentCount * ProjectedViewport.VisibleSegmentChars);
+        for (int i = 0; i < segmentCount; i++)
+        {
+            text.Append(labels[labelIndex++], ProjectedViewport.VisibleSegmentChars);
+        }
+
+        long startOffset = recordIndex * 100_000L;
+        long endOffset = startOffset + text.Length;
+        string value = text.ToString();
+        return new LogViewportRecord(
+            new LogRecordKey(startOffset, endOffset),
+            endOffset + 2,
+            value,
+            value);
+    }
+
+    private static void RunZeroProjection(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "zero.log", "one\r\ntwo\r\n");
+        using var viewport = new ProjectedViewport(new LogRecordSource(path, Encoding.UTF8, 0), wrapLongLines: true);
+        viewport.ReadFromPercentage(0d, 2);
+        AssertEqual("zero setup rows", viewport.CurrentRows.Count, 2);
+
+        viewport.MarkObservedZeroFileSize();
+        AssertEqual("zero visual file size", viewport.FileSize, 0L);
+        AssertEqual("zero visual rows", viewport.CurrentRows.Count, 0);
+
+        viewport.ClearObservedZeroFileSize();
+        AssertEqual("zero restored rows", viewport.CurrentRows.Count, 2);
+        AssertEqual("zero restored first", viewport.CurrentRows[0], "one");
+    }
+
+    private static void RunWordAcrossSegmentBoundary(string tempRoot)
+    {
+        string text = new string(' ', ProjectedViewport.VisibleSegmentChars - 3) + "hello world";
+        string path = WriteLog(tempRoot, "word-boundary.log", text + "\r\n");
+        using var viewport = new ProjectedViewport(new LogRecordSource(path, Encoding.UTF8, 0), wrapLongLines: true);
+        viewport.ReadFromPercentage(0d, 3);
+
+        ViewportTextSegmentKey key = viewport.CurrentTextSegmentKeys[1];
+        AssertEqual("word context available", viewport.TryReadTextSelectionContext(key, out ViewportTextSelectionContext context), true);
+        int characterIndex = ProjectedViewport.VisibleSegmentChars;
+        int start = characterIndex;
+        while (start > 0 && !char.IsWhiteSpace(context.Text[start - 1]))
+        {
+            start--;
+        }
+
+        int end = characterIndex;
+        while (end < context.Text.Length && !char.IsWhiteSpace(context.Text[end]))
+        {
+            end++;
+        }
+
+        AssertEqual("word crosses segment boundary", context.Text.Substring(start, end - start), "hello");
+    }
+
+    private static DisplayParserRule JsonParser(string template) => new()
+    {
+        Name = "smoke",
+        Stages = new List<DisplayParserStage>
+        {
+            new()
+            {
+                Mode = DisplayParserMode.Json,
+                Rule = template
+            }
+        }
+    };
+
+    private static string WriteLog(string tempRoot, string name, string content)
+    {
+        string path = Path.Combine(tempRoot, name);
+        File.WriteAllText(path, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        return path;
+    }
+
+    private static void AssertEqual<T>(string name, T actual, T expected)
+    {
+        if (!EqualityComparer<T>.Default.Equals(actual, expected))
+        {
+            throw new InvalidOperationException($"{name}: expected '{expected}', got '{actual}'.");
+        }
+    }
+
+    private static void AssertNear(string name, double actual, double expected, double tolerance)
+    {
+        if (Math.Abs(actual - expected) > tolerance)
+        {
+            throw new InvalidOperationException($"{name}: expected '{expected}' +/- '{tolerance}', got '{actual}'.");
+        }
+    }
+
+    private static void AssertSequence(string name, IReadOnlyList<string> actual, params string[] expected)
+    {
+        AssertEqual(name + " count", actual.Count, expected.Length);
+        for (int i = 0; i < expected.Length; i++)
+        {
+            AssertEqual(name + " [" + i + "]", actual[i], expected[i]);
+        }
+    }
+
+    private static void AssertSelectedRows(
+        string name,
+        IReadOnlyList<ViewportSelectedRow> actual,
+        params string[] expected)
+    {
+        AssertEqual(name + " count", actual.Count, expected.Length);
+        for (int i = 0; i < expected.Length; i++)
+        {
+            AssertEqual(name + " [" + i + "]", actual[i].Text, expected[i]);
+        }
+    }
+}
+
+internal sealed class CountingRecordSource : ILogRecordSource
+{
+    private readonly IReadOnlyList<LogViewportRecord> _records;
+    private readonly List<LogViewportRecord> _current = new();
+    private int _top;
+    private int _windowCount;
+
+    public CountingRecordSource(IReadOnlyList<LogViewportRecord> records)
+    {
+        _records = records;
+    }
+
+    public int NextCalls { get; private set; }
+    public int PreviousCalls { get; private set; }
+    public int LastNextCount { get; private set; }
+    public string FilePath => "memory.log";
+    public string EncodingName => "memory";
+    public long DataOffset => 0;
+    public long FileSize => _records.Count == 0 ? 0 : _records[^1].NextOffset;
+    public long ConfirmedFileSize => FileSize;
+    public long TopOffset => _current.Count == 0 ? 0 : _current[0].Key.StartOffset;
+    public long ViewportBytes => _current.Count == 0 ? 0 : _current[^1].NextOffset - TopOffset;
+    public double ScrollPercentage
+    {
+        get
+        {
+            int maxTop = Math.Max(0, _records.Count - Math.Max(1, _windowCount));
+            return maxTop == 0 ? 0d : (_top * 100d) / maxTop;
+        }
+    }
+    public bool HasContent => _records.Count > 0;
+    public bool IsAtEnd => _top + _current.Count >= _records.Count;
+    public int AnchorCharacterIndex => 0;
+    public IReadOnlyList<string> ColumnHeaders => Array.Empty<string>();
+    public IReadOnlyList<LogViewportRecord> CurrentRecords => _current;
+
+    public IReadOnlyList<LogViewportRecord> ReadNextRecords(int count)
+    {
+        NextCalls++;
+        LastNextCount = count;
+        int maxTop = Math.Max(0, _records.Count - Math.Max(1, _windowCount));
+        Load(Math.Min(maxTop, _top + Math.Max(1, count)), _windowCount);
+        return CurrentRecords;
+    }
+
+    public IReadOnlyList<LogViewportRecord> ReadPreviousRecords(int count)
+    {
+        PreviousCalls++;
+        Load(Math.Max(0, _top - Math.Max(1, count)), _windowCount);
+        return CurrentRecords;
+    }
+
+    public IReadOnlyList<LogViewportRecord> ReadFromPercentage(double percentage, int count)
+    {
+        int windowCount = Math.Max(1, count);
+        int maxTop = Math.Max(0, _records.Count - windowCount);
+        int top = percentage >= 100d
+            ? maxTop
+            : (int)((Math.Clamp(percentage, 0d, 100d) / 100d) * maxTop);
+        Load(top, windowCount);
+        return CurrentRecords;
+    }
+
+    public IEnumerable<LogViewportRecord> EnumerateRecords(LogRecordKey? start, LogRecordKey? end)
+    {
+        for (int i = 0; i < _records.Count; i++)
+        {
+            LogViewportRecord record = _records[i];
+            if (start.HasValue && record.Key.CompareTo(start.Value) < 0)
+            {
+                continue;
+            }
+
+            if (end.HasValue && record.Key.CompareTo(end.Value) > 0)
+            {
+                yield break;
+            }
+
+            yield return record;
+        }
+    }
+
+    public ILogRecordSource CloneForWorker()
+    {
+        var clone = new CountingRecordSource(_records);
+        clone.Load(_top, _windowCount);
+        return clone;
+    }
+
+    public void ResetCalls()
+    {
+        NextCalls = 0;
+        PreviousCalls = 0;
+        LastNextCount = 0;
+    }
+
+    public void Dispose()
+    {
+        _current.Clear();
+    }
+
+    private void Load(int top, int count)
+    {
+        _top = Math.Clamp(top, 0, Math.Max(0, _records.Count - 1));
+        _windowCount = Math.Max(1, count);
+        _current.Clear();
+        int end = Math.Min(_records.Count, _top + _windowCount);
+        for (int i = _top; i < end; i++)
+        {
+            _current.Add(_records[i]);
+        }
+    }
+}

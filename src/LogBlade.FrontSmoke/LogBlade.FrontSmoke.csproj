@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\LogBlade.Back\LogBlade.Back.csproj" />
+    <ProjectReference Include="..\LogBlade.Front\LogBlade.Front.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <AssemblyName>LogBlade.FrontSmoke</AssemblyName>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+</Project>

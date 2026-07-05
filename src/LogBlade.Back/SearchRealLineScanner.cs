@@ -18,7 +18,7 @@ internal static class SearchRealLineScanner
     public static IEnumerable<RealLineData> Enumerate(string filePath, Encoding encoding, LogEncodingKind kind, long dataOffset, long fileSize, CancellationToken cancellationToken, long firstLineNumber)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        using FileStream fs = VisualRowReader.OpenSourceStream(filePath);
+        using FileStream fs = LogFileUtilities.OpenSourceStream(filePath);
         fs.Position = dataOffset;
         IEnumerable<RealLineData> lines = kind switch
         {

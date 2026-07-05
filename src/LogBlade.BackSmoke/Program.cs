@@ -6,6 +6,7 @@ using System.Threading;
 
 internal static class Program
 {
+    private const int LongLineChunkChars = 4096;
     private static int Main()
     {
         string tempRoot = Path.Combine(Path.GetTempPath(), "LogBladeBackSmoke", Guid.NewGuid().ToString("N"));
@@ -76,17 +77,6 @@ internal static class Program
             RunSearchRowOffsetSyncsMainReader(tempRoot);
             RunSearchRowOffsetDetectsStaleLine(tempRoot);
             RunSearchRowOrdinalLookup(tempRoot);
-            RunDisplayParserMainViewerParsesWholeWrappedJsonLine(tempRoot);
-            RunDisplayParserMainViewerSkipsRawSegmentsAfterShortParse(tempRoot);
-            RunDisplayParserMainViewerWrapsParsedOutput(tempRoot);
-            RunDisplayParserMainViewerSelectionCopiesParsedLine(tempRoot);
-            RunDisplayParserMainViewerSplitsParsedNewlines(tempRoot);
-            RunDisplayParserMainViewerPreservesEmptyParsedLines(tempRoot);
-            RunDisplayParserMainViewerWrapsParsedLinesIndependently(tempRoot);
-            RunDisplayParserMainViewerSelectionPreservesParsedNewlines(tempRoot);
-            RunDisplayParserMainViewerCombinesJsonAcrossLines(tempRoot);
-            RunDisplayParserMainViewerDoesNotBackscanFromContinuation(tempRoot);
-            RunDisplayParserMainViewerReloadDoesNotBackscanIntoIncompleteRecord(tempRoot);
             RunSearchFindsTextOnSecondParsedLine(tempRoot);
             RunSearchCapturesOnlyMatchingParsedLine(tempRoot);
             RunSearchDoesNotWrapLongParsedLine(tempRoot);
@@ -95,22 +85,6 @@ internal static class Program
             RunCascadedSearchDoesNotCrossParsedLines(tempRoot);
             RunChangedCascadedSearchUsesMatchedParsedLine(tempRoot);
             RunAppendSearchKeepsMatchedParsedLine(tempRoot);
-            RunVisualHighlightGroupsWrappedLine(tempRoot);
-            RunVisualHighlightGroupsParsedRecord(tempRoot);
-            RunFilteredHighlightGroupsParsedRecord(tempRoot);
-            RunVisualTextSelectionSegmentsWrappedWord(tempRoot);
-            RunVisualTextSelectionSegmentsParsedRecord(tempRoot);
-            RunFilteredTextSelectionSegmentsParsedRecord(tempRoot);
-            RunVisualSelectionRangeAcrossViewport(tempRoot);
-            RunVisualSelectionSelectsAllRows(tempRoot);
-            RunVisualSelectionWrappedRowCopiesOriginalLine(tempRoot);
-            RunVisualSelectionWrappedRangeDeduplicatesLine(tempRoot);
-            RunVisualSelectionSelectAllUsesRealLines(tempRoot);
-            RunVisualSelectionWrappedExclusionExcludesWholeLine(tempRoot);
-            RunFilteredSelectionRangeAcrossResults(tempRoot);
-            RunFilteredSelectionSelectsAllRows(tempRoot);
-            RunFilteredSelectionCopiesCaptureCells(tempRoot);
-            RunFilteredSelectionCopiesLiteralTextCell(tempRoot);
             RunInvalidRegexValidation();
             RunNonBacktrackingRegexRejectsUnsupportedPattern();
             RunNonBacktrackingRegexLeadingDotStarNoMatchOnLongLine(tempRoot);
@@ -143,8 +117,9 @@ internal static class Program
             RunResumeStagedSearchReprocessesIncompleteLastLine(tempRoot);
             RunResumeStagedSearchContinuesAfterLineBreak(tempRoot);
             RunResumeStagedSearchPreservesCascadeReaders(tempRoot);
+            RunLogRecordSourceReusesSlidingWindow(tempRoot);
+            RunFilteredLogRecordSourceReusesSlidingWindow(tempRoot);
             RunPageUpNearStartClampsToTop(tempRoot);
-            RunPageUpInsideWrappedFirstLineClampsToTop(tempRoot);
             RunRefreshTailAtEndShowsAppendedRows(tempRoot);
             RunRefreshTailAtEndReloadsSameSizeChange(tempRoot);
             RunReloadAfterFileChangeSameSizeReloadsCurrentViewport(tempRoot);
@@ -159,7 +134,7 @@ internal static class Program
             RunObservedZeroRepeatedKeepsConfirmedSize(tempRoot);
             RunObservedZeroThenLargerComparesWithConfirmedSize(tempRoot);
             RunObservedZeroThenSmallerNonZeroTruncates(tempRoot);
-            RunObservedZeroThenSameSizeReloadsVisualRows(tempRoot);
+            RunObservedZeroThenSameSizeReloadsRecords(tempRoot);
             RunObservedZeroPreservesViewportRowsInternally(tempRoot);
             RunObservedZeroRefreshTailPreservesViewportRowsInternally(tempRoot);
             RunObservedZeroReloadPreservesViewportRowsInternally(tempRoot);
@@ -559,7 +534,7 @@ internal static class Program
             "{\"Level\":\"Info\",\"Message\":\"ready\"}\r\n{\"Level\":\"Error\",\"Message\":\"failed\"}\r\n");
         DisplayParserRule parser = ParserRule(JsonStage("{upper:Level} - {Message}"));
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
@@ -567,8 +542,8 @@ internal static class Program
             parser);
 
         reader.ReadFromPercentage(0d, 10);
-        IColumnViewportReader columns = reader;
-        AssertSequence("display parser literal rows", reader.CurrentRows, "ERROR - failed");
+        FilteredLogRecordSource columns = reader;
+        AssertSequence("display parser literal rows", reader.CurrentDisplayTexts, "ERROR - failed");
         AssertSequence("display parser literal cells", columns.CurrentCells[0], "2", "ERROR - failed");
     }
 
@@ -580,7 +555,7 @@ internal static class Program
             "{\"Level\":\"Info\",\"Message\":\"ready\"}\r\n{\"Level\":\"Error\",\"Message\":\"failed\"}\r\n");
         DisplayParserRule parser = ParserRule(JsonStage("{upper:Level} - {Message}"));
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
@@ -588,7 +563,7 @@ internal static class Program
             parser);
 
         reader.ReadFromPercentage(0d, 10);
-        IColumnViewportReader columns = reader;
+        FilteredLogRecordSource columns = reader;
         AssertSequence("display parser regex headers", columns.ColumnHeaders, "#", "Text", "level", "message");
         AssertSequence("display parser regex cells", columns.CurrentCells[0], "2", "ERROR - failed", "ERROR", "failed");
     }
@@ -598,7 +573,7 @@ internal static class Program
         string path = WriteLog(tempRoot, "display-parser-append.log", "{\"Level\":\"Info\",\"Message\":\"ready\"}\r\n");
         DisplayParserRule parser = ParserRule(JsonStage("{upper:Level} - {Message}"));
 
-        using FilteredVisualRowReader initial = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource initial = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
@@ -606,11 +581,11 @@ internal static class Program
             parser);
 
         File.AppendAllText(path, "{\"Level\":\"Error\",\"Message\":\"failed\"}\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-        using FilteredVisualRowReader appended = BuildAppendedReader(initial, new SearchOptions("ERROR", UseRegex: false, IgnoreCase: false), parser);
+        using FilteredLogRecordSource appended = BuildAppendedReader(initial, new SearchOptions("ERROR", UseRegex: false, IgnoreCase: false), parser);
         appended.ReadFromPercentage(0d, 10);
 
-        AssertSequence("display parser append rows", appended.CurrentRows, "ERROR - failed");
-        AssertSequence("display parser append cells", ((IColumnViewportReader)appended).CurrentCells[0], "2", "ERROR - failed");
+        AssertSequence("display parser append rows", appended.CurrentDisplayTexts, "ERROR - failed");
+        AssertSequence("display parser append cells", ((FilteredLogRecordSource)appended).CurrentCells[0], "2", "ERROR - failed");
     }
 
     private static void RunSearchUsesCascadedDisplayParserLiteral(string tempRoot)
@@ -623,7 +598,7 @@ internal static class Program
             RegexStage(@": (?<json>.*)", "{json}"),
             JsonStage("KEY={Key}"));
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
@@ -631,8 +606,8 @@ internal static class Program
             parser);
 
         reader.ReadFromPercentage(0d, 10);
-        IColumnViewportReader columns = reader;
-        AssertSequence("cascaded display parser literal rows", reader.CurrentRows, "KEY=Value");
+        FilteredLogRecordSource columns = reader;
+        AssertSequence("cascaded display parser literal rows", reader.CurrentDisplayTexts, "KEY=Value");
         AssertSequence("cascaded display parser literal cells", columns.CurrentCells[0], "1", "KEY=Value");
     }
 
@@ -649,7 +624,7 @@ internal static class Program
             RegexStage(@": (?<json>.*)", "{json}"),
             JsonStage("{Timestamp} [{Logger}] {upper:Level} {Logger} - {Message}"));
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
@@ -659,18 +634,18 @@ internal static class Program
         reader.ReadFromPercentage(0d, 10);
         AssertSequence(
             "cascaded display parser multiline rows",
-            reader.CurrentRows,
+            reader.CurrentDisplayTexts,
             "2025-09-12 14:50:48.637060 [EventScheduler] INFO EventScheduler - " +
             "Strategy task JT67_48_250912145048_00064 is running");
         AssertSequence(
             "cascaded display parser multiline cells",
-            ((IColumnViewportReader)reader).CurrentCells[0],
+            ((FilteredLogRecordSource)reader).CurrentCells[0],
             "1",
             "2025-09-12 14:50:48.637060 [EventScheduler] INFO EventScheduler - " +
             "Strategy task JT67_48_250912145048_00064 is running");
         AssertEqual(
             "cascaded display parser multiline offset",
-            ((IFileOffsetViewportReader)reader).TryGetRowStartOffset(0, out long startOffset),
+            ((FilteredLogRecordSource)reader).TryGetRecordStartOffset(0, out long startOffset),
             true);
         AssertEqual("cascaded display parser multiline first offset", startOffset, 0L);
     }
@@ -685,7 +660,7 @@ internal static class Program
             RegexStage(@": (?<json>.*)", "{json}"),
             JsonStage("{upper:Level} - {Message}"));
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
@@ -693,7 +668,7 @@ internal static class Program
             parser);
 
         reader.ReadFromPercentage(0d, 10);
-        IColumnViewportReader columns = reader;
+        FilteredLogRecordSource columns = reader;
         AssertSequence("cascaded display parser regex headers", columns.ColumnHeaders, "#", "Text", "level", "message");
         AssertSequence("cascaded display parser regex cells", columns.CurrentCells[0], "2", "ERROR - failed", "ERROR", "failed");
     }
@@ -705,7 +680,7 @@ internal static class Program
             RegexStage(@": (?<json>.*)", "{json}"),
             JsonStage("{upper:Level} - {Message}"));
 
-        using FilteredVisualRowReader initial = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource initial = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
@@ -713,11 +688,11 @@ internal static class Program
             parser);
 
         File.AppendAllText(path, "Out[1]: {\"Level\":\"Error\",\"Message\":\"failed\"}\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-        using FilteredVisualRowReader appended = BuildAppendedReader(initial, new SearchOptions("ERROR", UseRegex: false, IgnoreCase: false), parser);
+        using FilteredLogRecordSource appended = BuildAppendedReader(initial, new SearchOptions("ERROR", UseRegex: false, IgnoreCase: false), parser);
         appended.ReadFromPercentage(0d, 10);
 
-        AssertSequence("cascaded display parser append rows", appended.CurrentRows, "ERROR - failed");
-        AssertSequence("cascaded display parser append cells", ((IColumnViewportReader)appended).CurrentCells[0], "2", "ERROR - failed");
+        AssertSequence("cascaded display parser append rows", appended.CurrentDisplayTexts, "ERROR - failed");
+        AssertSequence("cascaded display parser append cells", ((FilteredLogRecordSource)appended).CurrentCells[0], "2", "ERROR - failed");
     }
 
     private static void RunAppendSearchCompletesCascadedDisplayParserRecord(string tempRoot)
@@ -731,7 +706,7 @@ internal static class Program
             RegexStage(@": (?<json>.*)", "{json}"),
             JsonStage("{upper:Level} - {Message}"));
 
-        using FilteredVisualRowReader initial = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource initial = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
@@ -739,16 +714,16 @@ internal static class Program
             parser);
 
         File.AppendAllText(path, "a[2]: ning\"}\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-        using FilteredVisualRowReader appended = BuildAppendedReader(
+        using FilteredLogRecordSource appended = BuildAppendedReader(
             initial,
             new SearchOptions("running", UseRegex: false, IgnoreCase: false),
             parser);
         appended.ReadFromPercentage(0d, 10);
 
-        AssertSequence("cascaded display parser append combined rows", appended.CurrentRows, "INFO - running");
+        AssertSequence("cascaded display parser append combined rows", appended.CurrentDisplayTexts, "INFO - running");
         AssertSequence(
             "cascaded display parser append combined cells",
-            ((IColumnViewportReader)appended).CurrentCells[0],
+            ((FilteredLogRecordSource)appended).CurrentCells[0],
             "1",
             "INFO - running");
     }
@@ -757,14 +732,14 @@ internal static class Program
     {
         string path = WriteLog(tempRoot, "capture-groups.log", "aaabccc xx aabcc\r\nplain\r\n");
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
             new SearchOptions("(a+)b(c+)", UseRegex: true, IgnoreCase: false));
 
         reader.ReadFromPercentage(0d, 10);
-        IColumnViewportReader columns = reader;
+        FilteredLogRecordSource columns = reader;
 
         AssertSequence("capture headers", columns.ColumnHeaders, "#", "Text", "0", "1");
         AssertEqual("capture row count", columns.CurrentCells.Count, 1);
@@ -778,14 +753,14 @@ internal static class Program
     {
         string path = WriteLog(tempRoot, "named-capture-groups.log", "code-42 user-ian\r\nplain\r\n");
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
             new SearchOptions("code-(?<code>\\d+) user-(?<user>[a-z]+)", UseRegex: true, IgnoreCase: false));
 
         reader.ReadFromPercentage(0d, 10);
-        IColumnViewportReader columns = reader;
+        FilteredLogRecordSource columns = reader;
 
         AssertSequence("named capture headers", columns.ColumnHeaders, "#", "Text", "code", "user");
         AssertSequence("named capture cells", columns.CurrentCells[0], "1", "code-42 user-ian", "42", "ian");
@@ -795,14 +770,14 @@ internal static class Program
     {
         string path = WriteLog(tempRoot, "mixed-capture-groups.log", "aaabccc\r\nplain\r\n");
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
             new SearchOptions("(a+)b(?<suffix>c+)", UseRegex: true, IgnoreCase: false));
 
         reader.ReadFromPercentage(0d, 10);
-        IColumnViewportReader columns = reader;
+        FilteredLogRecordSource columns = reader;
 
         AssertSequence("mixed capture headers", columns.ColumnHeaders, "#", "Text", "0", "suffix");
         AssertSequence("mixed capture cells", columns.CurrentCells[0], "1", "aaabccc", "aaa", "ccc");
@@ -812,14 +787,14 @@ internal static class Program
     {
         string path = WriteLog(tempRoot, "non-capturing-groups.log", "GET /api/orders\r\nPOST /api/users\r\nplain\r\n");
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
             new SearchOptions("(?:GET|POST) /api/(?<resource>\\w+)", UseRegex: true, IgnoreCase: false));
 
         reader.ReadFromPercentage(0d, 10);
-        IColumnViewportReader columns = reader;
+        FilteredLogRecordSource columns = reader;
 
         AssertSequence("non-capturing headers", columns.ColumnHeaders, "#", "Text", "resource");
         AssertSequence("non-capturing first cells", columns.CurrentCells[0], "1", "GET /api/orders", "orders");
@@ -830,14 +805,14 @@ internal static class Program
     {
         string path = WriteLog(tempRoot, "only-non-capturing-groups.log", "GET /api/orders\r\nplain\r\n");
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
             new SearchOptions("(?:GET|POST) /api/\\w+", UseRegex: true, IgnoreCase: false));
 
         reader.ReadFromPercentage(0d, 10);
-        IColumnViewportReader columns = reader;
+        FilteredLogRecordSource columns = reader;
 
         AssertSequence("only non-capturing headers", columns.ColumnHeaders, "#", "Text");
         AssertSequence("only non-capturing cells", columns.CurrentCells[0], "1", "GET /api/orders");
@@ -847,14 +822,14 @@ internal static class Program
     {
         string path = WriteLog(tempRoot, "optional-capture-groups.log", "code-\r\ncode-42\r\nplain\r\n");
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
             new SearchOptions("code-(?<code>\\d+)?", UseRegex: true, IgnoreCase: false));
 
         reader.ReadFromPercentage(0d, 10);
-        IColumnViewportReader columns = reader;
+        FilteredLogRecordSource columns = reader;
 
         AssertSequence("optional capture headers", columns.ColumnHeaders, "#", "Text", "code");
         AssertSequence("optional capture empty cells", columns.CurrentCells[0], "1", "code-", string.Empty);
@@ -865,102 +840,102 @@ internal static class Program
     {
         string path = WriteLog(tempRoot, "regex-no-groups.log", "aaabccc\r\n");
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
             new SearchOptions("a+b", UseRegex: true, IgnoreCase: false));
 
         reader.ReadFromPercentage(0d, 10);
-        IColumnViewportReader columns = reader;
+        FilteredLogRecordSource columns = reader;
         AssertSequence("regex no-group headers", columns.ColumnHeaders, "#", "Text");
         AssertSequence("regex no-group cells", columns.CurrentCells[0], "1", "aaabccc");
-        AssertSequence("regex no-group rows", reader.CurrentRows, "aaabccc");
+        AssertSequence("regex no-group rows", reader.CurrentDisplayTexts, "aaabccc");
     }
 
     private static void RunLiteralSearchUsesPlainRows(string tempRoot)
     {
         string path = WriteLog(tempRoot, "literal.log", "line.with.dot\r\nplain\r\n");
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
             new SearchOptions(".", UseRegex: false, IgnoreCase: false));
 
         reader.ReadFromPercentage(0d, 10);
-        IColumnViewportReader columns = reader;
+        FilteredLogRecordSource columns = reader;
         AssertSequence("literal headers", columns.ColumnHeaders, "#", "Text");
         AssertSequence("literal cells", columns.CurrentCells[0], "1", "line.with.dot");
-        AssertSequence("literal rows", reader.CurrentRows, "line.with.dot");
+        AssertSequence("literal rows", reader.CurrentDisplayTexts, "line.with.dot");
     }
 
     private static void RunLiteralInvertMatch(string tempRoot)
     {
         string path = WriteLog(tempRoot, "literal-invert.log", "alpha\r\nplain\r\nbeta\r\n");
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
             new SearchOptions("alpha", UseRegex: false, IgnoreCase: false, InvertMatch: true));
 
         reader.ReadFromPercentage(0d, 10);
-        IColumnViewportReader columns = reader;
+        FilteredLogRecordSource columns = reader;
         AssertSequence("literal invert headers", columns.ColumnHeaders, "#", "Text");
         AssertSequence("literal invert first cells", columns.CurrentCells[0], "2", "plain");
         AssertSequence("literal invert second cells", columns.CurrentCells[1], "3", "beta");
-        AssertSequence("literal invert rows", reader.CurrentRows, "plain", "beta");
+        AssertSequence("literal invert rows", reader.CurrentDisplayTexts, "plain", "beta");
     }
 
     private static void RunRegexInvertMatch(string tempRoot)
     {
         string path = WriteLog(tempRoot, "regex-invert.log", "alpha\r\nplain\r\nbeta\r\n");
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
             new SearchOptions("^a", UseRegex: true, IgnoreCase: false, InvertMatch: true));
 
         reader.ReadFromPercentage(0d, 10);
-        IColumnViewportReader columns = reader;
+        FilteredLogRecordSource columns = reader;
         AssertSequence("regex invert headers", columns.ColumnHeaders, "#", "Text");
         AssertSequence("regex invert first cells", columns.CurrentCells[0], "2", "plain");
         AssertSequence("regex invert second cells", columns.CurrentCells[1], "3", "beta");
-        AssertSequence("regex invert rows", reader.CurrentRows, "plain", "beta");
+        AssertSequence("regex invert rows", reader.CurrentDisplayTexts, "plain", "beta");
     }
 
     private static void RunRegexCaptureGroupsInvertUsesPlainRows(string tempRoot)
     {
         string path = WriteLog(tempRoot, "regex-capture-invert.log", "aaabccc\r\nplain\r\n");
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
             new SearchOptions("(a+)b(c+)", UseRegex: true, IgnoreCase: false, InvertMatch: true));
 
         reader.ReadFromPercentage(0d, 10);
-        IColumnViewportReader columns = reader;
+        FilteredLogRecordSource columns = reader;
         AssertSequence("regex capture invert headers", columns.ColumnHeaders, "#", "Text");
         AssertSequence("regex capture invert cells", columns.CurrentCells[0], "2", "plain");
-        AssertSequence("regex capture invert rows", reader.CurrentRows, "plain");
+        AssertSequence("regex capture invert rows", reader.CurrentDisplayTexts, "plain");
     }
 
     private static void RunWrappedLineCaptureGroups(string tempRoot)
     {
-        string longText = "aaabccc" + new string('x', VisualRowReader.VisibleSegmentChars + 16);
+        string longText = "aaabccc" + new string('x', LongLineChunkChars + 16);
         string path = WriteLog(tempRoot, "wrapped-captures.log", longText + "\r\n");
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
             new SearchOptions("(a+)b(c+)", UseRegex: true, IgnoreCase: false));
 
         reader.ReadFromPercentage(0d, 3);
-        IColumnViewportReader columns = reader;
+        FilteredLogRecordSource columns = reader;
 
         AssertSequence("wrapped headers", columns.ColumnHeaders, "#", "Text", "0", "1");
         AssertEqual("wrapped row count", columns.CurrentCells.Count, 1);
@@ -974,7 +949,7 @@ internal static class Program
     {
         string path = WriteLog(tempRoot, "filtered-stale-start.log", "one\r\ntwo alpha\r\n");
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
@@ -988,7 +963,7 @@ internal static class Program
     {
         string path = WriteLog(tempRoot, "filtered-stale-end.log", "alpha\r\n");
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
@@ -1002,14 +977,14 @@ internal static class Program
     {
         string path = WriteLog(tempRoot, "filtered-lf.log", "alpha\nbeta\n");
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
             new SearchOptions("beta", UseRegex: false, IgnoreCase: false));
 
         reader.ReadFromPercentage(0d, 10);
-        AssertSequence("filtered lf rows", reader.CurrentRows, "beta");
+        AssertSequence("filtered lf rows", reader.CurrentDisplayTexts, "beta");
     }
 
     private static void RunFilteredLineValidationAcceptsUtf16Le(string tempRoot)
@@ -1017,14 +992,14 @@ internal static class Program
         string path = Path.Combine(tempRoot, "filtered-utf16-le.log");
         File.WriteAllText(path, "alpha\r\nbeta\r\n", Encoding.Unicode);
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.Unicode,
             dataOffset: 2,
             new SearchOptions("beta", UseRegex: false, IgnoreCase: false));
 
         reader.ReadFromPercentage(0d, 10);
-        AssertSequence("filtered utf16 le rows", reader.CurrentRows, "beta");
+        AssertSequence("filtered utf16 le rows", reader.CurrentDisplayTexts, "beta");
     }
 
     private static void RunFilteredLineValidationAcceptsUtf16Be(string tempRoot)
@@ -1032,67 +1007,67 @@ internal static class Program
         string path = Path.Combine(tempRoot, "filtered-utf16-be.log");
         File.WriteAllText(path, "alpha\r\nbeta\r\n", Encoding.BigEndianUnicode);
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.BigEndianUnicode,
             dataOffset: 2,
             new SearchOptions("beta", UseRegex: false, IgnoreCase: false));
 
         reader.ReadFromPercentage(0d, 10);
-        AssertSequence("filtered utf16 be rows", reader.CurrentRows, "beta");
+        AssertSequence("filtered utf16 be rows", reader.CurrentDisplayTexts, "beta");
     }
 
     private static void RunFilteredLineValidationAcceptsFinalLineWithoutBreak(string tempRoot)
     {
         string path = WriteLog(tempRoot, "filtered-no-final-break.log", "plain\r\nalpha");
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
             new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
 
         reader.ReadFromPercentage(0d, 10);
-        AssertSequence("filtered no final break rows", reader.CurrentRows, "alpha");
+        AssertSequence("filtered no final break rows", reader.CurrentDisplayTexts, "alpha");
     }
 
     private static void RunFilteredLineValidationAcceptsEmptyLine(string tempRoot)
     {
         string path = WriteLog(tempRoot, "filtered-empty-line.log", "alpha\r\n\r\nbeta\r\n");
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
             new SearchOptions("^$", UseRegex: true, IgnoreCase: false));
 
         reader.ReadFromPercentage(0d, 10);
-        AssertSequence("filtered empty line rows", reader.CurrentRows, string.Empty);
+        AssertSequence("filtered empty line rows", reader.CurrentDisplayTexts, string.Empty);
     }
 
     private static void RunSearchRowOffsetSyncsMainReader(string tempRoot)
     {
         string path = WriteLog(tempRoot, "search-row-offset-sync.log", "zero\r\none alpha\r\ntwo beta alpha\r\nthree\r\n");
 
-        using FilteredVisualRowReader filtered = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource filtered = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
             new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
 
-        AssertEqual("search row offset available", ((IFileOffsetViewportReader)filtered).TryGetRowStartOffset(1, out long startOffset), true);
+        AssertEqual("search row offset available", ((FilteredLogRecordSource)filtered).TryGetRecordStartOffset(1, out long startOffset), true);
 
-        using VisualRowReader main = new(path, Encoding.UTF8, dataOffset: 0);
+        using LogRecordSource main = new(path, Encoding.UTF8, dataOffset: 0);
         main.ReadFromOffset(startOffset, 2);
 
-        AssertSequence("search row offset main rows", main.CurrentRows, "two beta alpha", "three");
+        AssertSequence("search row offset main rows", main.CurrentDisplayTexts, "two beta alpha", "three");
     }
 
     private static void RunSearchRowOffsetDetectsStaleLine(string tempRoot)
     {
         string path = WriteLog(tempRoot, "search-row-offset-stale.log", "one\r\ntwo alpha\r\n");
 
-        using FilteredVisualRowReader filtered = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource filtered = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
@@ -1101,223 +1076,28 @@ internal static class Program
         File.WriteAllText(path, "one extended\r\ntwo alpha\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         AssertThrows<FilteredLineStaleException>(
             "search row offset stale",
-            () => ((IFileOffsetViewportReader)filtered).TryGetRowStartOffset(0, out _));
+            () => ((FilteredLogRecordSource)filtered).TryGetRecordStartOffset(0, out _));
     }
 
     private static void RunSearchRowOrdinalLookup(string tempRoot)
     {
         string path = WriteLog(tempRoot, "search-row-ordinal.log", "alpha-0\r\nskip\r\nalpha-1\r\nalpha-2\r\n");
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
             new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
 
         reader.ReadFromPercentage(0d, 2);
-        ViewportRowSelectionKey secondMatch = ((ISelectableViewportReader)reader).CurrentRowSelectionKeys[1];
+        LogRecordKey secondMatch = reader.CurrentRecords[1].Key;
         reader.ReadFromPercentage(100d, 2);
 
-        AssertEqual("search row ordinal available", ((IRowOrdinalViewportReader)reader).TryGetRowOrdinal(secondMatch, out long rowOrdinal), true);
+        AssertEqual("search row ordinal available", ((FilteredLogRecordSource)reader).TryGetRecordOrdinal(secondMatch, out long rowOrdinal), true);
         AssertEqual("search row ordinal value", rowOrdinal, 1L);
 
-        reader.ReadFromRowOrdinal(rowOrdinal, 2);
-        AssertSequence("search row ordinal rows", reader.CurrentRows, "alpha-1", "alpha-2");
-    }
-
-    private static void RunDisplayParserMainViewerParsesWholeWrappedJsonLine(string tempRoot)
-    {
-        string padding = new('x', VisualRowReader.VisibleSegmentChars + 32);
-        string json = "{ \"Padding\": \"" + padding + "\", \"Timestamp\": \"2026-06-11 10:20:30.123\", \"Level\": \"Info\", \"Logger\": \"LongLine\", \"Message\": \"done\" }";
-        string path = WriteLog(tempRoot, "display-parser-main-whole-line.log", json + "\r\nnext\r\n");
-        DisplayParserRule parser = ParserRule(JsonStage("{Timestamp} [{Logger}] {upper:Level} {Logger} - {Message}"));
-
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0, parser);
-        reader.ReadFromPercentage(0d, 4);
-
-        AssertSequence("display parser main whole line", reader.CurrentRows, "2026-06-11 10:20:30.123 [LongLine] INFO LongLine - done", "next");
-    }
-
-    private static void RunDisplayParserMainViewerSkipsRawSegmentsAfterShortParse(string tempRoot)
-    {
-        string padding = new('y', VisualRowReader.VisibleSegmentChars * 2);
-        string json = "{ \"Padding\": \"" + padding + "\", \"Message\": \"short\" }";
-        string path = WriteLog(tempRoot, "display-parser-main-short-output.log", json + "\r\nnext\r\n");
-        DisplayParserRule parser = ParserRule(JsonStage("{Message}"));
-
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0, parser);
-        reader.ReadFromPercentage(0d, 5);
-
-        AssertSequence("display parser main short output", reader.CurrentRows, "short", "next");
-    }
-
-    private static void RunDisplayParserMainViewerWrapsParsedOutput(string tempRoot)
-    {
-        string message = new('m', VisualRowReader.VisibleSegmentChars + 7);
-        string path = WriteLog(tempRoot, "display-parser-main-long-output.log", "{ \"Message\": \"" + message + "\" }\r\nnext\r\n");
-        DisplayParserRule parser = ParserRule(JsonStage("{Message}"));
-
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0, parser);
-        reader.ReadFromPercentage(0d, 3);
-
-        AssertSequence(
-            "display parser main long output",
-            reader.CurrentRows,
-            new string('m', VisualRowReader.VisibleSegmentChars),
-            new string('m', 7),
-            "next");
-    }
-
-    private static void RunDisplayParserMainViewerSelectionCopiesParsedLine(string tempRoot)
-    {
-        string message = new('s', VisualRowReader.VisibleSegmentChars + 9);
-        string path = WriteLog(tempRoot, "display-parser-main-selection.log", "{ \"Message\": \"" + message + "\" }\r\nnext\r\n");
-        DisplayParserRule parser = ParserRule(JsonStage("{Message}"));
-
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0, parser);
-        reader.ReadFromPercentage(0d, 3);
-        ISelectableViewportReader selectable = reader;
-        ViewportRowSelectionKey secondSegment = selectable.CurrentRowSelectionKeys[1];
-
-        IReadOnlyList<ViewportSelectedRow> rows = selectable.ReadSelectedRows(
-            selectAll: false,
-            new[] { new ViewportRowSelectionRange(secondSegment, secondSegment) },
-            Array.Empty<ViewportRowSelectionKey>());
-
-        AssertSelectedRows("display parser main selection", rows, message);
-    }
-
-    private static void RunDisplayParserMainViewerSplitsParsedNewlines(string tempRoot)
-    {
-        string[] separators = ["\n", "\r\n", "\r"];
-        for (int i = 0; i < separators.Length; i++)
-        {
-            string path = WriteLog(tempRoot, $"display-parser-main-newline-{i}.log", "{\"First\":\"a\",\"Second\":\"b\"}\r\n");
-            DisplayParserRule parser = ParserRule(JsonStage("{First}" + separators[i] + "{Second}"));
-
-            using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0, parser);
-            reader.ReadFromPercentage(0d, 3);
-
-            AssertSequence($"display parser main newline {i}", reader.CurrentRows, "a", "b");
-        }
-    }
-
-    private static void RunDisplayParserMainViewerPreservesEmptyParsedLines(string tempRoot)
-    {
-        string path = WriteLog(tempRoot, "display-parser-main-empty-lines.log", "{\"First\":\"a\",\"Second\":\"b\"}\r\n");
-        DisplayParserRule parser = ParserRule(JsonStage("{First}\n\n{Second}\n"));
-
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0, parser);
-        reader.ReadFromPercentage(0d, 5);
-
-        AssertSequence("display parser main empty lines", reader.CurrentRows, "a", string.Empty, "b", string.Empty);
-    }
-
-    private static void RunDisplayParserMainViewerWrapsParsedLinesIndependently(string tempRoot)
-    {
-        string first = new('x', VisualRowReader.VisibleSegmentChars + 1);
-        string path = WriteLog(tempRoot, "display-parser-main-newline-wrap.log", "{\"First\":\"" + first + "\",\"Second\":\"tail\"}\r\n");
-        DisplayParserRule parser = ParserRule(JsonStage("{First}\n{Second}"));
-
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0, parser);
-        reader.ReadFromPercentage(0d, 4);
-
-        AssertSequence(
-            "display parser main newline wrap",
-            reader.CurrentRows,
-            new string('x', VisualRowReader.VisibleSegmentChars),
-            "x",
-            "tail");
-    }
-
-    private static void RunDisplayParserMainViewerSelectionPreservesParsedNewlines(string tempRoot)
-    {
-        string path = WriteLog(tempRoot, "display-parser-main-newline-selection.log", "{\"First\":\"a\",\"Second\":\"b\"}\r\n");
-        DisplayParserRule parser = ParserRule(JsonStage("{First}\r\n{Second}"));
-
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0, parser);
-        reader.ReadFromPercentage(0d, 3);
-        ISelectableViewportReader selectable = reader;
-        ViewportRowSelectionKey secondVisualLine = selectable.CurrentRowSelectionKeys[1];
-
-        IReadOnlyList<ViewportSelectedRow> rows = selectable.ReadSelectedRows(
-            selectAll: false,
-            new[] { new ViewportRowSelectionRange(secondVisualLine, secondVisualLine) },
-            Array.Empty<ViewportRowSelectionKey>());
-
-        AssertSelectedRows("display parser main newline selection", rows, "a\r\nb");
-    }
-
-    private static void RunDisplayParserMainViewerCombinesJsonAcrossLines(string tempRoot)
-    {
-        string path = WriteLog(
-            tempRoot,
-            "display-parser-main-combined-json.log",
-            "a[0]: {\"Level\":\"Inf\r\n" +
-            "a[1]: o\",\"Message\":\"run\r\n" +
-            "a[2]: ning\"}\r\n" +
-            "plain\r\n");
-        DisplayParserRule parser = ParserRule(
-            RegexStage(@": (?<json>.*)", "{json}"),
-            JsonStage("{upper:Level} - {Message}"));
-
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0, parser);
-        reader.ReadFromPercentage(0d, 4);
-
-        AssertSequence("display parser main combined json", reader.CurrentRows, "INFO - running", "plain");
-        reader.ReadFromPercentage(100d, 1);
-        AssertSequence("display parser main combined json end", reader.CurrentRows, "plain");
-        reader.ReadPrevious(1);
-        AssertSequence("display parser main combined json previous", reader.CurrentRows, "ning\"}");
-    }
-
-    private static void RunDisplayParserMainViewerDoesNotBackscanFromContinuation(string tempRoot)
-    {
-        string firstLine = "a[0]: {\"Level\":\"Inf\r\n";
-        string path = WriteLog(
-            tempRoot,
-            "display-parser-main-combined-offset.log",
-            firstLine +
-            "a[1]: o\",\"Message\":\"run\r\n" +
-            "a[2]: ning\"}\r\n" +
-            "plain\r\n");
-        DisplayParserRule parser = ParserRule(
-            RegexStage(@": (?<json>.*)", "{json}"),
-            JsonStage("{upper:Level} - {Message}"));
-
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0, parser);
-        reader.ReadFromOffset(Encoding.UTF8.GetByteCount(firstLine), 2);
-
-        AssertSequence(
-            "display parser main combined continuation offset",
-            reader.CurrentRows,
-            "o\",\"Message\":\"run",
-            "ning\"}");
-    }
-
-    private static void RunDisplayParserMainViewerReloadDoesNotBackscanIntoIncompleteRecord(string tempRoot)
-    {
-        string path = WriteLog(
-            tempRoot,
-            "display-parser-main-combined-reload.log",
-            "a[0]: {\"Level\":\"Inf\r\n" +
-            "a[1]: o\",\"Message\":\"run\r\n");
-        DisplayParserRule parser = ParserRule(
-            RegexStage(@": (?<json>.*)", "{json}"),
-            JsonStage("{upper:Level} - {Message}"));
-
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0, parser);
-        reader.ReadFromPercentage(100d, 1);
-        AssertSequence("display parser main combined reload before append", reader.CurrentRows, "o\",\"Message\":\"run");
-
-        File.AppendAllText(path, "a[2]: ning\"}\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-        reader.ReloadAfterFileChange(2);
-
-        AssertSequence(
-            "display parser main combined reload after append",
-            reader.CurrentRows,
-            "o\",\"Message\":\"run",
-            "ning\"}");
+        reader.ReadFromRecordOrdinal(rowOrdinal, 2);
+        AssertSequence("search row ordinal rows", reader.CurrentDisplayTexts, "alpha-1", "alpha-2");
     }
 
     private static void RunSearchFindsTextOnSecondParsedLine(string tempRoot)
@@ -1328,7 +1108,7 @@ internal static class Program
             "{\"Level\":\"Info\",\"Message\":\"ready\"}\r\n{\"Level\":\"Error\",\"Message\":\"failed\"}\r\n");
         DisplayParserRule parser = ParserRule(JsonStage("{upper:Level}\n{Message}"));
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
@@ -1336,23 +1116,19 @@ internal static class Program
             parser);
 
         reader.ReadFromPercentage(0d, 3);
-        IColumnViewportReader columns = reader;
-        AssertSequence("display parser search second line rows", reader.CurrentRows, "failed");
+        FilteredLogRecordSource columns = reader;
+        AssertSequence("display parser search second line rows", reader.CurrentDisplayTexts, "failed");
         AssertSequence("display parser search second line cells", columns.CurrentCells[0], "2", "failed");
 
-        ISelectableViewportReader selectable = reader;
-        AssertEqual("display parser search second line key", selectable.CurrentRowSelectionKeys[0].SegmentIndex, 1);
+        LogRecordKey key = reader.CurrentRecords[0].Key;
+        AssertEqual("display parser search second line key", key.ExplicitRowIndex, 1);
         AssertEqual(
             "display parser search second line ordinal",
-            ((IRowOrdinalViewportReader)reader).TryGetRowOrdinal(selectable.CurrentRowSelectionKeys[0], out long rowOrdinal),
+            ((FilteredLogRecordSource)reader).TryGetRecordOrdinal(key, out long rowOrdinal),
             true);
         AssertEqual("display parser search second line ordinal value", rowOrdinal, 0L);
 
-        IReadOnlyList<ViewportSelectedRow> selectedRows = selectable.ReadSelectedRows(
-            selectAll: true,
-            Array.Empty<ViewportRowSelectionRange>(),
-            Array.Empty<ViewportRowSelectionKey>());
-        AssertSelectedRows("display parser search second line selection", selectedRows, "failed");
+        AssertSelectedRows("display parser search second line selection", ReadAllRecords(reader), "failed");
     }
 
     private static void RunSearchCapturesOnlyMatchingParsedLine(string tempRoot)
@@ -1360,7 +1136,7 @@ internal static class Program
         string path = WriteLog(tempRoot, "display-parser-search-multiline-captures.log", "{\"Level\":\"Error\",\"Message\":\"failed\"}\r\n");
         DisplayParserRule parser = ParserRule(JsonStage("{upper:Level}\n{Message}"));
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
@@ -1368,11 +1144,11 @@ internal static class Program
             parser);
 
         reader.ReadFromPercentage(0d, 3);
-        IColumnViewportReader columns = reader;
+        FilteredLogRecordSource columns = reader;
         AssertSequence("display parser multiline capture headers", columns.ColumnHeaders, "#", "Text", "message");
         AssertSequence("display parser multiline capture cells", columns.CurrentCells[0], "1", "failed", "failed");
 
-        using FilteredVisualRowReader crossLineReader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource crossLineReader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
@@ -1383,14 +1159,14 @@ internal static class Program
 
     private static void RunSearchDoesNotWrapLongParsedLine(string tempRoot)
     {
-        string first = new('x', VisualRowReader.VisibleSegmentChars + 5);
+        string first = new('x', LongLineChunkChars + 5);
         string path = WriteLog(
             tempRoot,
             "display-parser-search-long-explicit-lines.log",
             "{\"First\":\"" + first + "\",\"Second\":\"tail\"}\r\n");
         DisplayParserRule parser = ParserRule(JsonStage("{First}\n{Second}"));
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
@@ -1398,12 +1174,8 @@ internal static class Program
             parser);
 
         reader.ReadFromPercentage(0d, 3);
-        AssertSequence("display parser search long explicit rows", reader.CurrentRows, "tail");
-        IReadOnlyList<ViewportSelectedRow> selected = ((ISelectableViewportReader)reader).ReadSelectedRows(
-            selectAll: true,
-            Array.Empty<ViewportRowSelectionRange>(),
-            Array.Empty<ViewportRowSelectionKey>());
-        AssertSelectedRows("display parser search long explicit selection", selected, "tail");
+        AssertSequence("display parser search long explicit rows", reader.CurrentDisplayTexts, "tail");
+        AssertSelectedRows("display parser search long explicit selection", ReadAllRecords(reader), "tail");
     }
 
     private static void RunSearchReturnsEachMatchingParsedLine(string tempRoot)
@@ -1414,7 +1186,7 @@ internal static class Program
             "{\"First\":\"MATCH one\",\"Second\":\"skip\",\"Third\":\"MATCH two\"}\r\n");
         DisplayParserRule parser = ParserRule(JsonStage("{First}\n{Second}\n{Third}"));
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
@@ -1422,13 +1194,14 @@ internal static class Program
             parser);
         reader.ReadFromPercentage(0d, 3);
 
-        AssertSequence("display parser multiple matching rows", reader.CurrentRows, "MATCH one", "MATCH two");
-        IReadOnlyList<ViewportRowSelectionKey> keys = ((ISelectableViewportReader)reader).CurrentRowSelectionKeys;
-        AssertEqual("display parser multiple first segment", keys[0].SegmentIndex, 0);
-        AssertEqual("display parser multiple second segment", keys[1].SegmentIndex, 2);
-        AssertEqual("display parser multiple first ordinal", ((IRowOrdinalViewportReader)reader).TryGetRowOrdinal(keys[0], out long firstOrdinal), true);
+        AssertSequence("display parser multiple matching rows", reader.CurrentDisplayTexts, "MATCH one", "MATCH two");
+        LogRecordKey firstKey = reader.CurrentRecords[0].Key;
+        LogRecordKey secondKey = reader.CurrentRecords[1].Key;
+        AssertEqual("display parser multiple first segment", firstKey.ExplicitRowIndex, 0);
+        AssertEqual("display parser multiple second segment", secondKey.ExplicitRowIndex, 2);
+        AssertEqual("display parser multiple first ordinal", ((FilteredLogRecordSource)reader).TryGetRecordOrdinal(firstKey, out long firstOrdinal), true);
         AssertEqual("display parser multiple first ordinal value", firstOrdinal, 0L);
-        AssertEqual("display parser multiple second ordinal", ((IRowOrdinalViewportReader)reader).TryGetRowOrdinal(keys[1], out long secondOrdinal), true);
+        AssertEqual("display parser multiple second ordinal", ((FilteredLogRecordSource)reader).TryGetRecordOrdinal(secondKey, out long secondOrdinal), true);
         AssertEqual("display parser multiple second ordinal value", secondOrdinal, 1L);
     }
 
@@ -1437,7 +1210,7 @@ internal static class Program
         string path = WriteLog(tempRoot, "display-parser-search-invert-lines.log", "{\"Level\":\"ERROR\",\"Message\":\"failed\"}\r\n");
         DisplayParserRule parser = ParserRule(JsonStage("{Level}\n{Message}"));
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
@@ -1445,7 +1218,7 @@ internal static class Program
             parser);
         reader.ReadFromPercentage(0d, 3);
 
-        AssertSequence("display parser invert rows", reader.CurrentRows, "ERROR");
+        AssertSequence("display parser invert rows", reader.CurrentDisplayTexts, "ERROR");
     }
 
     private static void RunCascadedSearchDoesNotCrossParsedLines(string tempRoot)
@@ -1458,10 +1231,10 @@ internal static class Program
             new("failed", UseRegex: false, IgnoreCase: false)
         };
 
-        FilteredVisualRowReader[] readers = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, options, parser);
+        FilteredLogRecordSource[] readers = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, options, parser);
         try
         {
-            AssertSequence("display parser cascade first rows", readers[0].CurrentRows, "ERROR");
+            AssertSequence("display parser cascade first rows", readers[0].CurrentDisplayTexts, "ERROR");
             AssertEqual("display parser cascade second count", readers[1].MatchedLineCount, 0L);
         }
         finally
@@ -1485,7 +1258,7 @@ internal static class Program
             new("failed", UseRegex: false, IgnoreCase: false)
         };
 
-        FilteredVisualRowReader[] initial = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, initialOptions, parser);
+        FilteredLogRecordSource[] initial = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, initialOptions, parser);
         try
         {
             StagedSearchProgressUpdate finalUpdate = default;
@@ -1498,7 +1271,7 @@ internal static class Program
                 CancellationToken.None,
                 parser);
 
-            using FilteredVisualRowReader changed = finalUpdate.Readers[1] ?? throw new InvalidOperationException("Changed parser cascade reader missing.");
+            using FilteredLogRecordSource changed = finalUpdate.Readers[1] ?? throw new InvalidOperationException("Changed parser cascade reader missing.");
             AssertEqual("display parser changed cascade second count", changed.MatchedLineCount, 0L);
         }
         finally
@@ -1512,344 +1285,14 @@ internal static class Program
         string path = WriteLog(tempRoot, "display-parser-append-lines.log", "{\"Level\":\"INFO\",\"Message\":\"ready\"}\r\n");
         DisplayParserRule parser = ParserRule(JsonStage("{Level}\n{Message}"));
         SearchOptions options = new("failed", UseRegex: false, IgnoreCase: false);
-        using FilteredVisualRowReader initial = LogSearchBuilder.BuildFilteredReader(path, Encoding.UTF8, dataOffset: 0, options, parser);
+        using FilteredLogRecordSource initial = LogSearchBuilder.BuildFilteredReader(path, Encoding.UTF8, dataOffset: 0, options, parser);
         File.AppendAllText(path, "{\"Level\":\"ERROR\",\"Message\":\"failed\"}\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 
-        using FilteredVisualRowReader appended = BuildAppendedReader(initial, options, parser);
+        using FilteredLogRecordSource appended = BuildAppendedReader(initial, options, parser);
         appended.ReadFromPercentage(0d, 3);
 
-        AssertSequence("display parser append matching row", appended.CurrentRows, "failed");
-        AssertEqual("display parser append matching segment", ((ISelectableViewportReader)appended).CurrentRowSelectionKeys[0].SegmentIndex, 1);
-    }
-
-    private static void RunVisualHighlightGroupsWrappedLine(string tempRoot)
-    {
-        string line = new string('a', VisualRowReader.VisibleSegmentChars) +
-            "MATCH" +
-            new string('b', VisualRowReader.VisibleSegmentChars);
-        string path = WriteLog(tempRoot, "highlight-groups-wrapped-line.log", line + "\r\n");
-
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
-        reader.ReadFromPercentage(0d, 4);
-        IHighlightGroupViewportReader highlightReader = reader;
-        IReadOnlyList<ViewportHighlightGroupKey> keys = highlightReader.CurrentHighlightGroupKeys;
-        IReadOnlyList<ViewportHighlightGroup> groups = highlightReader.ReadCurrentHighlightGroups();
-
-        AssertEqual("highlight wrapped row count", reader.CurrentRows.Count, 3);
-        AssertEqual("highlight wrapped key count", keys.Count, 3);
-        AssertEqual("highlight wrapped second key", keys[1], keys[0]);
-        AssertEqual("highlight wrapped third key", keys[2], keys[0]);
-        AssertEqual("highlight wrapped group count", groups.Count, 1);
-        AssertEqual("highlight wrapped group key", groups[0].Key, keys[0]);
-        AssertEqual("highlight wrapped group text", groups[0].Text, line);
-    }
-
-    private static void RunVisualHighlightGroupsParsedRecord(string tempRoot)
-    {
-        string first = new('x', VisualRowReader.VisibleSegmentChars + 1);
-        string path = WriteLog(
-            tempRoot,
-            "highlight-groups-parser-main.log",
-            "{\"First\":\"" + first + "\",\"Second\":\"tail\"}\r\n");
-        DisplayParserRule parser = ParserRule(JsonStage("{First}\n{Second}"));
-
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0, parser);
-        reader.ReadFromPercentage(0d, 4);
-        IHighlightGroupViewportReader highlightReader = reader;
-        IReadOnlyList<ViewportHighlightGroupKey> keys = highlightReader.CurrentHighlightGroupKeys;
-        IReadOnlyList<ViewportHighlightGroup> groups = highlightReader.ReadCurrentHighlightGroups();
-
-        AssertEqual("highlight parser main row count", reader.CurrentRows.Count, 3);
-        AssertEqual("highlight parser main key count", keys.Count, 3);
-        AssertEqual("highlight parser main second key", keys[1], keys[0]);
-        AssertEqual("highlight parser main third key", keys[2], keys[0]);
-        AssertEqual("highlight parser main group count", groups.Count, 1);
-        AssertEqual("highlight parser main group text", groups[0].Text, first + "\ntail");
-    }
-
-    private static void RunFilteredHighlightGroupsParsedRecord(string tempRoot)
-    {
-        string path = WriteLog(
-            tempRoot,
-            "highlight-groups-parser-search.log",
-            "{\"Level\":\"ERROR\",\"Message\":\"failed\"}\r\n");
-        DisplayParserRule parser = ParserRule(JsonStage("{Level}\n{Message}"));
-
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
-            path,
-            Encoding.UTF8,
-            dataOffset: 0,
-            new SearchOptions("failed", UseRegex: false, IgnoreCase: false),
-            parser);
-        reader.ReadFromPercentage(0d, 3);
-        IHighlightGroupViewportReader highlightReader = reader;
-        IReadOnlyList<ViewportHighlightGroupKey> keys = highlightReader.CurrentHighlightGroupKeys;
-        IReadOnlyList<ViewportHighlightGroup> groups = highlightReader.ReadCurrentHighlightGroups();
-
-        AssertEqual("highlight parser search row count", reader.CurrentRows.Count, 1);
-        AssertEqual("highlight parser search key count", keys.Count, 1);
-        AssertEqual("highlight parser search group count", groups.Count, 1);
-        AssertEqual("highlight parser search group key", groups[0].Key, keys[0]);
-        AssertEqual("highlight parser search group text", groups[0].Text, "ERROR\nfailed");
-    }
-
-    private static void RunVisualTextSelectionSegmentsWrappedWord(string tempRoot)
-    {
-        string prefix = new('a', VisualRowReader.VisibleSegmentChars - 3);
-        string word = "boundaryword";
-        string line = prefix + word + " tail";
-        string path = WriteLog(tempRoot, "text-selection-wrapped-word.log", line + "\r\n");
-
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
-        reader.ReadFromPercentage(0d, 3);
-        ISelectableViewportReader selectable = reader;
-        ITextSelectionViewportReader textReader = reader;
-        IReadOnlyList<ViewportTextSegmentKey> textKeys = textReader.CurrentTextSegmentKeys;
-
-        AssertEqual("text selection wrapped row count", reader.CurrentRows.Count, 2);
-        AssertEqual("text selection wrapped row keys shared", selectable.CurrentRowSelectionKeys[1], selectable.CurrentRowSelectionKeys[0]);
-        AssertEqual("text selection wrapped segment keys differ", textKeys[1] == textKeys[0], false);
-        AssertEqual("text selection wrapped group shared", textKeys[1].GroupKey, textKeys[0].GroupKey);
-        AssertEqual("text selection wrapped context available", textReader.TryReadTextSelectionContext(textKeys[1], out ViewportTextSelectionContext context), true);
-        AssertEqual("text selection wrapped full text", context.Text, line);
-        AssertEqual("text selection wrapped segment count", context.Segments.Count, 2);
-        AssertEqual("text selection wrapped first start", context.Segments[0].Start, 0);
-        AssertEqual("text selection wrapped first length", context.Segments[0].Length, VisualRowReader.VisibleSegmentChars);
-        AssertEqual("text selection wrapped second start", context.Segments[1].Start, VisualRowReader.VisibleSegmentChars);
-        AssertEqual("text selection wrapped cross-boundary word", context.Text.Substring(prefix.Length, word.Length), word);
-    }
-
-    private static void RunVisualTextSelectionSegmentsParsedRecord(string tempRoot)
-    {
-        string first = new('x', VisualRowReader.VisibleSegmentChars + 5);
-        string parsedText = first + "\nsecond";
-        string path = WriteLog(
-            tempRoot,
-            "text-selection-parser-main.log",
-            "{\"First\":\"" + first + "\",\"Second\":\"second\"}\r\n");
-        DisplayParserRule parser = ParserRule(JsonStage("{First}\n{Second}"));
-
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0, parser);
-        reader.ReadFromPercentage(0d, 4);
-        ITextSelectionViewportReader textReader = reader;
-        IReadOnlyList<ViewportTextSegmentKey> keys = textReader.CurrentTextSegmentKeys;
-
-        AssertEqual("text selection parser main row count", keys.Count, 3);
-        AssertEqual("text selection parser main unique second", keys[1] == keys[0], false);
-        AssertEqual("text selection parser main unique third", keys[2] == keys[1], false);
-        AssertEqual("text selection parser main context available", textReader.TryReadTextSelectionContext(keys[2], out ViewportTextSelectionContext context), true);
-        AssertEqual("text selection parser main full text", context.Text, parsedText);
-        AssertEqual("text selection parser main third start", context.Segments[2].Start, first.Length + 1);
-        AssertEqual("text selection parser main third length", context.Segments[2].Length, "second".Length);
-    }
-
-    private static void RunFilteredTextSelectionSegmentsParsedRecord(string tempRoot)
-    {
-        string path = WriteLog(
-            tempRoot,
-            "text-selection-parser-search.log",
-            "{\"Level\":\"ERROR\",\"Message\":\"failed\"}\r\n");
-        DisplayParserRule parser = ParserRule(JsonStage("{Level}\n{Message}"));
-
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
-            path,
-            Encoding.UTF8,
-            dataOffset: 0,
-            new SearchOptions("failed", UseRegex: false, IgnoreCase: false),
-            parser);
-        reader.ReadFromPercentage(0d, 3);
-        ITextSelectionViewportReader textReader = reader;
-        IReadOnlyList<ViewportTextSegmentKey> keys = textReader.CurrentTextSegmentKeys;
-
-        AssertEqual("text selection parser search row count", keys.Count, 1);
-        AssertEqual("text selection parser search matched segment", keys[0].SegmentIndex, 1);
-        AssertEqual("text selection parser search context available", textReader.TryReadTextSelectionContext(keys[0], out ViewportTextSelectionContext context), true);
-        AssertEqual("text selection parser search full text", context.Text, "ERROR\nfailed");
-        AssertEqual(
-            "text selection parser search first range",
-            context.Segments[0],
-            new ViewportTextSegmentRange(new ViewportTextSegmentKey(keys[0].GroupKey, 0), 0, 5));
-        AssertEqual("text selection parser search second range", context.Segments[1], new ViewportTextSegmentRange(keys[0], 6, 6));
-    }
-
-    private static void RunVisualSelectionRangeAcrossViewport(string tempRoot)
-    {
-        string path = WriteLog(tempRoot, "visual-selection-range.log", "line-0\r\nline-1\r\nline-2\r\nline-3\r\n");
-
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
-        reader.ReadFromPercentage(0d, 2);
-        ISelectableViewportReader selectable = reader;
-        ViewportRowSelectionKey first = selectable.CurrentRowSelectionKeys[0];
-        reader.ReadFromPercentage(100d, 2);
-        ViewportRowSelectionKey last = selectable.CurrentRowSelectionKeys[1];
-
-        IReadOnlyList<ViewportSelectedRow> rows = selectable.ReadSelectedRows(
-            selectAll: false,
-            new[] { new ViewportRowSelectionRange(first, last) },
-            Array.Empty<ViewportRowSelectionKey>());
-
-        AssertSelectedRows("visual selection range", rows, "line-0", "line-1", "line-2", "line-3");
-    }
-
-    private static void RunVisualSelectionSelectsAllRows(string tempRoot)
-    {
-        string path = WriteLog(tempRoot, "visual-selection-all.log", "line-0\r\nline-1\r\nline-2\r\n");
-
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
-        IReadOnlyList<ViewportSelectedRow> rows = ((ISelectableViewportReader)reader).ReadSelectedRows(
-            selectAll: true,
-            Array.Empty<ViewportRowSelectionRange>(),
-            Array.Empty<ViewportRowSelectionKey>());
-
-        AssertSelectedRows("visual selection all", rows, "line-0", "line-1", "line-2");
-    }
-
-    private static void RunVisualSelectionWrappedRowCopiesOriginalLine(string tempRoot)
-    {
-        string wrappedLine = new string('a', VisualRowReader.VisibleSegmentChars) + "tail";
-        string path = WriteLog(tempRoot, "visual-selection-wrapped-line.log", wrappedLine + "\r\nnext\r\n");
-
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
-        reader.ReadFromPercentage(0d, 3);
-        ISelectableViewportReader selectable = reader;
-        ViewportRowSelectionKey secondSegment = selectable.CurrentRowSelectionKeys[1];
-
-        IReadOnlyList<ViewportSelectedRow> rows = selectable.ReadSelectedRows(
-            selectAll: false,
-            new[] { new ViewportRowSelectionRange(secondSegment, secondSegment) },
-            Array.Empty<ViewportRowSelectionKey>());
-
-        AssertSelectedRows("visual selection wrapped line", rows, wrappedLine);
-    }
-
-    private static void RunVisualSelectionWrappedRangeDeduplicatesLine(string tempRoot)
-    {
-        string wrappedLine = new string('b', VisualRowReader.VisibleSegmentChars) + "tail";
-        string path = WriteLog(tempRoot, "visual-selection-wrapped-range.log", wrappedLine + "\r\nnext\r\n");
-
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
-        reader.ReadFromPercentage(0d, 3);
-        ISelectableViewportReader selectable = reader;
-        ViewportRowSelectionKey secondSegment = selectable.CurrentRowSelectionKeys[1];
-        ViewportRowSelectionKey nextLine = selectable.CurrentRowSelectionKeys[2];
-
-        IReadOnlyList<ViewportSelectedRow> rows = selectable.ReadSelectedRows(
-            selectAll: false,
-            new[] { new ViewportRowSelectionRange(secondSegment, nextLine) },
-            Array.Empty<ViewportRowSelectionKey>());
-
-        AssertSelectedRows("visual selection wrapped range", rows, wrappedLine, "next");
-    }
-
-    private static void RunVisualSelectionSelectAllUsesRealLines(string tempRoot)
-    {
-        string wrappedLine = new string('c', VisualRowReader.VisibleSegmentChars) + "tail";
-        string path = WriteLog(tempRoot, "visual-selection-all-wrapped.log", wrappedLine + "\r\nnext\r\n");
-
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
-        IReadOnlyList<ViewportSelectedRow> rows = ((ISelectableViewportReader)reader).ReadSelectedRows(
-            selectAll: true,
-            Array.Empty<ViewportRowSelectionRange>(),
-            Array.Empty<ViewportRowSelectionKey>());
-
-        AssertSelectedRows("visual selection all wrapped", rows, wrappedLine, "next");
-    }
-
-    private static void RunVisualSelectionWrappedExclusionExcludesWholeLine(string tempRoot)
-    {
-        string wrappedLine = new string('d', VisualRowReader.VisibleSegmentChars) + "tail";
-        string path = WriteLog(tempRoot, "visual-selection-wrapped-excluded.log", wrappedLine + "\r\nnext\r\n");
-
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
-        reader.ReadFromPercentage(0d, 3);
-        ISelectableViewportReader selectable = reader;
-        ViewportRowSelectionKey secondSegment = selectable.CurrentRowSelectionKeys[1];
-
-        IReadOnlyList<ViewportSelectedRow> rows = selectable.ReadSelectedRows(
-            selectAll: true,
-            Array.Empty<ViewportRowSelectionRange>(),
-            new[] { secondSegment });
-
-        AssertSelectedRows("visual selection wrapped excluded", rows, "next");
-    }
-
-    private static void RunFilteredSelectionRangeAcrossResults(string tempRoot)
-    {
-        string path = WriteLog(tempRoot, "filtered-selection-range.log", "alpha-0\r\nskip\r\nalpha-1\r\nalpha-2\r\n");
-
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
-            path,
-            Encoding.UTF8,
-            dataOffset: 0,
-            new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
-
-        reader.ReadFromPercentage(0d, 2);
-        ISelectableViewportReader selectable = reader;
-        ViewportRowSelectionKey first = selectable.CurrentRowSelectionKeys[0];
-        reader.ReadFromPercentage(100d, 2);
-        ViewportRowSelectionKey last = selectable.CurrentRowSelectionKeys[1];
-        IReadOnlyList<ViewportSelectedRow> rows = selectable.ReadSelectedRows(
-            selectAll: false,
-            new[] { new ViewportRowSelectionRange(first, last) },
-            Array.Empty<ViewportRowSelectionKey>());
-
-        AssertSelectedRows("filtered selection range", rows, "alpha-0", "alpha-1", "alpha-2");
-    }
-
-    private static void RunFilteredSelectionSelectsAllRows(string tempRoot)
-    {
-        string path = WriteLog(tempRoot, "filtered-selection-all.log", "alpha-0\r\nskip\r\nalpha-1\r\n");
-
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
-            path,
-            Encoding.UTF8,
-            dataOffset: 0,
-            new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
-
-        IReadOnlyList<ViewportSelectedRow> rows = ((ISelectableViewportReader)reader).ReadSelectedRows(
-            selectAll: true,
-            Array.Empty<ViewportRowSelectionRange>(),
-            Array.Empty<ViewportRowSelectionKey>());
-
-        AssertSelectedRows("filtered selection all", rows, "alpha-0", "alpha-1");
-    }
-
-    private static void RunFilteredSelectionCopiesCaptureCells(string tempRoot)
-    {
-        string path = WriteLog(tempRoot, "filtered-selection-cells.log", "aaabccc xx aabcc\r\nplain\r\n");
-
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
-            path,
-            Encoding.UTF8,
-            dataOffset: 0,
-            new SearchOptions("(a+)b(c+)", UseRegex: true, IgnoreCase: false));
-
-        IReadOnlyList<ViewportSelectedRow> rows = ((ISelectableViewportReader)reader).ReadSelectedRows(
-            selectAll: true,
-            Array.Empty<ViewportRowSelectionRange>(),
-            Array.Empty<ViewportRowSelectionKey>());
-
-        AssertEqual("filtered selection cells row count", rows.Count, 1);
-        AssertSequence("filtered selection cells", rows[0].Cells ?? Array.Empty<string>(), "aaabccc xx aabcc", "aaa", "ccc");
-    }
-
-    private static void RunFilteredSelectionCopiesLiteralTextCell(string tempRoot)
-    {
-        string path = WriteLog(tempRoot, "filtered-selection-literal-cell.log", "line.with.dot\r\nplain\r\n");
-
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
-            path,
-            Encoding.UTF8,
-            dataOffset: 0,
-            new SearchOptions(".", UseRegex: false, IgnoreCase: false));
-
-        IReadOnlyList<ViewportSelectedRow> rows = ((ISelectableViewportReader)reader).ReadSelectedRows(
-            selectAll: true,
-            Array.Empty<ViewportRowSelectionRange>(),
-            Array.Empty<ViewportRowSelectionKey>());
-
-        AssertEqual("filtered selection literal cell row count", rows.Count, 1);
-        AssertSequence("filtered selection literal cell", rows[0].Cells ?? Array.Empty<string>(), "line.with.dot");
+        AssertSequence("display parser append matching row", appended.CurrentDisplayTexts, "failed");
+        AssertEqual("display parser append matching segment", appended.CurrentRecords[0].Key.ExplicitRowIndex, 1);
     }
 
     private static void RunInvalidRegexValidation()
@@ -1882,9 +1325,9 @@ internal static class Program
 
     private static void RunNonBacktrackingRegexLeadingDotStarNoMatchOnLongLine(string tempRoot)
     {
-        string path = WriteLog(tempRoot, "nonbacktracking-leading-dotstar-no-match.log", new string('a', VisualRowReader.VisibleSegmentChars * 12) + "\r\n");
+        string path = WriteLog(tempRoot, "nonbacktracking-leading-dotstar-no-match.log", new string('a', LongLineChunkChars * 12) + "\r\n");
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
@@ -1896,10 +1339,10 @@ internal static class Program
 
     private static void RunNonBacktrackingRegexLeadingDotStarMatchesLongLine(string tempRoot)
     {
-        string line = new string('a', VisualRowReader.VisibleSegmentChars * 6) + "ERROR" + new string('b', VisualRowReader.VisibleSegmentChars * 6);
+        string line = new string('a', LongLineChunkChars * 6) + "ERROR" + new string('b', LongLineChunkChars * 6);
         string path = WriteLog(tempRoot, "nonbacktracking-leading-dotstar-match.log", line + "\r\n");
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
@@ -1918,12 +1361,12 @@ internal static class Program
             new("beta", UseRegex: false, IgnoreCase: false)
         };
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(path, Encoding.UTF8, dataOffset: 0, options);
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(path, Encoding.UTF8, dataOffset: 0, options);
         reader.ReadFromPercentage(0d, 10);
 
         AssertEqual("cascade literal count", reader.MatchedLineCount, 1L);
-        AssertSequence("cascade literal rows", reader.CurrentRows, "alpha beta");
-        AssertSequence("cascade literal cells", ((IColumnViewportReader)reader).CurrentCells[0], "2", "alpha beta");
+        AssertSequence("cascade literal rows", reader.CurrentDisplayTexts, "alpha beta");
+        AssertSequence("cascade literal cells", ((FilteredLogRecordSource)reader).CurrentCells[0], "2", "alpha beta");
     }
 
     private static void RunChangedCascadedSearchFiltersPreviousReader(string tempRoot)
@@ -1940,7 +1383,7 @@ internal static class Program
             new("user=bob", UseRegex: false, IgnoreCase: false)
         };
 
-        FilteredVisualRowReader[] initialReaders = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, initialOptions);
+        FilteredLogRecordSource[] initialReaders = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, initialOptions);
         try
         {
             StagedSearchProgressUpdate finalUpdate = default;
@@ -1955,14 +1398,14 @@ internal static class Program
             AssertEqual("changed cascade prefix reader unchanged", finalUpdate.Readers[0] is null, true);
             AssertEqual("changed cascade first stage count", finalUpdate.MatchedLineCounts[0], 2L);
             AssertEqual("changed cascade second stage count", finalUpdate.MatchedLineCounts[1], 1L);
-            using FilteredVisualRowReader changedReader = finalUpdate.Readers[1] ?? throw new InvalidOperationException("changed cascade reader missing.");
-            IReadOnlyList<string> rows = changedReader.ReadFromPercentage(0d, 10);
+            using FilteredLogRecordSource changedReader = finalUpdate.Readers[1] ?? throw new InvalidOperationException("changed cascade reader missing.");
+            changedReader.ReadFromPercentage(0d, 10);
 
-            AssertSequence("changed cascade rows", rows, "ERROR user=bob");
+            AssertSequence("changed cascade rows", changedReader.CurrentDisplayTexts, "ERROR user=bob");
         }
         finally
         {
-            foreach (FilteredVisualRowReader reader in initialReaders)
+            foreach (FilteredLogRecordSource reader in initialReaders)
             {
                 reader.Dispose();
             }
@@ -1978,12 +1421,12 @@ internal static class Program
             new("drop", UseRegex: false, IgnoreCase: false, InvertMatch: true)
         };
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(path, Encoding.UTF8, dataOffset: 0, options);
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(path, Encoding.UTF8, dataOffset: 0, options);
         reader.ReadFromPercentage(0d, 10);
 
         AssertEqual("cascade invert count", reader.MatchedLineCount, 1L);
-        AssertSequence("cascade invert rows", reader.CurrentRows, "alpha keep");
-        AssertSequence("cascade invert cells", ((IColumnViewportReader)reader).CurrentCells[0], "1", "alpha keep");
+        AssertSequence("cascade invert rows", reader.CurrentDisplayTexts, "alpha keep");
+        AssertSequence("cascade invert cells", ((FilteredLogRecordSource)reader).CurrentCells[0], "1", "alpha keep");
     }
 
     private static void RunCascadedInvalidRegexValidation()
@@ -2015,9 +1458,9 @@ internal static class Program
             new("code-(\\d+)", UseRegex: true, IgnoreCase: false)
         };
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(path, Encoding.UTF8, dataOffset: 0, options);
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(path, Encoding.UTF8, dataOffset: 0, options);
         reader.ReadFromPercentage(0d, 10);
-        IColumnViewportReader columns = reader;
+        FilteredLogRecordSource columns = reader;
 
         AssertSequence("cascade capture headers", columns.ColumnHeaders, "#", "Text", "0");
         AssertEqual("cascade capture row count", columns.CurrentCells.Count, 2);
@@ -2034,9 +1477,9 @@ internal static class Program
             new("(?:GET|POST) /api/\\w+", UseRegex: true, IgnoreCase: false)
         };
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(path, Encoding.UTF8, dataOffset: 0, options);
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(path, Encoding.UTF8, dataOffset: 0, options);
         reader.ReadFromPercentage(0d, 10);
-        IColumnViewportReader columns = reader;
+        FilteredLogRecordSource columns = reader;
 
         AssertSequence("cascade named capture headers", columns.ColumnHeaders, "#", "Text", "code");
         AssertSequence("cascade named capture first cells", columns.CurrentCells[0], "1", "code-42 GET /api/orders", "42");
@@ -2052,7 +1495,7 @@ internal static class Program
             new("beta", UseRegex: false, IgnoreCase: false)
         };
 
-        FilteredVisualRowReader[] readers = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, options);
+        FilteredLogRecordSource[] readers = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, options);
         try
         {
             AssertEqual("staged literal reader count", readers.Length, 2);
@@ -2060,12 +1503,12 @@ internal static class Program
             readers[1].ReadFromPercentage(0d, 10);
 
             AssertEqual("staged literal first count", readers[0].MatchedLineCount, 3L);
-            AssertSequence("staged literal first rows", readers[0].CurrentRows, "alpha", "alpha beta", "alpha beta gamma");
-            AssertSequence("staged literal first cells", ((IColumnViewportReader)readers[0]).CurrentCells[1], "2", "alpha beta");
+            AssertSequence("staged literal first rows", readers[0].CurrentDisplayTexts, "alpha", "alpha beta", "alpha beta gamma");
+            AssertSequence("staged literal first cells", ((FilteredLogRecordSource)readers[0]).CurrentCells[1], "2", "alpha beta");
 
             AssertEqual("staged literal second count", readers[1].MatchedLineCount, 2L);
-            AssertSequence("staged literal second rows", readers[1].CurrentRows, "alpha beta", "alpha beta gamma");
-            AssertSequence("staged literal second cells", ((IColumnViewportReader)readers[1]).CurrentCells[0], "2", "alpha beta");
+            AssertSequence("staged literal second rows", readers[1].CurrentDisplayTexts, "alpha beta", "alpha beta gamma");
+            AssertSequence("staged literal second cells", ((FilteredLogRecordSource)readers[1]).CurrentCells[0], "2", "alpha beta");
         }
         finally
         {
@@ -2082,18 +1525,18 @@ internal static class Program
             new("code-(\\d+)", UseRegex: true, IgnoreCase: false)
         };
 
-        FilteredVisualRowReader[] readers = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, options);
+        FilteredLogRecordSource[] readers = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, options);
         try
         {
             AssertEqual("staged capture reader count", readers.Length, 2);
             readers[0].ReadFromPercentage(0d, 10);
             readers[1].ReadFromPercentage(0d, 10);
 
-            IColumnViewportReader firstColumns = readers[0];
+            FilteredLogRecordSource firstColumns = readers[0];
             AssertSequence("staged capture first headers", firstColumns.ColumnHeaders, "#", "Text", "0", "1");
             AssertSequence("staged capture first cells", firstColumns.CurrentCells[0], "1", "aaabccc code-42", "aaa", "ccc");
 
-            IColumnViewportReader secondColumns = readers[1];
+            FilteredLogRecordSource secondColumns = readers[1];
             AssertSequence("staged capture second headers", secondColumns.ColumnHeaders, "#", "Text", "0");
             AssertSequence("staged capture second first cells", secondColumns.CurrentCells[0], "1", "aaabccc code-42", "42");
             AssertSequence("staged capture second second cells", secondColumns.CurrentCells[1], "2", "aabcc code-7", "7");
@@ -2113,19 +1556,19 @@ internal static class Program
             new("user-(?<user>[a-z]+)", UseRegex: true, IgnoreCase: false)
         };
 
-        FilteredVisualRowReader[] readers = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, options);
+        FilteredLogRecordSource[] readers = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, options);
         try
         {
             AssertEqual("staged named capture reader count", readers.Length, 2);
             readers[0].ReadFromPercentage(0d, 10);
             readers[1].ReadFromPercentage(0d, 10);
 
-            IColumnViewportReader firstColumns = readers[0];
+            FilteredLogRecordSource firstColumns = readers[0];
             AssertSequence("staged named capture first headers", firstColumns.ColumnHeaders, "#", "Text", "code");
             AssertSequence("staged named capture first cells", firstColumns.CurrentCells[0], "1", "code-42 user-ian", "42");
             AssertSequence("staged named capture first second cells", firstColumns.CurrentCells[1], "2", "code-7 user-ana", "7");
 
-            IColumnViewportReader secondColumns = readers[1];
+            FilteredLogRecordSource secondColumns = readers[1];
             AssertSequence("staged named capture second headers", secondColumns.ColumnHeaders, "#", "Text", "user");
             AssertSequence("staged named capture second first cells", secondColumns.CurrentCells[0], "1", "code-42 user-ian", "ian");
             AssertSequence("staged named capture second second cells", secondColumns.CurrentCells[1], "2", "code-7 user-ana", "ana");
@@ -2145,23 +1588,23 @@ internal static class Program
             new("beta", UseRegex: false, IgnoreCase: false)
         };
 
-        FilteredVisualRowReader[] initial = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, options);
+        FilteredLogRecordSource[] initial = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, options);
         try
         {
             File.AppendAllText(path, "new alpha\r\nnew alpha beta\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-            FilteredVisualRowReader[] appended = BuildAppendedStagedReaders(initial, options);
+            FilteredLogRecordSource[] appended = BuildAppendedStagedReaders(initial, options);
             try
             {
                 appended[0].ReadFromPercentage(0d, 10);
                 appended[1].ReadFromPercentage(0d, 10);
 
                 AssertEqual("append staged first count", appended[0].MatchedLineCount, 4L);
-                AssertSequence("append staged first rows", appended[0].CurrentRows, "alpha beta", "alpha plain", "new alpha", "new alpha beta");
-                AssertSequence("append staged first final cells", ((IColumnViewportReader)appended[0]).CurrentCells[3], "4", "new alpha beta");
+                AssertSequence("append staged first rows", appended[0].CurrentDisplayTexts, "alpha beta", "alpha plain", "new alpha", "new alpha beta");
+                AssertSequence("append staged first final cells", ((FilteredLogRecordSource)appended[0]).CurrentCells[3], "4", "new alpha beta");
 
                 AssertEqual("append staged second count", appended[1].MatchedLineCount, 2L);
-                AssertSequence("append staged second rows", appended[1].CurrentRows, "alpha beta", "new alpha beta");
-                AssertSequence("append staged second final cells", ((IColumnViewportReader)appended[1]).CurrentCells[1], "4", "new alpha beta");
+                AssertSequence("append staged second rows", appended[1].CurrentDisplayTexts, "alpha beta", "new alpha beta");
+                AssertSequence("append staged second final cells", ((FilteredLogRecordSource)appended[1]).CurrentCells[1], "4", "new alpha beta");
             }
             finally
             {
@@ -2190,7 +1633,7 @@ internal static class Program
             RegexStage(@": (?<json>.*)", "{json}"),
             JsonStage("{upper:Level} - {Message}"));
 
-        FilteredVisualRowReader[] initial = LogSearchBuilder.BuildStagedFilteredReaders(
+        FilteredLogRecordSource[] initial = LogSearchBuilder.BuildStagedFilteredReaders(
             path,
             Encoding.UTF8,
             dataOffset: 0,
@@ -2199,16 +1642,16 @@ internal static class Program
         try
         {
             File.AppendAllText(path, "a[2]: ning\"}\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-            FilteredVisualRowReader[] appended = BuildAppendedStagedReaders(initial, options, parser);
+            FilteredLogRecordSource[] appended = BuildAppendedStagedReaders(initial, options, parser);
             try
             {
                 appended[0].ReadFromPercentage(0d, 10);
                 appended[1].ReadFromPercentage(0d, 10);
-                AssertSequence("append staged parser combined first rows", appended[0].CurrentRows, "INFO - running");
-                AssertSequence("append staged parser combined second rows", appended[1].CurrentRows, "INFO - running");
+                AssertSequence("append staged parser combined first rows", appended[0].CurrentDisplayTexts, "INFO - running");
+                AssertSequence("append staged parser combined second rows", appended[1].CurrentDisplayTexts, "INFO - running");
                 AssertSequence(
                     "append staged parser combined cells",
-                    ((IColumnViewportReader)appended[1]).CurrentCells[0],
+                    ((FilteredLogRecordSource)appended[1]).CurrentCells[0],
                     "1",
                     "INFO - running");
             }
@@ -2232,19 +1675,19 @@ internal static class Program
             new("beta", UseRegex: false, IgnoreCase: false)
         };
 
-        using FilteredVisualRowReader initial = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource initial = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
             options);
 
         File.AppendAllText(path, "new alpha\r\nnew alpha beta\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-        using FilteredVisualRowReader appended = BuildAppendedReader(initial, options);
+        using FilteredLogRecordSource appended = BuildAppendedReader(initial, options);
         appended.ReadFromPercentage(0d, 10);
 
         AssertEqual("append cascade count", appended.MatchedLineCount, 2L);
-        AssertSequence("append cascade rows", appended.CurrentRows, "alpha beta", "new alpha beta");
-        IColumnViewportReader columns = appended;
+        AssertSequence("append cascade rows", appended.CurrentDisplayTexts, "alpha beta", "new alpha beta");
+        FilteredLogRecordSource columns = appended;
         AssertSequence("append cascade first cells", columns.CurrentCells[0], "1", "alpha beta");
         AssertSequence("append cascade second cells", columns.CurrentCells[1], "4", "new alpha beta");
     }
@@ -2253,19 +1696,19 @@ internal static class Program
     {
         string path = WriteLog(tempRoot, "append-search-match.log", "alpha\r\nplain\r\n");
 
-        using FilteredVisualRowReader initial = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource initial = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
             new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
 
         File.AppendAllText(path, "new alpha\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-        using FilteredVisualRowReader appended = BuildAppendedReader(initial, new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
+        using FilteredLogRecordSource appended = BuildAppendedReader(initial, new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
         appended.ReadFromPercentage(0d, 10);
 
         AssertEqual("append match count", appended.MatchedLineCount, 2L);
-        AssertSequence("append match rows", appended.CurrentRows, "alpha", "new alpha");
-        IColumnViewportReader columns = appended;
+        AssertSequence("append match rows", appended.CurrentDisplayTexts, "alpha", "new alpha");
+        FilteredLogRecordSource columns = appended;
         AssertSequence("append match first cells", columns.CurrentCells[0], "1", "alpha");
         AssertSequence("append match second cells", columns.CurrentCells[1], "3", "new alpha");
     }
@@ -2274,37 +1717,37 @@ internal static class Program
     {
         string path = WriteLog(tempRoot, "append-search-no-match.log", "alpha\r\nplain\r\n");
 
-        using FilteredVisualRowReader initial = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource initial = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
             new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
 
         File.AppendAllText(path, "new plain\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-        using FilteredVisualRowReader appended = BuildAppendedReader(initial, new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
+        using FilteredLogRecordSource appended = BuildAppendedReader(initial, new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
         appended.ReadFromPercentage(0d, 10);
 
         AssertEqual("append no-match count", appended.MatchedLineCount, 1L);
-        AssertSequence("append no-match rows", appended.CurrentRows, "alpha");
+        AssertSequence("append no-match rows", appended.CurrentDisplayTexts, "alpha");
     }
 
     private static void RunAppendSearchRescansPartialLastLine(string tempRoot)
     {
         string path = WriteLog(tempRoot, "append-search-partial.log", "prefix alp");
 
-        using FilteredVisualRowReader initial = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource initial = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
             new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
 
         File.AppendAllText(path, "ha\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-        using FilteredVisualRowReader appended = BuildAppendedReader(initial, new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
+        using FilteredLogRecordSource appended = BuildAppendedReader(initial, new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
         appended.ReadFromPercentage(0d, 10);
 
         AssertEqual("append partial count", appended.MatchedLineCount, 1L);
-        AssertSequence("append partial rows", appended.CurrentRows, "prefix alpha");
-        AssertSequence("append partial cells", ((IColumnViewportReader)appended).CurrentCells[0], "1", "prefix alpha");
+        AssertSequence("append partial rows", appended.CurrentDisplayTexts, "prefix alpha");
+        AssertSequence("append partial cells", ((FilteredLogRecordSource)appended).CurrentCells[0], "1", "prefix alpha");
     }
 
     private static void RunAppendSearchPreservesRegexCaptureGroups(string tempRoot)
@@ -2312,16 +1755,16 @@ internal static class Program
         string path = WriteLog(tempRoot, "append-search-captures.log", "aabcc\r\nplain\r\n");
         SearchOptions options = new("(a+)b(c+)", UseRegex: true, IgnoreCase: false);
 
-        using FilteredVisualRowReader initial = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource initial = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
             options);
 
         File.AppendAllText(path, "aaabccc\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-        using FilteredVisualRowReader appended = BuildAppendedReader(initial, options);
+        using FilteredLogRecordSource appended = BuildAppendedReader(initial, options);
         appended.ReadFromPercentage(0d, 10);
-        IColumnViewportReader columns = appended;
+        FilteredLogRecordSource columns = appended;
 
         AssertSequence("append capture headers", columns.ColumnHeaders, "#", "Text", "0", "1");
         AssertEqual("append capture row count", columns.CurrentCells.Count, 2);
@@ -2336,16 +1779,16 @@ internal static class Program
         string path = WriteLog(tempRoot, "append-search-named-captures.log", "code-42\r\nplain\r\n");
         SearchOptions options = new("code-(?<code>\\d+)", UseRegex: true, IgnoreCase: false);
 
-        using FilteredVisualRowReader initial = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource initial = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
             options);
 
         File.AppendAllText(path, "code-7\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-        using FilteredVisualRowReader appended = BuildAppendedReader(initial, options);
+        using FilteredLogRecordSource appended = BuildAppendedReader(initial, options);
         appended.ReadFromPercentage(0d, 10);
-        IColumnViewportReader columns = appended;
+        FilteredLogRecordSource columns = appended;
 
         AssertSequence("append named capture headers", columns.ColumnHeaders, "#", "Text", "code");
         AssertEqual("append named capture row count", columns.CurrentCells.Count, 2);
@@ -2358,19 +1801,19 @@ internal static class Program
         string path = WriteLog(tempRoot, "append-search-invert.log", "alpha\r\nplain\r\n");
         SearchOptions options = new("alpha", UseRegex: false, IgnoreCase: false, InvertMatch: true);
 
-        using FilteredVisualRowReader initial = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource initial = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
             options);
 
         File.AppendAllText(path, "beta\r\nalpha again\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-        using FilteredVisualRowReader appended = BuildAppendedReader(initial, options);
+        using FilteredLogRecordSource appended = BuildAppendedReader(initial, options);
         appended.ReadFromPercentage(0d, 10);
 
         AssertEqual("append invert count", appended.MatchedLineCount, 2L);
-        AssertSequence("append invert rows", appended.CurrentRows, "plain", "beta");
-        IColumnViewportReader columns = appended;
+        AssertSequence("append invert rows", appended.CurrentDisplayTexts, "plain", "beta");
+        FilteredLogRecordSource columns = appended;
         AssertSequence("append invert first cells", columns.CurrentCells[0], "2", "plain");
         AssertSequence("append invert second cells", columns.CurrentCells[1], "3", "beta");
     }
@@ -2379,7 +1822,7 @@ internal static class Program
     {
         string path = WriteLog(tempRoot, "append-search-stale-earlier.log", "one\r\ntwo alpha\r\n");
 
-        using FilteredVisualRowReader initial = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource initial = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
@@ -2390,7 +1833,7 @@ internal static class Program
             "append search stale earlier line grows",
             () =>
             {
-                using FilteredVisualRowReader appended = BuildAppendedReader(initial, new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
+                using FilteredLogRecordSource appended = BuildAppendedReader(initial, new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
             });
     }
 
@@ -2425,7 +1868,7 @@ internal static class Program
     {
         string path = WriteLog(tempRoot, "paused-append-search-pre-cancel.log", "alpha-0\r\nplain-1\r\n");
         SearchOptions[] options = { new("alpha", UseRegex: false, IgnoreCase: false) };
-        FilteredVisualRowReader[] initial = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, options);
+        FilteredLogRecordSource[] initial = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, options);
         try
         {
             File.AppendAllText(path, "alpha-2\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
@@ -2463,7 +1906,7 @@ internal static class Program
     {
         string path = WriteLog(tempRoot, "paused-resume-search-pre-cancel.log", "alpha-0\r\nplain-1\r\n");
         SearchOptions[] options = { new("alpha", UseRegex: false, IgnoreCase: false) };
-        FilteredVisualRowReader[] pausedReaders = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, options);
+        FilteredLogRecordSource[] pausedReaders = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, options);
         try
         {
             long processedOffset = new FileInfo(path).Length;
@@ -2569,7 +2012,7 @@ internal static class Program
         AssertEqual("paused resume partial confirmed size", paused.Readers[0]!.ConfirmedFileSize, paused.ProcessedOffset);
         File.WriteAllText(path, modifiedPrefix, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 
-        FilteredVisualRowReader? resumed = null;
+        FilteredLogRecordSource? resumed = null;
         try
         {
             LogSearchBuilder.ResumeStagedFilteredReadersIncremental(
@@ -2596,7 +2039,7 @@ internal static class Program
 
             resumed.ReadFromPercentage(0d, 10);
             AssertEqual("paused resume keeps processed descriptor count", resumed.MatchedLineCount, 3L);
-            AssertSequence("paused resume rows", resumed.CurrentRows, "bravo-0", "alpha-2", "alpha-3");
+            AssertSequence("paused resume rows", resumed.CurrentDisplayTexts, "bravo-0", "alpha-2", "alpha-3");
         }
         finally
         {
@@ -2611,7 +2054,7 @@ internal static class Program
         string path = WriteLog(tempRoot, "partial-search-resume.log", original);
         long targetFileSize = new FileInfo(path).Length;
         SearchOptions[] options = { new("alpha", UseRegex: false, IgnoreCase: false) };
-        FilteredVisualRowReader? partialReader = null;
+        FilteredLogRecordSource? partialReader = null;
         long partialProcessedOffset = 0;
         long partialTargetFileSize = 0;
 
@@ -2627,7 +2070,7 @@ internal static class Program
                     !update.IsFinal &&
                     !update.IsPaused &&
                     update.Readers.Length > 0 &&
-                    update.Readers[0] is FilteredVisualRowReader reader)
+                    update.Readers[0] is FilteredLogRecordSource reader)
                 {
                     partialReader = reader;
                     partialProcessedOffset = update.ProcessedOffset;
@@ -2644,7 +2087,7 @@ internal static class Program
             throw new InvalidOperationException("Partial search did not publish a resumable reader.");
         }
 
-        FilteredVisualRowReader? resumed = null;
+        FilteredLogRecordSource? resumed = null;
         try
         {
             AssertEqual("partial resume target file size", partialTargetFileSize, targetFileSize);
@@ -2677,7 +2120,7 @@ internal static class Program
 
             resumed.ReadFromPercentage(0d, 10);
             AssertEqual("partial resume count", resumed.MatchedLineCount, 2L);
-            AssertSequence("partial resume rows", resumed.CurrentRows, "alpha-0", "alpha-2");
+            AssertSequence("partial resume rows", resumed.CurrentDisplayTexts, "alpha-0", "alpha-2");
         }
         finally
         {
@@ -2692,18 +2135,18 @@ internal static class Program
         string replacement = "alpha-0\r\nbravo-last-tail\r\nalpha-new\r\n";
         string path = WriteLog(tempRoot, "resume-incomplete-last-line.log", original);
         SearchOptions[] options = { new("alpha", UseRegex: false, IgnoreCase: false) };
-        FilteredVisualRowReader[] paused = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, options);
+        FilteredLogRecordSource[] paused = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, options);
         try
         {
             long processedOffset = new FileInfo(path).Length;
             File.WriteAllText(path, replacement, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-            FilteredVisualRowReader[] resumed = ResumeStagedReaders(paused, options, processedOffset, new FileInfo(path).Length);
+            FilteredLogRecordSource[] resumed = ResumeStagedReaders(paused, options, processedOffset, new FileInfo(path).Length);
             try
             {
                 resumed[0].ReadFromPercentage(0d, 10);
                 AssertEqual("resume incomplete count", resumed[0].MatchedLineCount, 2L);
-                AssertSequence("resume incomplete rows", resumed[0].CurrentRows, "alpha-0", "alpha-new");
-                IColumnViewportReader columns = resumed[0];
+                AssertSequence("resume incomplete rows", resumed[0].CurrentDisplayTexts, "alpha-0", "alpha-new");
+                FilteredLogRecordSource columns = resumed[0];
                 AssertSequence("resume incomplete first cells", columns.CurrentCells[0], "1", "alpha-0");
                 AssertSequence("resume incomplete second cells", columns.CurrentCells[1], "3", "alpha-new");
             }
@@ -2723,18 +2166,18 @@ internal static class Program
         string original = "alpha-0\r\nalpha-1\r\n";
         string path = WriteLog(tempRoot, "resume-after-line-break.log", original);
         SearchOptions[] options = { new("alpha", UseRegex: false, IgnoreCase: false) };
-        FilteredVisualRowReader[] paused = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, options);
+        FilteredLogRecordSource[] paused = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, options);
         try
         {
             long processedOffset = new FileInfo(path).Length;
             File.AppendAllText(path, "alpha-2\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-            FilteredVisualRowReader[] resumed = ResumeStagedReaders(paused, options, processedOffset, new FileInfo(path).Length);
+            FilteredLogRecordSource[] resumed = ResumeStagedReaders(paused, options, processedOffset, new FileInfo(path).Length);
             try
             {
                 resumed[0].ReadFromPercentage(0d, 10);
                 AssertEqual("resume line-break count", resumed[0].MatchedLineCount, 3L);
-                AssertSequence("resume line-break rows", resumed[0].CurrentRows, "alpha-0", "alpha-1", "alpha-2");
-                IColumnViewportReader columns = resumed[0];
+                AssertSequence("resume line-break rows", resumed[0].CurrentDisplayTexts, "alpha-0", "alpha-1", "alpha-2");
+                FilteredLogRecordSource columns = resumed[0];
                 AssertSequence("resume line-break first cells", columns.CurrentCells[0], "1", "alpha-0");
                 AssertSequence("resume line-break second cells", columns.CurrentCells[1], "2", "alpha-1");
                 AssertSequence("resume line-break third cells", columns.CurrentCells[2], "3", "alpha-2");
@@ -2760,20 +2203,20 @@ internal static class Program
             new("alpha", UseRegex: false, IgnoreCase: false),
             new("beta", UseRegex: false, IgnoreCase: false)
         };
-        FilteredVisualRowReader[] paused = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, options);
+        FilteredLogRecordSource[] paused = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, options);
         try
         {
             long processedOffset = new FileInfo(path).Length;
             File.WriteAllText(path, replacement, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-            FilteredVisualRowReader[] resumed = ResumeStagedReaders(paused, options, processedOffset, new FileInfo(path).Length);
+            FilteredLogRecordSource[] resumed = ResumeStagedReaders(paused, options, processedOffset, new FileInfo(path).Length);
             try
             {
                 resumed[0].ReadFromPercentage(0d, 10);
                 resumed[1].ReadFromPercentage(0d, 10);
                 AssertEqual("resume cascade first count", resumed[0].MatchedLineCount, 3L);
-                AssertSequence("resume cascade first rows", resumed[0].CurrentRows, "alpha beta", "alpha plain-tail", "alpha beta-new");
+                AssertSequence("resume cascade first rows", resumed[0].CurrentDisplayTexts, "alpha beta", "alpha plain-tail", "alpha beta-new");
                 AssertEqual("resume cascade second count", resumed[1].MatchedLineCount, 2L);
-                AssertSequence("resume cascade second rows", resumed[1].CurrentRows, "alpha beta", "alpha beta-new");
+                AssertSequence("resume cascade second rows", resumed[1].CurrentDisplayTexts, "alpha beta", "alpha beta-new");
             }
             finally
             {
@@ -2786,19 +2229,19 @@ internal static class Program
         }
     }
 
-    private static FilteredVisualRowReader BuildAppendedReader(FilteredVisualRowReader initial, SearchOptions options)
+    private static FilteredLogRecordSource BuildAppendedReader(FilteredLogRecordSource initial, SearchOptions options)
     {
         return BuildAppendedReader(initial, new[] { options });
     }
 
-    private static FilteredVisualRowReader BuildAppendedReader(FilteredVisualRowReader initial, SearchOptions options, DisplayParserRule displayParserRule)
+    private static FilteredLogRecordSource BuildAppendedReader(FilteredLogRecordSource initial, SearchOptions options, DisplayParserRule displayParserRule)
     {
         return BuildAppendedReader(initial, new[] { options }, displayParserRule);
     }
 
-    private static FilteredVisualRowReader BuildAppendedReader(FilteredVisualRowReader initial, IReadOnlyList<SearchOptions> options, DisplayParserRule? displayParserRule = null)
+    private static FilteredLogRecordSource BuildAppendedReader(FilteredLogRecordSource initial, IReadOnlyList<SearchOptions> options, DisplayParserRule? displayParserRule = null)
     {
-        FilteredVisualRowReader? latest = null;
+        FilteredLogRecordSource? latest = null;
         LogSearchBuilder.BuildAppendedFilteredReaderIncremental(
             initial,
             options,
@@ -2818,12 +2261,12 @@ internal static class Program
         return latest ?? throw new InvalidOperationException("Append search did not publish a reader.");
     }
 
-    private static FilteredVisualRowReader[] BuildAppendedStagedReaders(
-        IReadOnlyList<FilteredVisualRowReader> initial,
+    private static FilteredLogRecordSource[] BuildAppendedStagedReaders(
+        IReadOnlyList<FilteredLogRecordSource> initial,
         IReadOnlyList<SearchOptions> options,
         DisplayParserRule? displayParserRule = null)
     {
-        FilteredVisualRowReader?[] latest = new FilteredVisualRowReader?[initial.Count];
+        FilteredLogRecordSource?[] latest = new FilteredLogRecordSource?[initial.Count];
         LogSearchBuilder.BuildAppendedStagedFilteredReadersIncremental(
             initial,
             options,
@@ -2843,7 +2286,7 @@ internal static class Program
             CancellationToken.None,
             displayParserRule);
 
-        FilteredVisualRowReader[] readers = new FilteredVisualRowReader[latest.Length];
+        FilteredLogRecordSource[] readers = new FilteredLogRecordSource[latest.Length];
         for (int i = 0; i < latest.Length; i++)
         {
             readers[i] = latest[i] ?? throw new InvalidOperationException("Append staged search did not publish every reader.");
@@ -2852,9 +2295,9 @@ internal static class Program
         return readers;
     }
 
-    private static FilteredVisualRowReader[] ResumeStagedReaders(IReadOnlyList<FilteredVisualRowReader> paused, IReadOnlyList<SearchOptions> options, long processedOffset, long newFileSize)
+    private static FilteredLogRecordSource[] ResumeStagedReaders(IReadOnlyList<FilteredLogRecordSource> paused, IReadOnlyList<SearchOptions> options, long processedOffset, long newFileSize)
     {
-        FilteredVisualRowReader?[] latest = new FilteredVisualRowReader?[paused.Count];
+        FilteredLogRecordSource?[] latest = new FilteredLogRecordSource?[paused.Count];
         LogSearchBuilder.ResumeStagedFilteredReadersIncremental(
             paused,
             options,
@@ -2875,7 +2318,7 @@ internal static class Program
             },
             CancellationToken.None);
 
-        FilteredVisualRowReader[] readers = new FilteredVisualRowReader[latest.Length];
+        FilteredLogRecordSource[] readers = new FilteredLogRecordSource[latest.Length];
         for (int i = 0; i < latest.Length; i++)
         {
             readers[i] = latest[i] ?? throw new InvalidOperationException("Resume staged search did not publish every reader.");
@@ -2884,91 +2327,143 @@ internal static class Program
         return readers;
     }
 
+    private static void RunLogRecordSourceReusesSlidingWindow(string tempRoot)
+    {
+        string path = WriteLog(
+            tempRoot,
+            "record-source-sliding-window.log",
+            "{\"Value\":\"line-0\"}\r\n" +
+            "{\"Value\":\"line-1\"}\r\n" +
+            "{\"Value\":\"line-2\"}\r\n" +
+            "{\"Value\":\"line-3\"}\r\n" +
+            "{\"Value\":\"line-4\"}\r\n" +
+            "{\"Value\":\"line-5\"}\r\n");
+        using LogRecordSource reader = new(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            ParserRule(JsonStage("{Value}")));
+        reader.ReadFromPercentage(0d, 4);
+        LogViewportRecord[] initial = CopyRecords(reader.CurrentRecords);
+
+        reader.ReadNextRecords(1);
+        AssertEqual("record source forward first reused", ReferenceEquals(initial[1], reader.CurrentRecords[0]), true);
+        AssertEqual("record source forward second reused", ReferenceEquals(initial[2], reader.CurrentRecords[1]), true);
+        AssertEqual("record source forward third reused", ReferenceEquals(initial[3], reader.CurrentRecords[2]), true);
+        LogViewportRecord[] afterForward = CopyRecords(reader.CurrentRecords);
+
+        reader.ReadPreviousRecords(1);
+        AssertEqual("record source backward first overlap reused", ReferenceEquals(afterForward[0], reader.CurrentRecords[1]), true);
+        AssertEqual("record source backward second overlap reused", ReferenceEquals(afterForward[1], reader.CurrentRecords[2]), true);
+        AssertEqual("record source backward third overlap reused", ReferenceEquals(afterForward[2], reader.CurrentRecords[3]), true);
+        AssertSequence("record source backward rows", reader.CurrentDisplayTexts, "line-0", "line-1", "line-2", "line-3");
+    }
+
+    private static void RunFilteredLogRecordSourceReusesSlidingWindow(string tempRoot)
+    {
+        string path = WriteLog(
+            tempRoot,
+            "filtered-source-sliding-window.log",
+            "match-0\r\nmatch-1\r\nmatch-2\r\nmatch-3\r\nmatch-4\r\nmatch-5\r\n");
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("match", UseRegex: false, IgnoreCase: false));
+        reader.ReadFromPercentage(0d, 4);
+        LogViewportRecord[] initial = CopyRecords(reader.CurrentRecords);
+
+        reader.ReadNextRecords(1);
+        AssertEqual("filtered source forward first reused", ReferenceEquals(initial[1], reader.CurrentRecords[0]), true);
+        AssertEqual("filtered source forward second reused", ReferenceEquals(initial[2], reader.CurrentRecords[1]), true);
+        AssertEqual("filtered source forward third reused", ReferenceEquals(initial[3], reader.CurrentRecords[2]), true);
+        LogViewportRecord[] afterForward = CopyRecords(reader.CurrentRecords);
+
+        reader.ReadPreviousRecords(1);
+        AssertEqual("filtered source backward first overlap reused", ReferenceEquals(afterForward[0], reader.CurrentRecords[1]), true);
+        AssertEqual("filtered source backward second overlap reused", ReferenceEquals(afterForward[1], reader.CurrentRecords[2]), true);
+        AssertEqual("filtered source backward third overlap reused", ReferenceEquals(afterForward[2], reader.CurrentRecords[3]), true);
+        AssertSequence("filtered source backward rows", reader.CurrentDisplayTexts, "match-0", "match-1", "match-2", "match-3");
+    }
+
+    private static LogViewportRecord[] CopyRecords(IReadOnlyList<LogViewportRecord> records)
+    {
+        var copy = new LogViewportRecord[records.Count];
+        for (int i = 0; i < records.Count; i++)
+        {
+            copy[i] = records[i];
+        }
+
+        return copy;
+    }
+
     private static void RunPageUpNearStartClampsToTop(string tempRoot)
     {
         string path = WriteLog(tempRoot, "page-up-near-start.log", "line-0\r\nline-1\r\nline-2\r\nline-3\r\nline-4\r\n");
 
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
-        reader.ReadNext(3);
-        reader.ReadNext(1);
-        reader.ReadPrevious(3);
+        using LogRecordSource reader = new(path, Encoding.UTF8, dataOffset: 0);
+        reader.ReadNextRecords(3);
+        reader.ReadNextRecords(1);
+        reader.ReadPreviousRecords(3);
 
-        AssertSequence("page up near start", reader.CurrentRows, "line-0", "line-1", "line-2");
+        AssertSequence("page up near start", reader.CurrentDisplayTexts, "line-0", "line-1", "line-2");
         AssertEqual("page up near start offset", reader.TopOffset, 0L);
-    }
-
-    private static void RunPageUpInsideWrappedFirstLineClampsToTop(string tempRoot)
-    {
-        string firstSegment = new('a', VisualRowReader.VisibleSegmentChars);
-        string secondSegmentPrefix = "second-segment";
-        string firstLine = firstSegment + secondSegmentPrefix;
-        string path = WriteLog(tempRoot, "page-up-wrapped-first-line.log", firstLine + "\r\nline-1\r\n");
-
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
-        reader.ReadNext(2);
-        reader.ReadNext(1);
-        reader.ReadPrevious(3);
-
-        AssertEqual("page up wrapped first row count", reader.CurrentRows.Count, 2);
-        AssertEqual("page up wrapped first segment", reader.CurrentRows[0], firstSegment);
-        AssertEqual("page up wrapped second segment", reader.CurrentRows[1], secondSegmentPrefix);
-        AssertEqual("page up wrapped first offset", reader.TopOffset, 0L);
     }
 
     private static void RunRefreshTailAtEndShowsAppendedRows(string tempRoot)
     {
         string path = WriteLog(tempRoot, "tail-at-end.log", "line-0\r\nline-1\r\n");
 
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        using LogRecordSource reader = new(path, Encoding.UTF8, dataOffset: 0);
         reader.ReadFromPercentage(100d, 2);
         File.AppendAllText(path, "line-2\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         reader.RefreshTail(2);
 
-        AssertSequence("tail at end rows", reader.CurrentRows, "line-1", "line-2");
+        AssertSequence("tail at end rows", reader.CurrentDisplayTexts, "line-1", "line-2");
     }
 
     private static void RunRefreshTailAtEndReloadsSameSizeChange(string tempRoot)
     {
         string path = WriteLog(tempRoot, "tail-same-size-change.log", "line-0\r\nline-1\r\nline-2\r\n");
 
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        using LogRecordSource reader = new(path, Encoding.UTF8, dataOffset: 0);
         reader.ReadFromPercentage(100d, 2);
         File.WriteAllText(path, "line-0\r\nline-1\r\nLINE-2\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         reader.RefreshTail(2);
 
-        AssertSequence("tail same-size change rows", reader.CurrentRows, "line-1", "LINE-2");
+        AssertSequence("tail same-size change rows", reader.CurrentDisplayTexts, "line-1", "LINE-2");
     }
 
     private static void RunReloadAfterFileChangeSameSizeReloadsCurrentViewport(string tempRoot)
     {
         string path = WriteLog(tempRoot, "reload-same-size-current.log", "line-0\r\nline-1\r\nline-2\r\n");
 
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        using LogRecordSource reader = new(path, Encoding.UTF8, dataOffset: 0);
         reader.ReadFromPercentage(0d, 2);
         File.WriteAllText(path, "LINE-0\r\nline-1\r\nline-2\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         reader.ReloadAfterFileChange(2);
 
-        AssertSequence("reload same-size current rows", reader.CurrentRows, "LINE-0", "line-1");
+        AssertSequence("reload same-size current rows", reader.CurrentDisplayTexts, "LINE-0", "line-1");
     }
 
     private static void RunReloadAfterFileChangePreservesViewportPosition(string tempRoot)
     {
         string path = WriteLog(tempRoot, "reload-preserve-position.log", "line-0\r\nline-1\r\nline-2\r\nline-3\r\nline-4\r\n");
 
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        using LogRecordSource reader = new(path, Encoding.UTF8, dataOffset: 0);
         reader.ReadFromOffset(16L, 2);
         File.WriteAllText(path, "LINE-0\r\nline-1\r\nline-2\r\nLINE-3\r\nline-4\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         reader.ReloadAfterFileChange(2);
 
         AssertEqual("reload preserve position top offset", reader.TopOffset, 16L);
-        AssertSequence("reload preserve position rows", reader.CurrentRows, "line-2", "LINE-3");
+        AssertSequence("reload preserve position rows", reader.CurrentDisplayTexts, "line-2", "LINE-3");
     }
 
     private static void RunFilteredReloadAfterFileChangeSameSizeReloadsCurrentViewport(string tempRoot)
     {
         string path = WriteLog(tempRoot, "filtered-reload-same-size.log", "alpha\r\nplain\r\n");
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
@@ -2978,15 +2473,15 @@ internal static class Program
         File.WriteAllText(path, "bravo\r\nplain\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         reader.ReloadAfterFileChange(10);
 
-        AssertSequence("filtered reload same-size rows", reader.CurrentRows, "bravo");
-        AssertSequence("filtered reload same-size cells", ((IColumnViewportReader)reader).CurrentCells[0], "1", "bravo");
+        AssertSequence("filtered reload same-size rows", reader.CurrentDisplayTexts, "bravo");
+        AssertSequence("filtered reload same-size cells", ((FilteredLogRecordSource)reader).CurrentCells[0], "1", "bravo");
     }
 
     private static void RunFilteredReloadAfterFileChangeStalesWhenLineBoundaryChanges(string tempRoot)
     {
         string path = WriteLog(tempRoot, "filtered-reload-stale-boundary.log", "alpha\r\nplain\r\n");
 
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
@@ -3003,66 +2498,66 @@ internal static class Program
     {
         string path = WriteLog(tempRoot, "tail-small-initial.log", "line-0\r\nline-1\r\n");
 
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        using LogRecordSource reader = new(path, Encoding.UTF8, dataOffset: 0);
         reader.ReadFromPercentage(0d, 20);
-        AssertEqual("tail small initial starts at end", reader.IsAtKnownEnd, true);
+        AssertEqual("tail small initial starts at end", reader.IsAtEnd, true);
         File.AppendAllText(path, "line-2\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         reader.RefreshTail(20);
 
-        AssertSequence("tail small initial rows", reader.CurrentRows, "line-0", "line-1", "line-2");
-        AssertEqual("tail small initial at end", reader.IsAtKnownEnd, true);
+        AssertSequence("tail small initial rows", reader.CurrentDisplayTexts, "line-0", "line-1", "line-2");
+        AssertEqual("tail small initial at end", reader.IsAtEnd, true);
     }
 
     private static void RunRefreshFileSizeAwayFromEndLetsJumpEndSeeAppendedRows(string tempRoot)
     {
         string path = WriteLog(tempRoot, "tail-away-then-end.log", "line-0\r\nline-1\r\nline-2\r\nline-3\r\n");
 
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        using LogRecordSource reader = new(path, Encoding.UTF8, dataOffset: 0);
         reader.ReadFromPercentage(0d, 2);
         File.AppendAllText(path, "line-4\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         AssertEqual("tail away file size changed", reader.RefreshFileSize(), true);
         reader.ReadFromPercentage(100d, 2);
 
-        AssertSequence("tail away then end rows", reader.CurrentRows, "line-3", "line-4");
-        AssertEqual("tail away then end at end", reader.IsAtKnownEnd, true);
+        AssertSequence("tail away then end rows", reader.CurrentDisplayTexts, "line-3", "line-4");
+        AssertEqual("tail away then end at end", reader.IsAtEnd, true);
     }
 
     private static void RunRefreshTailAwayFromEndDoesNotMove(string tempRoot)
     {
         string path = WriteLog(tempRoot, "tail-away-from-end.log", "line-0\r\nline-1\r\nline-2\r\nline-3\r\n");
 
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        using LogRecordSource reader = new(path, Encoding.UTF8, dataOffset: 0);
         reader.ReadFromPercentage(0d, 2);
         File.AppendAllText(path, "line-4\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         reader.RefreshTail(2);
 
-        AssertSequence("tail away rows", reader.CurrentRows, "line-0", "line-1");
+        AssertSequence("tail away rows", reader.CurrentDisplayTexts, "line-0", "line-1");
     }
 
     private static void RunRefreshTailAfterTruncateReloadsFromStart(string tempRoot)
     {
         string path = WriteLog(tempRoot, "tail-truncate.log", "line-0\r\nline-1\r\nline-2\r\nline-3\r\n");
 
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        using LogRecordSource reader = new(path, Encoding.UTF8, dataOffset: 0);
         reader.ReadFromPercentage(100d, 2);
         File.WriteAllText(path, "new-0\r\nnew-1\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         reader.RefreshTail(2);
 
-        AssertSequence("tail truncate rows", reader.CurrentRows, "new-0", "new-1");
+        AssertSequence("tail truncate rows", reader.CurrentDisplayTexts, "new-0", "new-1");
     }
 
     private static void RunRefreshTailAfterTruncateToEmptyClearsRows(string tempRoot)
     {
         string path = WriteLog(tempRoot, "tail-truncate-empty.log", "line-0\r\nline-1\r\nline-2\r\n");
 
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        using LogRecordSource reader = new(path, Encoding.UTF8, dataOffset: 0);
         reader.ReadFromPercentage(100d, 2);
         long confirmedSize = reader.FileSize;
         File.WriteAllText(path, string.Empty, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-        _ = reader.IsAtKnownEnd;
+        _ = reader.IsAtEnd;
         reader.RefreshTail(2);
 
-        AssertEqual("tail truncate empty count", reader.CurrentRows.Count, 0);
+        AssertEqual("tail truncate empty count", reader.CurrentDisplayTexts.Count, 0);
         AssertEqual("tail truncate empty size", reader.FileSize, 0L);
         File.WriteAllText(path, "line-0\r\nline-1\r\nline-2\r\nline-3\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         AssertEqual("tail truncate empty compares with confirmed size", reader.RefreshFileSize(out long previousSize, out long currentSize), true);
@@ -3074,7 +2569,7 @@ internal static class Program
     {
         string path = WriteLog(tempRoot, "observed-zero-repeated.log", "line-0\r\nline-1\r\nline-2\r\n");
 
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        using LogRecordSource reader = new(path, Encoding.UTF8, dataOffset: 0);
         long confirmedSize = reader.FileSize;
         reader.ReadFromPercentage(100d, 2);
         File.WriteAllText(path, string.Empty, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
@@ -3084,7 +2579,7 @@ internal static class Program
         AssertEqual("observed zero first current", firstCurrent, 0L);
         AssertEqual("observed zero file size", reader.FileSize, 0L);
         AssertEqual("observed zero has content", reader.HasContent, false);
-        AssertEqual("observed zero rows", reader.CurrentRows.Count, 0);
+        AssertEqual("observed zero rows", reader.CurrentDisplayTexts.Count, 0);
         AssertEqual("observed zero repeated refresh unchanged", reader.RefreshFileSize(out long secondPrevious, out long secondCurrent), false);
         AssertEqual("observed zero repeated previous confirmed", secondPrevious, confirmedSize);
         AssertEqual("observed zero repeated current", secondCurrent, 0L);
@@ -3096,7 +2591,7 @@ internal static class Program
         string initial = "line-0\r\nline-1\r\n";
         string path = WriteLog(tempRoot, "observed-zero-larger.log", initial);
 
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        using LogRecordSource reader = new(path, Encoding.UTF8, dataOffset: 0);
         long confirmedSize = reader.FileSize;
         File.WriteAllText(path, string.Empty, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         reader.RefreshFileSize();
@@ -3112,7 +2607,7 @@ internal static class Program
     {
         string path = WriteLog(tempRoot, "observed-zero-smaller.log", "line-0\r\nline-1\r\nline-2\r\nline-3\r\n");
 
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        using LogRecordSource reader = new(path, Encoding.UTF8, dataOffset: 0);
         long confirmedSize = reader.FileSize;
         File.WriteAllText(path, string.Empty, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         reader.RefreshFileSize();
@@ -3124,13 +2619,13 @@ internal static class Program
         AssertEqual("observed zero smaller is truncate", currentSize < previousSize, true);
     }
 
-    private static void RunObservedZeroThenSameSizeReloadsVisualRows(string tempRoot)
+    private static void RunObservedZeroThenSameSizeReloadsRecords(string tempRoot)
     {
         string initial = "line-0\r\nline-1\r\n";
         string replacement = "neww-0\r\nneww-1\r\n";
         string path = WriteLog(tempRoot, "observed-zero-same-size.log", initial);
 
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        using LogRecordSource reader = new(path, Encoding.UTF8, dataOffset: 0);
         long confirmedSize = reader.FileSize;
         AssertEqual("observed zero same size setup", replacement.Length, initial.Length);
         File.WriteAllText(path, string.Empty, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
@@ -3141,7 +2636,7 @@ internal static class Program
         AssertEqual("observed zero same size previous confirmed", previousSize, confirmedSize);
         AssertEqual("observed zero same size current size", currentSize, confirmedSize);
         reader.ReadFromPercentage(0d, 2);
-        AssertSequence("observed zero same size rows", reader.CurrentRows, "neww-0", "neww-1");
+        AssertSequence("observed zero same size rows", reader.CurrentDisplayTexts, "neww-0", "neww-1");
     }
 
     private static void RunObservedZeroPreservesViewportRowsInternally(string tempRoot)
@@ -3149,16 +2644,16 @@ internal static class Program
         string initial = "line-0\r\nline-1\r\n";
         string path = WriteLog(tempRoot, "observed-zero-preserve-viewport.log", initial);
 
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        using LogRecordSource reader = new(path, Encoding.UTF8, dataOffset: 0);
         reader.ReadFromPercentage(0d, 2);
-        AssertSequence("observed zero preserve setup rows", reader.CurrentRows, "line-0", "line-1");
+        AssertSequence("observed zero preserve setup rows", reader.CurrentDisplayTexts, "line-0", "line-1");
         File.WriteAllText(path, string.Empty, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         reader.RefreshFileSize();
-        AssertEqual("observed zero preserve hidden rows", reader.CurrentRows.Count, 0);
+        AssertEqual("observed zero preserve hidden rows", reader.CurrentDisplayTexts.Count, 0);
         File.WriteAllText(path, initial, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         reader.RefreshFileSize();
 
-        AssertSequence("observed zero preserve restored rows", reader.CurrentRows, "line-0", "line-1");
+        AssertSequence("observed zero preserve restored rows", reader.CurrentDisplayTexts, "line-0", "line-1");
     }
 
     private static void RunObservedZeroRefreshTailPreservesViewportRowsInternally(string tempRoot)
@@ -3166,16 +2661,16 @@ internal static class Program
         string initial = "line-0\r\nline-1\r\n";
         string path = WriteLog(tempRoot, "observed-zero-refresh-tail-preserve-viewport.log", initial);
 
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        using LogRecordSource reader = new(path, Encoding.UTF8, dataOffset: 0);
         reader.ReadFromPercentage(0d, 2);
-        AssertSequence("observed zero refresh tail setup rows", reader.CurrentRows, "line-0", "line-1");
+        AssertSequence("observed zero refresh tail setup rows", reader.CurrentDisplayTexts, "line-0", "line-1");
         File.WriteAllText(path, string.Empty, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         reader.RefreshTail(2);
-        AssertEqual("observed zero refresh tail hidden rows", reader.CurrentRows.Count, 0);
+        AssertEqual("observed zero refresh tail hidden rows", reader.CurrentDisplayTexts.Count, 0);
         File.WriteAllText(path, initial, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         reader.RefreshFileSize();
 
-        AssertSequence("observed zero refresh tail restored rows", reader.CurrentRows, "line-0", "line-1");
+        AssertSequence("observed zero refresh tail restored rows", reader.CurrentDisplayTexts, "line-0", "line-1");
     }
 
     private static void RunObservedZeroReloadPreservesViewportRowsInternally(string tempRoot)
@@ -3183,16 +2678,16 @@ internal static class Program
         string initial = "line-0\r\nline-1\r\n";
         string path = WriteLog(tempRoot, "observed-zero-reload-preserve-viewport.log", initial);
 
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        using LogRecordSource reader = new(path, Encoding.UTF8, dataOffset: 0);
         reader.ReadFromPercentage(0d, 2);
-        AssertSequence("observed zero reload setup rows", reader.CurrentRows, "line-0", "line-1");
+        AssertSequence("observed zero reload setup rows", reader.CurrentDisplayTexts, "line-0", "line-1");
         File.WriteAllText(path, string.Empty, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         reader.ReloadAfterFileChange(2);
-        AssertEqual("observed zero reload hidden rows", reader.CurrentRows.Count, 0);
+        AssertEqual("observed zero reload hidden rows", reader.CurrentDisplayTexts.Count, 0);
         File.WriteAllText(path, initial, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         reader.RefreshFileSize();
 
-        AssertSequence("observed zero reload restored rows", reader.CurrentRows, "line-0", "line-1");
+        AssertSequence("observed zero reload restored rows", reader.CurrentDisplayTexts, "line-0", "line-1");
     }
 
     private static void RunObservedZeroReloadFromEndFollowsRestoredTail(string tempRoot)
@@ -3200,16 +2695,16 @@ internal static class Program
         string initial = "line-0\r\nline-1\r\nline-2\r\n";
         string path = WriteLog(tempRoot, "observed-zero-reload-end-tail.log", initial);
 
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        using LogRecordSource reader = new(path, Encoding.UTF8, dataOffset: 0);
         reader.ReadFromPercentage(100d, 2);
-        AssertSequence("observed zero reload end setup rows", reader.CurrentRows, "line-1", "line-2");
+        AssertSequence("observed zero reload end setup rows", reader.CurrentDisplayTexts, "line-1", "line-2");
         File.WriteAllText(path, string.Empty, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         reader.ReloadAfterFileChange(2);
-        AssertEqual("observed zero reload end hidden rows", reader.CurrentRows.Count, 0);
+        AssertEqual("observed zero reload end hidden rows", reader.CurrentDisplayTexts.Count, 0);
         File.WriteAllText(path, initial + "line-3\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         reader.ReloadAfterFileChange(2);
 
-        AssertSequence("observed zero reload end restored tail rows", reader.CurrentRows, "line-2", "line-3");
+        AssertSequence("observed zero reload end restored tail rows", reader.CurrentDisplayTexts, "line-2", "line-3");
     }
 
     private static void RunObservedZeroNavigationPreservesViewportRowsInternally(string tempRoot)
@@ -3225,38 +2720,38 @@ internal static class Program
         AssertVisualObservedZeroNavigationPreservesRows(
             tempRoot,
             "read-next",
-            reader => reader.ReadNext(1));
+            reader => reader.ReadNextRecords(1));
         AssertVisualObservedZeroNavigationPreservesRows(
             tempRoot,
             "read-previous",
-            reader => reader.ReadPrevious(1));
+            reader => reader.ReadPreviousRecords(1));
     }
 
     private static void AssertVisualObservedZeroNavigationPreservesRows(
         string tempRoot,
         string name,
-        Action<VisualRowReader> action)
+        Action<LogRecordSource> action)
     {
         string initial = "line-0\r\nline-1\r\n";
         string path = WriteLog(tempRoot, "observed-zero-navigation-" + name + ".log", initial);
 
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        using LogRecordSource reader = new(path, Encoding.UTF8, dataOffset: 0);
         reader.ReadFromPercentage(0d, 2);
         File.WriteAllText(path, string.Empty, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         reader.RefreshFileSize();
 
         action(reader);
-        AssertEqual("observed zero navigation " + name + " hidden rows", reader.CurrentRows.Count, 0);
+        AssertEqual("observed zero navigation " + name + " hidden rows", reader.CurrentDisplayTexts.Count, 0);
         File.WriteAllText(path, initial, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         reader.RefreshFileSize();
 
-        AssertSequence("observed zero navigation " + name + " restored rows", reader.CurrentRows, "line-0", "line-1");
+        AssertSequence("observed zero navigation " + name + " restored rows", reader.CurrentDisplayTexts, "line-0", "line-1");
     }
 
     private static void RunFilteredObservedZeroRepeatedKeepsConfirmedSize(string tempRoot)
     {
         string path = WriteLog(tempRoot, "filtered-observed-zero-repeated.log", "line-0\r\nline-1\r\nline-2\r\n");
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
@@ -3269,7 +2764,7 @@ internal static class Program
         AssertEqual("filtered observed zero file size", reader.FileSize, 0L);
         AssertEqual("filtered observed zero confirmed size", reader.ConfirmedFileSize, confirmedSize);
         AssertEqual("filtered observed zero has content", reader.HasContent, false);
-        AssertEqual("filtered observed zero rows", reader.CurrentRows.Count, 0);
+        AssertEqual("filtered observed zero rows", reader.CurrentDisplayTexts.Count, 0);
         AssertEqual("filtered observed zero cells", reader.CurrentCells.Count, 0);
         reader.ReloadAfterFileChange(10);
         AssertEqual("filtered observed zero repeated file size", reader.FileSize, 0L);
@@ -3279,28 +2774,28 @@ internal static class Program
     private static void RunFilteredObservedZeroPreservesViewportRowsInternally(string tempRoot)
     {
         string path = WriteLog(tempRoot, "filtered-observed-zero-preserve-viewport.log", "line-0\r\nline-1\r\n");
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
             new SearchOptions("line", UseRegex: false, IgnoreCase: false));
         reader.ReadFromPercentage(0d, 10);
-        AssertSequence("filtered observed zero preserve setup rows", reader.CurrentRows, "line-0", "line-1");
+        AssertSequence("filtered observed zero preserve setup rows", reader.CurrentDisplayTexts, "line-0", "line-1");
         AssertEqual("filtered observed zero preserve setup cells", reader.CurrentCells.Count, 2);
 
         reader.MarkObservedZeroFileSize();
-        AssertEqual("filtered observed zero preserve hidden rows", reader.CurrentRows.Count, 0);
+        AssertEqual("filtered observed zero preserve hidden rows", reader.CurrentDisplayTexts.Count, 0);
         AssertEqual("filtered observed zero preserve hidden cells", reader.CurrentCells.Count, 0);
         reader.ClearObservedZeroFileSize();
 
-        AssertSequence("filtered observed zero preserve restored rows", reader.CurrentRows, "line-0", "line-1");
+        AssertSequence("filtered observed zero preserve restored rows", reader.CurrentDisplayTexts, "line-0", "line-1");
         AssertEqual("filtered observed zero preserve restored cells", reader.CurrentCells.Count, 2);
     }
 
     private static void RunFilteredObservedZeroPreservesConfirmedEndState(string tempRoot)
     {
         string path = WriteLog(tempRoot, "filtered-observed-zero-confirmed-end.log", "line-0\r\nline-1\r\nline-2\r\nline-3\r\n");
-        using FilteredVisualRowReader endReader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource endReader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
@@ -3311,7 +2806,7 @@ internal static class Program
         AssertEqual("filtered observed zero end visual end", endReader.IsAtEnd, true);
         AssertEqual("filtered observed zero end confirmed end", endReader.IsAtConfirmedEnd, true);
 
-        using FilteredVisualRowReader topReader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource topReader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
@@ -3327,21 +2822,21 @@ internal static class Program
     {
         string initial = "line-0\r\nline-1\r\nline-2\r\nline-3\r\n";
         string path = WriteLog(tempRoot, "filtered-observed-zero-reload-away.log", initial);
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
             new SearchOptions("line", UseRegex: false, IgnoreCase: false));
         reader.ReadFromPercentage(0d, 2);
-        AssertSequence("filtered observed zero reload away setup rows", reader.CurrentRows, "line-0", "line-1");
+        AssertSequence("filtered observed zero reload away setup rows", reader.CurrentDisplayTexts, "line-0", "line-1");
         AssertEqual("filtered observed zero reload away setup confirmed end", reader.IsAtConfirmedEnd, false);
         File.WriteAllText(path, string.Empty, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         reader.ReloadAfterFileChange(2);
-        AssertEqual("filtered observed zero reload away hidden rows", reader.CurrentRows.Count, 0);
+        AssertEqual("filtered observed zero reload away hidden rows", reader.CurrentDisplayTexts.Count, 0);
         File.WriteAllText(path, initial + "line-4\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         reader.ReloadAfterFileChange(2);
 
-        AssertSequence("filtered observed zero reload away restored rows", reader.CurrentRows, "line-0", "line-1");
+        AssertSequence("filtered observed zero reload away restored rows", reader.CurrentDisplayTexts, "line-0", "line-1");
     }
 
     private static void RunFilteredObservedZeroNavigationPreservesViewportRowsInternally(string tempRoot)
@@ -3353,24 +2848,24 @@ internal static class Program
         AssertFilteredObservedZeroNavigationPreservesRows(
             tempRoot,
             "read-row-ordinal",
-            reader => reader.ReadFromRowOrdinal(1, 10));
+            reader => reader.ReadFromRecordOrdinal(1, 10));
         AssertFilteredObservedZeroNavigationPreservesRows(
             tempRoot,
             "read-next",
-            reader => reader.ReadNext(1));
+            reader => reader.ReadNextRecords(1));
         AssertFilteredObservedZeroNavigationPreservesRows(
             tempRoot,
             "read-previous",
-            reader => reader.ReadPrevious(1));
+            reader => reader.ReadPreviousRecords(1));
     }
 
     private static void AssertFilteredObservedZeroNavigationPreservesRows(
         string tempRoot,
         string name,
-        Action<FilteredVisualRowReader> action)
+        Action<FilteredLogRecordSource> action)
     {
         string path = WriteLog(tempRoot, "filtered-observed-zero-navigation-" + name + ".log", "line-0\r\nline-1\r\n");
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
@@ -3380,11 +2875,11 @@ internal static class Program
         reader.ReloadAfterFileChange(10);
 
         action(reader);
-        AssertEqual("filtered observed zero navigation " + name + " hidden rows", reader.CurrentRows.Count, 0);
+        AssertEqual("filtered observed zero navigation " + name + " hidden rows", reader.CurrentDisplayTexts.Count, 0);
         AssertEqual("filtered observed zero navigation " + name + " hidden cells", reader.CurrentCells.Count, 0);
         reader.ClearObservedZeroFileSize();
 
-        AssertSequence("filtered observed zero navigation " + name + " restored rows", reader.CurrentRows, "line-0", "line-1");
+        AssertSequence("filtered observed zero navigation " + name + " restored rows", reader.CurrentDisplayTexts, "line-0", "line-1");
         AssertEqual("filtered observed zero navigation " + name + " restored cells", reader.CurrentCells.Count, 2);
     }
 
@@ -3393,7 +2888,7 @@ internal static class Program
         string initial = "line-0\r\nline-1\r\n";
         string replacement = "neww-0\r\nneww-1\r\n";
         string path = WriteLog(tempRoot, "filtered-observed-zero-same-size.log", initial);
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
@@ -3407,13 +2902,13 @@ internal static class Program
         reader.ReloadAfterFileChange(10);
         AssertEqual("filtered observed zero same size visible size", reader.FileSize, confirmedSize);
         AssertEqual("filtered observed zero same size confirmed size", reader.ConfirmedFileSize, confirmedSize);
-        AssertSequence("filtered observed zero same size rows", reader.CurrentRows, "neww-0", "neww-1");
+        AssertSequence("filtered observed zero same size rows", reader.CurrentDisplayTexts, "neww-0", "neww-1");
     }
 
     private static void RunFilteredObservedZeroThenSmallerKeepsConfirmedForStaleDecision(string tempRoot)
     {
         string path = WriteLog(tempRoot, "filtered-observed-zero-smaller.log", "line-0\r\nline-1\r\nline-2\r\n");
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
@@ -3433,7 +2928,7 @@ internal static class Program
     {
         string initial = "alpha-0\r\nalpha-1\r\n";
         string path = WriteLog(tempRoot, "filtered-observed-zero-append.log", initial);
-        using FilteredVisualRowReader reader = LogSearchBuilder.BuildFilteredReader(
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
             Encoding.UTF8,
             dataOffset: 0,
@@ -3442,16 +2937,16 @@ internal static class Program
         reader.ReloadAfterFileChange(10);
         File.WriteAllText(path, initial + "alpha-2\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 
-        using FilteredVisualRowReader appended = BuildAppendedReader(reader, new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
+        using FilteredLogRecordSource appended = BuildAppendedReader(reader, new SearchOptions("alpha", UseRegex: false, IgnoreCase: false));
         AssertEqual("filtered observed zero append match count", appended.MatchedLineCount, 3L);
-        AssertSequence("filtered observed zero append rows", appended.CurrentRows, "alpha-0", "alpha-1", "alpha-2");
+        AssertSequence("filtered observed zero append rows", appended.CurrentDisplayTexts, "alpha-0", "alpha-1", "alpha-2");
     }
 
     private static void RunRefreshFileSizeAfterTruncateLetsJumpEndSeeAppendedRows(string tempRoot)
     {
         string path = WriteLog(tempRoot, "tail-truncate-append.log", "line-0\r\nline-1\r\nline-2\r\n");
 
-        using VisualRowReader reader = new(path, Encoding.UTF8, dataOffset: 0);
+        using LogRecordSource reader = new(path, Encoding.UTF8, dataOffset: 0);
         reader.ReadFromPercentage(100d, 2);
         File.WriteAllText(path, string.Empty, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         reader.RefreshTail(2);
@@ -3459,7 +2954,7 @@ internal static class Program
         AssertEqual("tail truncate append file size changed", reader.RefreshFileSize(), true);
         reader.ReadFromPercentage(100d, 2);
 
-        AssertSequence("tail truncate append rows", reader.CurrentRows, "after-0", "after-1");
+        AssertSequence("tail truncate append rows", reader.CurrentDisplayTexts, "after-0", "after-1");
     }
 
     private static int[] CreateFilledArray(int count, int value)
@@ -3469,17 +2964,17 @@ internal static class Program
         return values;
     }
 
-    private static void DisposeReaders(IReadOnlyList<FilteredVisualRowReader> readers)
+    private static void DisposeReaders(IReadOnlyList<FilteredLogRecordSource> readers)
     {
-        foreach (FilteredVisualRowReader reader in readers)
+        foreach (FilteredLogRecordSource reader in readers)
         {
             reader.Dispose();
         }
     }
 
-    private static void DisposeNullableReaders(IReadOnlyList<FilteredVisualRowReader?> readers)
+    private static void DisposeNullableReaders(IReadOnlyList<FilteredLogRecordSource?> readers)
     {
-        foreach (FilteredVisualRowReader? reader in readers)
+        foreach (FilteredLogRecordSource? reader in readers)
         {
             reader?.Dispose();
         }
@@ -3551,13 +3046,24 @@ internal static class Program
         }
     }
 
-    private static void AssertSelectedRows(string name, IReadOnlyList<ViewportSelectedRow> actual, params string[] expected)
+    private static void AssertSelectedRows(string name, IReadOnlyList<LogViewportRecord> actual, params string[] expected)
     {
         AssertEqual(name + " count", actual.Count, expected.Length);
         for (int i = 0; i < expected.Length; i++)
         {
-            AssertEqual(name + " [" + i + "]", actual[i].Text, expected[i]);
+            AssertEqual(name + " [" + i + "]", actual[i].DisplayText, expected[i]);
         }
+    }
+
+    private static IReadOnlyList<LogViewportRecord> ReadAllRecords(ILogRecordSource source)
+    {
+        var records = new List<LogViewportRecord>();
+        foreach (LogViewportRecord record in source.EnumerateRecords(null, null))
+        {
+            records.Add(record);
+        }
+
+        return records;
     }
 
     private static void AssertEqual<T>(string name, T actual, T expected)

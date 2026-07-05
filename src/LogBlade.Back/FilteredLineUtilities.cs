@@ -8,7 +8,6 @@ public readonly record struct FilteredCaptureGroups(string[] Headers, string[] V
 public readonly record struct FilteredLineDescriptor(
     long StartOffset,
     long EndOffset,
-    int VisualRowCount,
     FilteredCaptureGroups? CaptureGroups = null,
     long LineNumber = 0,
     int ExplicitRowIndex = 0);
@@ -51,7 +50,7 @@ internal static class FilteredLineUtilities
 
     public static string ReadLineText(string filePath, Encoding encoding, long startOffset, long endOffset)
     {
-        using FileStream fs = VisualRowReader.OpenSourceStream(filePath);
+        using FileStream fs = LogFileUtilities.OpenSourceStream(filePath);
         return ReadLineText(fs, encoding, startOffset, endOffset);
     }
 
@@ -70,89 +69,6 @@ internal static class FilteredLineUtilities
         }
 
         return encoding.GetString(buffer, 0, buffer.Length);
-    }
-
-    public static int CountVisualRows(string text)
-    {
-        int rowCount = 0;
-        int lineStart = 0;
-        while (true)
-        {
-            int lineEnd = FindLineEnd(text, lineStart);
-            int lineLength = lineEnd - lineStart;
-            rowCount += Math.Max(1, (lineLength + VisualRowReader.VisibleSegmentChars - 1) / VisualRowReader.VisibleSegmentChars);
-            if (lineEnd >= text.Length)
-            {
-                return rowCount;
-            }
-
-            lineStart = SkipLineBreak(text, lineEnd);
-        }
-    }
-
-    public static string GetVisualRowText(string text, int segmentIndex)
-    {
-        if (!TryGetVisualRowRange(text, segmentIndex, out int start, out int length))
-        {
-            return string.Empty;
-        }
-
-        return text.Substring(start, length);
-    }
-
-    public static bool TryGetVisualRowRange(string text, int segmentIndex, out int start, out int length)
-    {
-        start = 0;
-        length = 0;
-        if (segmentIndex < 0)
-        {
-            return false;
-        }
-
-        int lineStart = 0;
-        int remainingSegmentIndex = segmentIndex;
-        while (true)
-        {
-            int lineEnd = FindLineEnd(text, lineStart);
-            int lineLength = lineEnd - lineStart;
-            int lineSegmentCount = Math.Max(1, (lineLength + VisualRowReader.VisibleSegmentChars - 1) / VisualRowReader.VisibleSegmentChars);
-            if (remainingSegmentIndex < lineSegmentCount)
-            {
-                start = lineStart + (remainingSegmentIndex * VisualRowReader.VisibleSegmentChars);
-                length = Math.Min(VisualRowReader.VisibleSegmentChars, lineEnd - start);
-                return true;
-            }
-
-            remainingSegmentIndex -= lineSegmentCount;
-            if (lineEnd >= text.Length)
-            {
-                return false;
-            }
-
-            lineStart = SkipLineBreak(text, lineEnd);
-        }
-    }
-
-    public static int CountExplicitRows(string text)
-    {
-        int rowCount = 1;
-        for (int i = 0; i < text.Length; i++)
-        {
-            if (text[i] == '\r')
-            {
-                rowCount++;
-                if (i + 1 < text.Length && text[i + 1] == '\n')
-                {
-                    i++;
-                }
-            }
-            else if (text[i] == '\n')
-            {
-                rowCount++;
-            }
-        }
-
-        return rowCount;
     }
 
     public static IEnumerable<ExplicitRowData> EnumerateExplicitRows(string text)
@@ -236,34 +152,6 @@ internal static class FilteredLineUtilities
         }
 
         return false;
-    }
-
-    private static int FindLineEnd(string text, int start)
-    {
-        for (int i = start; i < text.Length; i++)
-        {
-            if (text[i] is '\r' or '\n')
-            {
-                return i;
-            }
-        }
-
-        return text.Length;
-    }
-
-    private static int SkipLineBreak(string text, int lineEnd)
-    {
-        if (lineEnd >= text.Length)
-        {
-            return text.Length;
-        }
-
-        if (text[lineEnd] == '\r' && lineEnd + 1 < text.Length && text[lineEnd + 1] == '\n')
-        {
-            return lineEnd + 2;
-        }
-
-        return lineEnd + 1;
     }
 
     private static byte[] ReadRange(FileStream fs, long startOffset, long endOffset)

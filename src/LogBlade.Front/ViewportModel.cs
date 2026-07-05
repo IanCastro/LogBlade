@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-public readonly record struct ViewportRowSelectionKey(long StartOffset, long EndOffset, int SegmentIndex) : IComparable<ViewportRowSelectionKey>
+internal readonly record struct ViewportRowSelectionKey(long StartOffset, long EndOffset, int SegmentIndex) : IComparable<ViewportRowSelectionKey>
 {
     public int CompareTo(ViewportRowSelectionKey other)
     {
@@ -16,29 +16,24 @@ public readonly record struct ViewportRowSelectionKey(long StartOffset, long End
     }
 }
 
-public readonly record struct ViewportRowSelectionRange(ViewportRowSelectionKey First, ViewportRowSelectionKey Last)
+internal readonly record struct ViewportRowSelectionRange(ViewportRowSelectionKey First, ViewportRowSelectionKey Last)
 {
     public ViewportRowSelectionKey Start => First.CompareTo(Last) <= 0 ? First : Last;
     public ViewportRowSelectionKey End => First.CompareTo(Last) <= 0 ? Last : First;
     public bool Contains(ViewportRowSelectionKey key) => key.CompareTo(Start) >= 0 && key.CompareTo(End) <= 0;
 }
 
-public readonly record struct ViewportSelectedRow(ViewportRowSelectionKey Key, string Text, IReadOnlyList<string>? Cells = null);
-
-public readonly record struct ViewportHighlightGroupKey(long StartOffset, long EndOffset);
-
-public readonly record struct ViewportHighlightGroup(ViewportHighlightGroupKey Key, string Text);
-
-public readonly record struct ViewportTextSegmentKey(ViewportHighlightGroupKey GroupKey, int SegmentIndex);
-
-public readonly record struct ViewportTextSegmentRange(ViewportTextSegmentKey Key, int Start, int Length);
-
-public readonly record struct ViewportTextSelectionContext(
+internal readonly record struct ViewportSelectedRow(ViewportRowSelectionKey Key, string Text, IReadOnlyList<string>? Cells = null);
+internal readonly record struct ViewportHighlightGroupKey(long StartOffset, long EndOffset);
+internal readonly record struct ViewportHighlightGroup(ViewportHighlightGroupKey Key, string Text);
+internal readonly record struct ViewportTextSegmentKey(ViewportHighlightGroupKey GroupKey, int SegmentIndex);
+internal readonly record struct ViewportTextSegmentRange(ViewportTextSegmentKey Key, int Start, int Length);
+internal readonly record struct ViewportTextSelectionContext(
     ViewportHighlightGroupKey GroupKey,
     string Text,
     IReadOnlyList<ViewportTextSegmentRange> Segments);
 
-public interface IViewportReader : IDisposable
+internal interface IViewportReader : IDisposable
 {
     string FilePath { get; }
     string EncodingName { get; }
@@ -55,41 +50,44 @@ public interface IViewportReader : IDisposable
     IViewportReader CloneForWorker();
 }
 
-public interface IColumnViewportReader : IViewportReader
+internal interface IColumnViewportReader : IViewportReader
 {
     IReadOnlyList<string> ColumnHeaders { get; }
     IReadOnlyList<IReadOnlyList<string>> CurrentCells { get; }
 }
 
-public interface ILineNumberColumnViewportReader : IColumnViewportReader
+internal interface ILineNumberColumnViewportReader : IColumnViewportReader
 {
     long MaxLineNumber { get; }
 }
 
-public interface IFileOffsetViewportReader : IViewportReader
+internal interface IFileOffsetViewportReader : IViewportReader
 {
     long TopRowOrdinal { get; }
     bool TryGetRowStartOffset(long rowOrdinal, out long startOffset);
 }
 
-public interface IRowOrdinalViewportReader : IViewportReader
+internal interface IRowOrdinalViewportReader : IViewportReader
 {
     bool TryGetRowOrdinal(ViewportRowSelectionKey key, out long rowOrdinal);
 }
 
-public interface ISelectableViewportReader : IViewportReader
+internal interface ISelectableViewportReader : IViewportReader
 {
     IReadOnlyList<ViewportRowSelectionKey> CurrentRowSelectionKeys { get; }
-    IReadOnlyList<ViewportSelectedRow> ReadSelectedRows(bool selectAll, IReadOnlyList<ViewportRowSelectionRange> ranges, IReadOnlyList<ViewportRowSelectionKey> excludedKeys);
+    IReadOnlyList<ViewportSelectedRow> ReadSelectedRows(
+        bool selectAll,
+        IReadOnlyList<ViewportRowSelectionRange> ranges,
+        IReadOnlyList<ViewportRowSelectionKey> excludedKeys);
 }
 
-public interface IHighlightGroupViewportReader : IViewportReader
+internal interface IHighlightGroupViewportReader : IViewportReader
 {
     IReadOnlyList<ViewportHighlightGroupKey> CurrentHighlightGroupKeys { get; }
     IReadOnlyList<ViewportHighlightGroup> ReadCurrentHighlightGroups();
 }
 
-public interface ITextSelectionViewportReader : IViewportReader
+internal interface ITextSelectionViewportReader : IViewportReader
 {
     IReadOnlyList<ViewportTextSegmentKey> CurrentTextSegmentKeys { get; }
     bool TryReadTextSelectionContext(ViewportTextSegmentKey key, out ViewportTextSelectionContext context);

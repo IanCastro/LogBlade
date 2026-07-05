@@ -319,13 +319,9 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     public void MarkReaderObservedZero()
     {
-        if (_reader is VisualRowReader visualReader)
+        if (_reader is ProjectedViewport projected)
         {
-            visualReader.MarkObservedZeroFileSize();
-        }
-        else if (_reader is FilteredVisualRowReader filteredReader)
-        {
-            filteredReader.MarkObservedZeroFileSize();
+            projected.MarkObservedZeroFileSize();
         }
 
         _statusText = string.Empty;
@@ -336,13 +332,9 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     public void ClearReaderObservedZero()
     {
-        if (_reader is VisualRowReader visualReader)
+        if (_reader is ProjectedViewport projected)
         {
-            visualReader.ClearObservedZeroFileSize();
-        }
-        else if (_reader is FilteredVisualRowReader filteredReader)
-        {
-            filteredReader.ClearObservedZeroFileSize();
+            projected.ClearObservedZeroFileSize();
         }
 
         _statusText = string.Empty;
@@ -387,14 +379,14 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     public void QueueTailRefreshIfAtEnd()
     {
-        if (_reader is not VisualRowReader visualReader || _hwnd == IntPtr.Zero)
+        if (_reader is not ProjectedViewport { Source: LogRecordSource } visualReader || _hwnd == IntPtr.Zero)
         {
             _tailRefreshPending = false;
             _fileSizeRefreshPending = false;
             return;
         }
 
-        if (!visualReader.IsAtKnownEnd || _tailFollowSuspended)
+        if (!visualReader.IsAtEnd || _tailFollowSuspended)
         {
             _tailRefreshPending = false;
             if (_viewportWorkerRunning || _pendingViewportRequest is not null)
@@ -425,7 +417,7 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     public void QueueReloadAfterFileChange()
     {
-        if (_reader is not VisualRowReader and not FilteredVisualRowReader || _hwnd == IntPtr.Zero)
+        if (_reader is not ProjectedViewport || _hwnd == IntPtr.Zero)
         {
             _fileSizeRefreshPending = false;
             return;
@@ -537,7 +529,7 @@ internal sealed class ViewportPaneWindow : IDisposable
             return;
         }
 
-        if (_reader is not VisualRowReader)
+        if (_reader is not ProjectedViewport { Source: LogRecordSource })
         {
             _tailRefreshPending = false;
             return;
@@ -566,7 +558,7 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private void ResumeTailFollowIfAtEnd()
     {
-        if (_reader is VisualRowReader { IsAtKnownEnd: true })
+        if (_reader is ProjectedViewport { Source: LogRecordSource, IsAtEnd: true })
         {
             _tailFollowSuspended = false;
         }
@@ -639,7 +631,7 @@ internal sealed class ViewportPaneWindow : IDisposable
                         workerReader.ReadFromPercentage(request.RequestedPercentage, request.VisibleLines);
                         break;
                     case ViewportRequestKind.LoadAtRowOrdinal:
-                        if (workerReader is FilteredVisualRowReader filteredReader)
+                        if (workerReader is ProjectedViewport filteredReader)
                         {
                             filteredReader.ReadFromRowOrdinal(request.RequestedRowOrdinal, request.VisibleLines);
                         }
@@ -650,7 +642,7 @@ internal sealed class ViewportPaneWindow : IDisposable
 
                         break;
                     case ViewportRequestKind.LoadAtOffset:
-                        if (workerReader is VisualRowReader offsetReader)
+                        if (workerReader is ProjectedViewport offsetReader)
                         {
                             offsetReader.ReadFromOffset(request.RequestedOffset, request.VisibleLines);
                         }
@@ -673,20 +665,16 @@ internal sealed class ViewportPaneWindow : IDisposable
                         workerReader.ReadFromPercentage(100d, request.VisibleLines);
                         break;
                     case ViewportRequestKind.RefreshTailIfAtEnd:
-                        if (workerReader is VisualRowReader visualReader)
+                        if (workerReader is ProjectedViewport visualReader)
                         {
                             visualReader.RefreshTail(request.VisibleLines);
                         }
 
                         break;
                     case ViewportRequestKind.ReloadAfterFileChange:
-                        if (workerReader is VisualRowReader changedReader)
+                        if (workerReader is ProjectedViewport changedReader)
                         {
                             changedReader.ReloadAfterFileChange(request.VisibleLines);
-                        }
-                        else if (workerReader is FilteredVisualRowReader filteredChangedReader)
-                        {
-                            filteredChangedReader.ReloadAfterFileChange(request.VisibleLines);
                         }
 
                         break;
@@ -785,7 +773,7 @@ internal sealed class ViewportPaneWindow : IDisposable
             _reader.HasContent &&
             VisibleDataLineCount != previousVisibleDataLineCount)
         {
-            if (_reader is FilteredVisualRowReader filteredReader)
+            if (_reader is ProjectedViewport { Source: FilteredLogRecordSource filteredReader })
             {
                 if (filteredReader.IsAtEnd)
                 {
@@ -799,7 +787,7 @@ internal sealed class ViewportPaneWindow : IDisposable
                     QueueViewportRequest(
                         ViewportRequestKind.LoadAtRowOrdinal,
                         requestedPercentage: _reader.ScrollPercentage,
-                        requestedRowOrdinal: filteredReader.TopRowOrdinal,
+                        requestedRowOrdinal: filteredReader.TopRecordOrdinal,
                         visibleLines: VisibleDataLineCount);
                 }
             }
@@ -5719,7 +5707,7 @@ internal sealed class ViewportPaneWindow : IDisposable
             return Math.Max(1, total);
         }
 
-        return VisualRowReader.VisibleSegmentChars;
+        return ProjectedViewport.VisibleSegmentChars;
     }
 
     private int GetHorizontalVisibleColumnCount()

@@ -6,13 +6,13 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 
-public readonly record struct SearchProgressUpdate(double ProgressPercentage, long MatchedLineCount, long ElapsedMilliseconds, FilteredVisualRowReader? Reader, bool IsFinal);
+public readonly record struct SearchProgressUpdate(double ProgressPercentage, long MatchedLineCount, long ElapsedMilliseconds, FilteredLogRecordSource? Reader, bool IsFinal);
 
 public readonly record struct StagedSearchProgressUpdate(
     double ProgressPercentage,
     long[] MatchedLineCounts,
     long ElapsedMilliseconds,
-    FilteredVisualRowReader?[] Readers,
+    FilteredLogRecordSource?[] Readers,
     bool IsFinal,
     bool IsPaused,
     long ProcessedOffset,
@@ -26,7 +26,7 @@ public static class LogSearchBuilder
     private const int ProgressPublishIntervalMs = 150;
     private const int BackwardScanBlockBytes = 64 * 1024;
 
-    public static FilteredVisualRowReader BuildFilteredReader(string filePath, Encoding encoding, long dataOffset, string query)
+    public static FilteredLogRecordSource BuildFilteredReader(string filePath, Encoding encoding, long dataOffset, string query)
         => BuildFilteredReader(filePath, encoding, dataOffset, new SearchOptions(query, UseRegex: false, IgnoreCase: true));
 
     public static void ValidateOptions(SearchOptions options)
@@ -45,14 +45,14 @@ public static class LogSearchBuilder
         }
     }
 
-    public static FilteredVisualRowReader BuildFilteredReader(string filePath, Encoding encoding, long dataOffset, SearchOptions options, DisplayParserRule? displayParserRule = null)
+    public static FilteredLogRecordSource BuildFilteredReader(string filePath, Encoding encoding, long dataOffset, SearchOptions options, DisplayParserRule? displayParserRule = null)
         => BuildFilteredReader(filePath, encoding, dataOffset, new[] { options }, displayParserRule);
 
-    public static FilteredVisualRowReader BuildFilteredReader(string filePath, Encoding encoding, long dataOffset, IReadOnlyList<SearchOptions> options, DisplayParserRule? displayParserRule = null)
+    public static FilteredLogRecordSource BuildFilteredReader(string filePath, Encoding encoding, long dataOffset, IReadOnlyList<SearchOptions> options, DisplayParserRule? displayParserRule = null)
     {
         string fullPath = Path.GetFullPath(filePath);
         long fileSize = new FileInfo(fullPath).Length;
-        LogEncodingKind kind = VisualRowReader.InferKind(encoding, dataOffset);
+        LogEncodingKind kind = LogFileUtilities.InferKind(encoding, dataOffset);
         List<FilteredLineDescriptor> descriptors = new();
         SearchMatcherCascade matcher = SearchMatcherCascade.Create(options);
         DisplayParserRule? parserRule = DisplayParserEvaluator.CloneRule(displayParserRule);
@@ -67,7 +67,7 @@ public static class LogSearchBuilder
         }
         totalLineCount = Math.Max(totalLineCount, recordSequence.LastLineNumberSeen);
 
-        return new FilteredVisualRowReader(
+        return new FilteredLogRecordSource(
             fullPath,
             kind,
             encoding,
@@ -80,11 +80,11 @@ public static class LogSearchBuilder
             GetParserRescanLineNumber(recordSequence, totalLineCount));
     }
 
-    public static FilteredVisualRowReader[] BuildStagedFilteredReaders(string filePath, Encoding encoding, long dataOffset, IReadOnlyList<SearchOptions> options, DisplayParserRule? displayParserRule = null)
+    public static FilteredLogRecordSource[] BuildStagedFilteredReaders(string filePath, Encoding encoding, long dataOffset, IReadOnlyList<SearchOptions> options, DisplayParserRule? displayParserRule = null)
     {
         string fullPath = Path.GetFullPath(filePath);
         long fileSize = new FileInfo(fullPath).Length;
-        LogEncodingKind kind = VisualRowReader.InferKind(encoding, dataOffset);
+        LogEncodingKind kind = LogFileUtilities.InferKind(encoding, dataOffset);
         List<FilteredLineDescriptor>[] descriptors = CreateDescriptorLists(options.Count);
         SearchMatcherCascade matcher = SearchMatcherCascade.Create(options);
         DisplayParserRule? parserRule = DisplayParserEvaluator.CloneRule(displayParserRule);
@@ -133,7 +133,7 @@ public static class LogSearchBuilder
         cancellationToken.ThrowIfCancellationRequested();
         string fullPath = Path.GetFullPath(filePath);
         long fileSize = new FileInfo(fullPath).Length;
-        LogEncodingKind kind = VisualRowReader.InferKind(encoding, dataOffset);
+        LogEncodingKind kind = LogFileUtilities.InferKind(encoding, dataOffset);
         List<FilteredLineDescriptor> descriptors = new();
         long lastPublishedTick = Environment.TickCount64;
         int lastPublishedDescriptorCount = -1;
@@ -177,11 +177,11 @@ public static class LogSearchBuilder
                 progress = 100d;
             }
 
-            FilteredVisualRowReader? reader = null;
+            FilteredLogRecordSource? reader = null;
             bool shouldBuildReader = isFinal || descriptors.Count != lastPublishedDescriptorCount;
             if (shouldBuildReader && (descriptors.Count > 0 || isFinal))
             {
-                reader = new FilteredVisualRowReader(
+                reader = new FilteredLogRecordSource(
                     fullPath,
                     kind,
                     encoding,
@@ -215,7 +215,7 @@ public static class LogSearchBuilder
     {
         string fullPath = Path.GetFullPath(filePath);
         long fileSize = new FileInfo(fullPath).Length;
-        LogEncodingKind kind = VisualRowReader.InferKind(encoding, dataOffset);
+        LogEncodingKind kind = LogFileUtilities.InferKind(encoding, dataOffset);
         List<FilteredLineDescriptor>[] descriptors = CreateDescriptorLists(options.Count);
         long lastPublishedTick = Environment.TickCount64;
         int[] lastPublishedDescriptorCounts = CreateFilledArray(options.Count, -1);
@@ -273,7 +273,7 @@ public static class LogSearchBuilder
                 progress = 100d;
             }
 
-            FilteredVisualRowReader?[] readers = new FilteredVisualRowReader?[descriptors.Length];
+            FilteredLogRecordSource?[] readers = new FilteredLogRecordSource?[descriptors.Length];
             bool publishedReader = false;
             long readerFileSize = isFinal ? fileSize : scannedOffset;
             for (int i = 0; i < descriptors.Length; i++)
@@ -281,7 +281,7 @@ public static class LogSearchBuilder
                 bool shouldBuildReader = isFinal || isPaused || descriptors[i].Count != lastPublishedDescriptorCounts[i];
                 if (shouldBuildReader && (descriptors[i].Count > 0 || isFinal))
                 {
-                    readers[i] = new FilteredVisualRowReader(
+                    readers[i] = new FilteredLogRecordSource(
                         fullPath,
                         kind,
                         encoding,
@@ -302,7 +302,7 @@ public static class LogSearchBuilder
                 }
                 else if (isPaused)
                 {
-                    readers[i] = new FilteredVisualRowReader(
+                    readers[i] = new FilteredLogRecordSource(
                         fullPath,
                         kind,
                         encoding,
@@ -338,7 +338,7 @@ public static class LogSearchBuilder
     }
 
     public static void BuildChangedStagedFilteredReadersIncremental(
-        IReadOnlyList<FilteredVisualRowReader> previousReaders,
+        IReadOnlyList<FilteredLogRecordSource> previousReaders,
         int changedStageIndex,
         IReadOnlyList<SearchOptions> options,
         IReadOnlyList<int> preloadedVisibleLines,
@@ -352,7 +352,7 @@ public static class LogSearchBuilder
                 100d,
                 Array.Empty<long>(),
                 0,
-                Array.Empty<FilteredVisualRowReader?>(),
+                Array.Empty<FilteredLogRecordSource?>(),
                 IsFinal: true,
                 IsPaused: false,
                 ProcessedOffset: 0,
@@ -371,7 +371,7 @@ public static class LogSearchBuilder
             throw new ArgumentException("Previous reader count must include the stage before the changed stage.", nameof(previousReaders));
         }
 
-        FilteredVisualRowReader sourceReader = previousReaders[changedStageIndex - 1];
+        FilteredLogRecordSource sourceReader = previousReaders[changedStageIndex - 1];
         string fullPath = sourceReader.FilePath;
         LogEncodingKind kind = sourceReader.Kind;
         Encoding encoding = sourceReader.SourceEncoding;
@@ -463,13 +463,13 @@ public static class LogSearchBuilder
                 progress = 100d;
             }
 
-            FilteredVisualRowReader?[] readers = new FilteredVisualRowReader?[options.Count];
+            FilteredLogRecordSource?[] readers = new FilteredLogRecordSource?[options.Count];
             for (int i = changedStageIndex; i < options.Count; i++)
             {
                 bool shouldBuildReader = isFinal || isPaused || descriptors[i].Count != lastPublishedDescriptorCounts[i];
                 if (shouldBuildReader)
                 {
-                    readers[i] = new FilteredVisualRowReader(
+                    readers[i] = new FilteredLogRecordSource(
                         fullPath,
                         kind,
                         encoding,
@@ -509,7 +509,7 @@ public static class LogSearchBuilder
     }
 
     public static void BuildAppendedFilteredReaderIncremental(
-        FilteredVisualRowReader previousReader,
+        FilteredLogRecordSource previousReader,
         SearchOptions options,
         long newFileSize,
         int preloadedVisibleLines,
@@ -519,7 +519,7 @@ public static class LogSearchBuilder
         => BuildAppendedFilteredReaderIncremental(previousReader, new[] { options }, newFileSize, preloadedVisibleLines, onProgress, cancellationToken, displayParserRule);
 
     public static void BuildAppendedFilteredReaderIncremental(
-        FilteredVisualRowReader previousReader,
+        FilteredLogRecordSource previousReader,
         IReadOnlyList<SearchOptions> options,
         long newFileSize,
         int preloadedVisibleLines,
@@ -533,7 +533,7 @@ public static class LogSearchBuilder
         DisplayParserRule? parserRule = DisplayParserEvaluator.CloneRule(displayParserRule);
         if (newFileSize <= oldFileSize)
         {
-            FilteredVisualRowReader unchanged = new(
+            FilteredLogRecordSource unchanged = new(
                 fullPath,
                 previousReader.Kind,
                 previousReader.SourceEncoding,
@@ -606,11 +606,11 @@ public static class LogSearchBuilder
                 progress = 100d;
             }
 
-            FilteredVisualRowReader? reader = null;
+            FilteredLogRecordSource? reader = null;
             bool shouldBuildReader = isFinal || descriptors.Count != lastPublishedDescriptorCount;
             if (shouldBuildReader)
             {
-                reader = new FilteredVisualRowReader(
+                reader = new FilteredLogRecordSource(
                     fullPath,
                     kind,
                     encoding,
@@ -632,7 +632,7 @@ public static class LogSearchBuilder
     }
 
     public static void BuildAppendedStagedFilteredReadersIncremental(
-        IReadOnlyList<FilteredVisualRowReader> previousReaders,
+        IReadOnlyList<FilteredLogRecordSource> previousReaders,
         IReadOnlyList<SearchOptions> options,
         long newFileSize,
         IReadOnlyList<int> preloadedVisibleLines,
@@ -651,7 +651,7 @@ public static class LogSearchBuilder
                 100d,
                 Array.Empty<long>(),
                 0,
-                Array.Empty<FilteredVisualRowReader?>(),
+                Array.Empty<FilteredLogRecordSource?>(),
                 IsFinal: true,
                 IsPaused: false,
                 ProcessedOffset: 0,
@@ -660,7 +660,7 @@ public static class LogSearchBuilder
             return;
         }
 
-        FilteredVisualRowReader firstReader = previousReaders[0];
+        FilteredLogRecordSource firstReader = previousReaders[0];
         string fullPath = firstReader.FilePath;
         long oldFileSize = firstReader.ConfirmedFileSize;
         LogEncodingKind kind = firstReader.Kind;
@@ -669,10 +669,10 @@ public static class LogSearchBuilder
         DisplayParserRule? parserRule = DisplayParserEvaluator.CloneRule(displayParserRule);
         if (newFileSize <= oldFileSize)
         {
-            FilteredVisualRowReader?[] unchangedReaders = new FilteredVisualRowReader?[previousReaders.Count];
+            FilteredLogRecordSource?[] unchangedReaders = new FilteredLogRecordSource?[previousReaders.Count];
             for (int i = 0; i < previousReaders.Count; i++)
             {
-                unchangedReaders[i] = new FilteredVisualRowReader(
+                unchangedReaders[i] = new FilteredLogRecordSource(
                     fullPath,
                     kind,
                     encoding,
@@ -777,14 +777,14 @@ public static class LogSearchBuilder
                 progress = 100d;
             }
 
-            FilteredVisualRowReader?[] readers = new FilteredVisualRowReader?[descriptors.Length];
+            FilteredLogRecordSource?[] readers = new FilteredLogRecordSource?[descriptors.Length];
             long readerFileSize = isFinal ? newFileSize : scannedOffset;
             for (int i = 0; i < descriptors.Length; i++)
             {
                 bool shouldBuildReader = isFinal || isPaused || descriptors[i].Count != lastPublishedDescriptorCounts[i];
                 if (shouldBuildReader)
                 {
-                    readers[i] = new FilteredVisualRowReader(
+                    readers[i] = new FilteredLogRecordSource(
                         fullPath,
                         kind,
                         encoding,
@@ -824,7 +824,7 @@ public static class LogSearchBuilder
     }
 
     public static void ResumeStagedFilteredReadersIncremental(
-        IReadOnlyList<FilteredVisualRowReader> pausedReaders,
+        IReadOnlyList<FilteredLogRecordSource> pausedReaders,
         IReadOnlyList<SearchOptions> options,
         long processedOffset,
         long newFileSize,
@@ -844,7 +844,7 @@ public static class LogSearchBuilder
                 100d,
                 Array.Empty<long>(),
                 0,
-                Array.Empty<FilteredVisualRowReader?>(),
+                Array.Empty<FilteredLogRecordSource?>(),
                 IsFinal: true,
                 IsPaused: false,
                 ProcessedOffset: 0,
@@ -853,7 +853,7 @@ public static class LogSearchBuilder
             return;
         }
 
-        FilteredVisualRowReader firstReader = pausedReaders[0];
+        FilteredLogRecordSource firstReader = pausedReaders[0];
         string fullPath = firstReader.FilePath;
         LogEncodingKind kind = firstReader.Kind;
         Encoding encoding = firstReader.SourceEncoding;
@@ -941,14 +941,14 @@ public static class LogSearchBuilder
                 progress = 100d;
             }
 
-            FilteredVisualRowReader?[] readers = new FilteredVisualRowReader?[descriptors.Length];
+            FilteredLogRecordSource?[] readers = new FilteredLogRecordSource?[descriptors.Length];
             long readerFileSize = isFinal ? newFileSize : scannedOffset;
             for (int i = 0; i < descriptors.Length; i++)
             {
                 bool shouldBuildReader = isFinal || isPaused || descriptors[i].Count != lastPublishedDescriptorCounts[i];
                 if (shouldBuildReader)
                 {
-                    readers[i] = new FilteredVisualRowReader(
+                    readers[i] = new FilteredLogRecordSource(
                         fullPath,
                         kind,
                         encoding,
@@ -999,7 +999,7 @@ public static class LogSearchBuilder
             return processedOffset;
         }
 
-        using FileStream fs = VisualRowReader.OpenSourceStream(filePath);
+        using FileStream fs = LogFileUtilities.OpenSourceStream(filePath);
         if (kind is LogEncodingKind.Utf16Le or LogEncodingKind.Utf16Be)
         {
             if (processedOffset - dataOffset < 2 || processedOffset + 2 > fileSize)
@@ -1043,7 +1043,7 @@ public static class LogSearchBuilder
 
     private static bool EndsWithLineBreakAt(string filePath, LogEncodingKind kind, long dataOffset, long offset)
     {
-        using FileStream fs = VisualRowReader.OpenSourceStream(filePath);
+        using FileStream fs = LogFileUtilities.OpenSourceStream(filePath);
         return EndsWithLineBreak(fs, kind, dataOffset, offset);
     }
 
@@ -1054,7 +1054,7 @@ public static class LogSearchBuilder
             return dataOffset;
         }
 
-        using FileStream fs = VisualRowReader.OpenSourceStream(filePath);
+        using FileStream fs = LogFileUtilities.OpenSourceStream(filePath);
         if (EndsWithLineBreak(fs, kind, dataOffset, oldFileSize))
         {
             return oldFileSize;
@@ -1083,7 +1083,6 @@ public static class LogSearchBuilder
             descriptors.Add(new FilteredLineDescriptor(
                 record.StartOffset,
                 record.EndOffset,
-                VisualRowCount: 1,
                 captureGroups,
                 record.LineNumber,
                 row.Index));
@@ -1109,7 +1108,6 @@ public static class LogSearchBuilder
                 descriptors[i].Add(new FilteredLineDescriptor(
                     record.StartOffset,
                     record.EndOffset,
-                    VisualRowCount: 1,
                     captureGroupsByStage[i],
                     record.LineNumber,
                     row.Index));
@@ -1136,7 +1134,6 @@ public static class LogSearchBuilder
             descriptors[i].Add(new FilteredLineDescriptor(
                 sourceDescriptor.StartOffset,
                 sourceDescriptor.EndOffset,
-                VisualRowCount: 1,
                 captureGroupsByStage[i],
                 sourceDescriptor.LineNumber,
                 sourceDescriptor.ExplicitRowIndex));
@@ -1154,7 +1151,7 @@ public static class LogSearchBuilder
         return descriptors;
     }
 
-    private static FilteredVisualRowReader[] BuildReaders(
+    private static FilteredLogRecordSource[] BuildReaders(
         string fullPath,
         LogEncodingKind kind,
         Encoding encoding,
@@ -1167,10 +1164,10 @@ public static class LogSearchBuilder
         long parserRescanOffset,
         long parserRescanLineNumber)
     {
-        FilteredVisualRowReader[] readers = new FilteredVisualRowReader[descriptors.Length];
+        FilteredLogRecordSource[] readers = new FilteredLogRecordSource[descriptors.Length];
         for (int i = 0; i < readers.Length; i++)
         {
-            readers[i] = new FilteredVisualRowReader(
+            readers[i] = new FilteredLogRecordSource(
                 fullPath,
                 kind,
                 encoding,
@@ -1228,7 +1225,7 @@ public static class LogSearchBuilder
         return counts;
     }
 
-    private static long[] CopyExistingMatchedLineCounts(IReadOnlyList<FilteredVisualRowReader> readers, int count, int expectedCount)
+    private static long[] CopyExistingMatchedLineCounts(IReadOnlyList<FilteredLogRecordSource> readers, int count, int expectedCount)
     {
         long[] counts = new long[expectedCount];
         int copyCount = Math.Min(Math.Min(count, readers.Count), counts.Length);
@@ -1260,7 +1257,7 @@ public static class LogSearchBuilder
         return counts;
     }
 
-    private static long[] CopyMatchedLineCounts(IReadOnlyList<FilteredVisualRowReader?> readers)
+    private static long[] CopyMatchedLineCounts(IReadOnlyList<FilteredLogRecordSource?> readers)
     {
         long[] counts = new long[readers.Count];
         for (int i = 0; i < readers.Count; i++)

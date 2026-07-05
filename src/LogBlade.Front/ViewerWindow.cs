@@ -11,7 +11,7 @@ internal sealed class OpenWorkerResult
     public bool Success { get; set; }
     public string? Message { get; set; }
     public DetectedEncodingInfo? DetectedEncoding { get; set; }
-    public VisualRowReader? Reader { get; set; }
+    public LogRecordSource? Reader { get; set; }
     public int PreloadedVisibleLines { get; set; }
 }
 
@@ -26,7 +26,7 @@ internal sealed class SearchWorkerResult
     public SearchOptions[]? Options { get; set; }
     public bool Success { get; set; }
     public string? Message { get; set; }
-    public IViewportReader?[]? Readers { get; set; }
+    public FilteredLogRecordSource?[]? Readers { get; set; }
     public int[]? PreloadedVisibleLines { get; set; }
     public double ProgressPercentage { get; set; }
     public long MatchedLineCount { get; set; }
@@ -948,7 +948,8 @@ internal sealed class ViewerWindow
                 DisplayParserEvaluator.ValidateRule(parserRule);
             }
 
-            VisualRowReader reader = new(_path, detected.Encoding, detected.DataOffset, parserRule);
+            LogRecordSource source = new(_path, detected.Encoding, detected.DataOffset, parserRule);
+            var reader = new ProjectedViewport(source, wrapLongLines: true);
             reader.ReadFromPercentage(scrollPercentage, visibleLines);
             _mainPane.SetReader(reader, visibleLines, preserveSelection: true);
             return true;
@@ -1172,8 +1173,8 @@ internal sealed class ViewerWindow
             {
                 AppLog.Instance.Info("file.open.begin", "begin", new LogField("path", workerPath));
                 result.DetectedEncoding = LogEncodingDetector.DetectEncoding(workerPath);
-                result.Reader = new VisualRowReader(workerPath, result.DetectedEncoding.Value.Encoding, result.DetectedEncoding.Value.DataOffset, workerParserRule);
-                result.Reader.ReadFromPercentage(0d, visibleLines);
+                result.Reader = new LogRecordSource(workerPath, result.DetectedEncoding.Value.Encoding, result.DetectedEncoding.Value.DataOffset, workerParserRule);
+                result.Reader.ReadFromPercentage(0d, visibleLines + 1);
                 result.Success = true;
                 result.PreloadedVisibleLines = visibleLines;
             }
@@ -1211,7 +1212,9 @@ internal sealed class ViewerWindow
         if (result.Success && result.Reader is not null && _mainPane is not null)
         {
             _detectedEncoding = result.DetectedEncoding;
-            _mainPane.SetReader(result.Reader, result.PreloadedVisibleLines);
+            var projected = new ProjectedViewport(result.Reader, wrapLongLines: true);
+            projected.UseCurrentSourceRecords(result.PreloadedVisibleLines);
+            _mainPane.SetReader(projected, result.PreloadedVisibleLines);
             StartFileWatcher();
             if (result.DetectedEncoding is DetectedEncodingInfo detected)
             {
@@ -1991,17 +1994,17 @@ internal sealed class ViewerWindow
         return visibleLines;
     }
 
-    private FilteredVisualRowReader[]? GetActiveFilteredReaders()
+    private FilteredLogRecordSource[]? GetActiveFilteredReaders()
     {
         if (_activeSearchLevelCount == 0)
         {
-            return Array.Empty<FilteredVisualRowReader>();
+            return Array.Empty<FilteredLogRecordSource>();
         }
 
-        FilteredVisualRowReader[] readers = new FilteredVisualRowReader[_activeSearchLevelCount];
+        FilteredLogRecordSource[] readers = new FilteredLogRecordSource[_activeSearchLevelCount];
         for (int i = 0; i < readers.Length; i++)
         {
-            if (_searchLevels[i].ResultsPane?.Reader is not FilteredVisualRowReader reader)
+            if (_searchLevels[i].ResultsPane?.Reader is not ProjectedViewport { Source: FilteredLogRecordSource reader })
             {
                 return null;
             }
@@ -2012,17 +2015,17 @@ internal sealed class ViewerWindow
         return readers;
     }
 
-    private FilteredVisualRowReader[]? GetFilteredReaderPrefix(int count)
+    private FilteredLogRecordSource[]? GetFilteredReaderPrefix(int count)
     {
         if (count < 0 || count > _activeSearchLevelCount)
         {
             return null;
         }
 
-        FilteredVisualRowReader[] readers = new FilteredVisualRowReader[count];
+        FilteredLogRecordSource[] readers = new FilteredLogRecordSource[count];
         for (int i = 0; i < count; i++)
         {
-            if (_searchLevels[i].ResultsPane?.Reader is not FilteredVisualRowReader reader)
+            if (_searchLevels[i].ResultsPane?.Reader is not ProjectedViewport { Source: FilteredLogRecordSource reader })
             {
                 return null;
             }
@@ -2099,7 +2102,7 @@ internal sealed class ViewerWindow
         long matchedLineCount = _searchMatchedLineCount;
         for (int i = 0; i < _activeSearchLevelCount && i < _searchLevels.Count; i++)
         {
-            if (_searchLevels[i].ResultsPane?.Reader is FilteredVisualRowReader reader)
+            if (_searchLevels[i].ResultsPane?.Reader is ProjectedViewport { Source: FilteredLogRecordSource reader })
             {
                 _searchLevels[i].ResultsPane!.ClearReaderObservedZero();
                 matchedLineCount = reader.MatchedLineCount;
@@ -2271,7 +2274,7 @@ internal sealed class ViewerWindow
         _searchProgressPercentage = Math.Clamp(checkpoint.ProgressPercentage, 0d, 100d);
         SetActiveSearchEmptyContentText("(no matches)");
 
-        FilteredVisualRowReader[]? currentReaders = GetActiveFilteredReaders();
+        FilteredLogRecordSource[]? currentReaders = GetActiveFilteredReaders();
         if (currentReaders is null || currentReaders.Length != checkpoint.Options.Length)
         {
             ClearPausedSearchCheckpoint();
@@ -2333,42 +2336,45 @@ internal sealed class ViewerWindow
 
         for (int i = 0; i < result.Readers.Length; i++)
         {
-            IViewportReader? nextReader = result.Readers[i];
-            if (nextReader is null)
+            FilteredLogRecordSource? nextSource = result.Readers[i];
+            if (nextSource is null)
             {
                 continue;
             }
 
             if (i >= _activeSearchLevelCount || i >= _searchLevels.Count || _searchLevels[i].ResultsPane is not ViewportPaneWindow pane)
             {
-                nextReader.Dispose();
+                nextSource.Dispose();
                 result.Readers[i] = null;
                 continue;
             }
 
-            if (!markObservedZero && nextReader is FilteredVisualRowReader nextFilteredReader)
+            long desiredTopRow = 0;
+            bool shouldKeepAtEnd = false;
+            if (!markObservedZero && pane.Reader is ProjectedViewport { Source: FilteredLogRecordSource currentFilteredReader })
             {
-                long desiredTopRow = 0;
-                bool shouldKeepAtEnd = false;
-                if (pane.Reader is FilteredVisualRowReader currentFilteredReader)
-                {
-                    desiredTopRow = currentFilteredReader.TopRowOrdinal;
-                    shouldKeepAtEnd = result.IsAppendUpdate && currentFilteredReader.IsAtConfirmedEnd;
-                }
-
-                if (shouldKeepAtEnd)
-                {
-                    nextFilteredReader.ReadFromPercentage(100d, pane.VisibleDataLineCount);
-                }
-                else
-                {
-                    nextFilteredReader.ReadFromRowOrdinal(desiredTopRow, pane.VisibleDataLineCount);
-                }
+                desiredTopRow = currentFilteredReader.TopRecordOrdinal;
+                shouldKeepAtEnd = result.IsAppendUpdate && currentFilteredReader.IsAtConfirmedEnd;
             }
 
-            if (markObservedZero && nextReader is FilteredVisualRowReader observedZeroReader)
+            var nextReader = new FilteredProjectedViewport(nextSource);
+            if (shouldKeepAtEnd)
             {
-                observedZeroReader.MarkObservedZeroFileSize();
+                nextReader.ReadFromPercentage(100d, pane.VisibleDataLineCount);
+            }
+            else if (desiredTopRow == nextSource.TopRecordOrdinal &&
+                (nextSource.CurrentRecords.Count > 0 || !nextSource.HasContent))
+            {
+                nextReader.UseCurrentSourceRecords(pane.VisibleDataLineCount);
+            }
+            else
+            {
+                nextReader.ReadFromRowOrdinal(desiredTopRow, pane.VisibleDataLineCount);
+            }
+
+            if (markObservedZero)
+            {
+                nextReader.MarkObservedZeroFileSize();
             }
 
             pane.SetEmptyContentText(markObservedZero ? string.Empty : "(no matches)");
@@ -2421,7 +2427,7 @@ internal sealed class ViewerWindow
         return Math.Max(0, result.MatchedLineCount);
     }
 
-    private static void DisposeReadersFromLevel(IList<IViewportReader?>? readers, int startLevel)
+    private static void DisposeReadersFromLevel(IList<FilteredLogRecordSource?>? readers, int startLevel)
     {
         if (readers is null)
         {
@@ -2457,7 +2463,7 @@ internal sealed class ViewerWindow
             return TryCompleteSearchFromExistingPrefix(options.Length);
         }
 
-        FilteredVisualRowReader[]? prefixReaders = GetFilteredReaderPrefix(startLevel);
+        FilteredLogRecordSource[]? prefixReaders = GetFilteredReaderPrefix(startLevel);
         if (prefixReaders is null)
         {
             RestartSearchAfterInputChange();
@@ -2476,14 +2482,14 @@ internal sealed class ViewerWindow
         return true;
     }
 
-    private static void DisposeReaders(IReadOnlyList<IViewportReader?>? readers)
+    private static void DisposeReaders(IReadOnlyList<FilteredLogRecordSource?>? readers)
     {
         if (readers is null)
         {
             return;
         }
 
-        foreach (IViewportReader? reader in readers)
+        foreach (FilteredLogRecordSource? reader in readers)
         {
             reader?.Dispose();
         }
@@ -2770,7 +2776,7 @@ internal sealed class ViewerWindow
             return false;
         }
 
-        FilteredVisualRowReader[]? prefixReaders = GetFilteredReaderPrefix(optionCount);
+        FilteredLogRecordSource[]? prefixReaders = GetFilteredReaderPrefix(optionCount);
         if (prefixReaders is null || prefixReaders.Length == 0)
         {
             return false;
@@ -2848,7 +2854,7 @@ internal sealed class ViewerWindow
         _pendingSearchStartLevel = 0;
         if (searchStartLevel > 0 && searchStartLevel < options.Length)
         {
-            FilteredVisualRowReader[]? prefixReaders = GetFilteredReaderPrefix(searchStartLevel);
+            FilteredLogRecordSource[]? prefixReaders = GetFilteredReaderPrefix(searchStartLevel);
             if (prefixReaders is not null)
             {
                 DispatchChangedSearch(_latestSearchRequestId, prefixReaders, searchStartLevel, options);
@@ -3005,17 +3011,17 @@ internal sealed class ViewerWindow
         });
     }
 
-    private void DispatchChangedSearch(long requestId, IReadOnlyList<FilteredVisualRowReader> prefixReaders, int changedLevelIndex, SearchOptions[] options)
+    private void DispatchChangedSearch(long requestId, IReadOnlyList<FilteredLogRecordSource> prefixReaders, int changedLevelIndex, SearchOptions[] options)
     {
         if (_closing || options.Length == 0 || changedLevelIndex <= 0 || changedLevelIndex >= options.Length)
         {
             return;
         }
 
-        FilteredVisualRowReader[] readerSnapshots = new FilteredVisualRowReader[prefixReaders.Count];
+        FilteredLogRecordSource[] readerSnapshots = new FilteredLogRecordSource[prefixReaders.Count];
         for (int i = 0; i < prefixReaders.Count; i++)
         {
-            readerSnapshots[i] = (FilteredVisualRowReader)prefixReaders[i].CloneForWorker();
+            readerSnapshots[i] = (FilteredLogRecordSource)prefixReaders[i].CloneForWorker();
         }
 
         int[] visibleLines = GetActiveSearchVisibleLineCounts();
@@ -3144,7 +3150,7 @@ internal sealed class ViewerWindow
             }
             finally
             {
-                foreach (FilteredVisualRowReader readerSnapshot in readerSnapshots)
+                foreach (FilteredLogRecordSource readerSnapshot in readerSnapshots)
                 {
                     readerSnapshot.Dispose();
                 }
@@ -3203,10 +3209,10 @@ internal sealed class ViewerWindow
             InvalidateSearchBar();
         }
 
-        FilteredVisualRowReader[]? currentReaders = GetActiveFilteredReaders();
+        FilteredLogRecordSource[]? currentReaders = GetActiveFilteredReaders();
         long knownSearchFileSize = currentReaders is { Length: > 0 }
             ? currentReaders[0].ConfirmedFileSize
-            : ((_mainPane?.Reader as VisualRowReader)?.ConfirmedFileSize ?? currentFileSize);
+            : ((_mainPane?.Reader as ProjectedViewport)?.ConfirmedFileSize ?? currentFileSize);
         if (currentFileSize < knownSearchFileSize)
         {
             MarkSearchStale();
@@ -3271,7 +3277,7 @@ internal sealed class ViewerWindow
             return;
         }
 
-        FilteredVisualRowReader[]? currentReaders = GetActiveFilteredReaders();
+        FilteredLogRecordSource[]? currentReaders = GetActiveFilteredReaders();
         if (currentReaders is null || currentReaders.Length == 0)
         {
             return;
@@ -3284,7 +3290,7 @@ internal sealed class ViewerWindow
 
         for (int i = 0; i < _activeSearchLevelCount && i < _searchLevels.Count; i++)
         {
-            if (_searchLevels[i].ResultsPane?.Reader is FilteredVisualRowReader)
+            if (_searchLevels[i].ResultsPane?.Reader is ProjectedViewport { Source: FilteredLogRecordSource })
             {
                 _searchLevels[i].ResultsPane!.QueueReloadAfterFileChange();
             }
@@ -3327,14 +3333,14 @@ internal sealed class ViewerWindow
         return true;
     }
 
-    private void DispatchAppendSearch(FilteredVisualRowReader[] currentReaders, long newFileSize, SearchOptions[] options)
+    private void DispatchAppendSearch(FilteredLogRecordSource[] currentReaders, long newFileSize, SearchOptions[] options)
     {
         long requestId = _latestSearchRequestId;
         int[] visibleLines = GetActiveSearchVisibleLineCounts();
-        FilteredVisualRowReader[] readerSnapshots = new FilteredVisualRowReader[currentReaders.Length];
+        FilteredLogRecordSource[] readerSnapshots = new FilteredLogRecordSource[currentReaders.Length];
         for (int i = 0; i < currentReaders.Length; i++)
         {
-            readerSnapshots[i] = (FilteredVisualRowReader)currentReaders[i].CloneForWorker();
+            readerSnapshots[i] = (FilteredLogRecordSource)currentReaders[i].CloneForWorker();
         }
 
         long initialMatchedLineCount = readerSnapshots.Length == 0 ? 0 : readerSnapshots[^1].MatchedLineCount;
@@ -3462,7 +3468,7 @@ internal sealed class ViewerWindow
             }
             finally
             {
-                foreach (FilteredVisualRowReader readerSnapshot in readerSnapshots)
+                foreach (FilteredLogRecordSource readerSnapshot in readerSnapshots)
                 {
                     readerSnapshot.Dispose();
                 }
@@ -3482,14 +3488,14 @@ internal sealed class ViewerWindow
         });
     }
 
-    private void DispatchResumeSearch(FilteredVisualRowReader[] pausedReaders, long newFileSize, long processedOffset, SearchOptions[] options)
+    private void DispatchResumeSearch(FilteredLogRecordSource[] pausedReaders, long newFileSize, long processedOffset, SearchOptions[] options)
     {
         long requestId = _latestSearchRequestId = ++_nextSearchRequestId;
         int[] visibleLines = GetActiveSearchVisibleLineCounts();
-        FilteredVisualRowReader[] readerSnapshots = new FilteredVisualRowReader[pausedReaders.Length];
+        FilteredLogRecordSource[] readerSnapshots = new FilteredLogRecordSource[pausedReaders.Length];
         for (int i = 0; i < pausedReaders.Length; i++)
         {
-            readerSnapshots[i] = (FilteredVisualRowReader)pausedReaders[i].CloneForWorker();
+            readerSnapshots[i] = (FilteredLogRecordSource)pausedReaders[i].CloneForWorker();
         }
 
         long initialMatchedLineCount = readerSnapshots.Length == 0 ? 0 : readerSnapshots[^1].MatchedLineCount;
@@ -3617,7 +3623,7 @@ internal sealed class ViewerWindow
             }
             finally
             {
-                foreach (FilteredVisualRowReader readerSnapshot in readerSnapshots)
+                foreach (FilteredLogRecordSource readerSnapshot in readerSnapshots)
                 {
                     readerSnapshot.Dispose();
                 }

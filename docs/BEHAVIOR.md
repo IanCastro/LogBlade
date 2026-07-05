@@ -9,12 +9,21 @@ Este documento e a referencia canonica para o comportamento implementado de pars
 - **Linha explicita**: linha produzida pelo texto final de um registro logico. Quebras `\r\n`, `\n` e `\r` geradas pelo parser separam linhas explicitas.
 - **Segmento visual**: parte de ate 4096 caracteres criada apenas para desenhar uma linha longa no viewer principal. Segmentos visuais nao sao linhas novas e nao alteram a semantica do search.
 
+## Responsabilidades entre back e front
+
+O backend trabalha somente com registros logicos completos. Um source de registros entrega offsets, texto exibido, texto logico completo e, nos resultados de search, cells e headers. Resultados de search tambem preservam o numero da primeira linha fisica no descriptor e na coluna `#`. O source do viewer principal nao calcula numero de linha. Ele nao conhece segmentos de 4096 caracteres, selecao textual ou highlighting.
+
+O front projeta esses registros em rows visuais. No viewer principal, ele separa newlines gerados pelo parser, preserva linhas vazias e divide cada linha explicita em segmentos de ate 4096 caracteres. Nos resultados de search, ele cria uma row por linha explicita aprovada, sem wrap de 4096. Highlighting, selecao, duplo clique e copia usam essa projecao e o texto logico completo fornecido pelo backend.
+
+Navegacao entre registros consulta o source do backend. Navegacao entre segmentos do mesmo registro acontece somente na projecao do front.
+
 ## Pipeline do parser
 
 1. O arquivo e lido como linhas fisicas.
 2. A cadeia de parser e executada antes de qualquer quebra visual.
 3. O parser pode combinar linhas fisicas em um registro logico e pode produzir texto com varias linhas explicitas.
-4. O viewer principal divide linhas explicitas longas em segmentos visuais de 4096 caracteres somente para exibicao.
+4. O backend entrega o registro logico completo ao front.
+5. O viewer principal divide linhas explicitas longas em segmentos visuais de 4096 caracteres somente para exibicao.
 
 Quando uma cadeia possui um estagio JSON, os estagios anteriores podem extrair fragmentos de linhas fisicas consecutivas. Um JSON incompleto e acumulado sem separador ate ficar completo. O limite de um registro combinado e 4096 linhas fisicas ou 16 MiB de texto. Se a continuacao falhar, o JSON for invalido, o limite for excedido ou o arquivo terminar com o JSON incompleto, as linhas fisicas acumuladas sao preservadas como texto original.
 

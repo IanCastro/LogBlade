@@ -326,7 +326,7 @@ internal static class DisplayParserRecordEvaluator
         long lineNumber,
         DisplayParserRule? rule)
     {
-        using (FileStream fs = VisualRowReader.OpenSourceStream(filePath))
+        using (FileStream fs = LogFileUtilities.OpenSourceStream(filePath))
         {
             FilteredLineUtilities.ValidateLineRange(fs, encoding, startOffset, endOffset);
         }
