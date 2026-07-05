@@ -64,7 +64,6 @@ internal sealed class ViewerWindow
     private const string ConfigureParserText = "Configure";
 
     private readonly string _path;
-    private readonly string _titleSuffix;
     private IntPtr _hwnd;
     private IntPtr _font;
     private IntPtr _boldFont;
@@ -186,7 +185,6 @@ internal sealed class ViewerWindow
     public ViewerWindow(string path)
     {
         _path = path;
-        _titleSuffix = path;
     }
 
     public void Run()
@@ -274,7 +272,12 @@ internal sealed class ViewerWindow
         AppLog.Instance.Info("shutdown", "normal_exit");
     }
 
-    private string ComposeWindowTitle() => "LogBlade - " + _titleSuffix;
+    private string ComposeWindowTitle()
+    {
+        string fileName = Path.GetFileName(_path);
+        string directory = Path.GetDirectoryName(_path) ?? string.Empty;
+        return fileName + " - " + Program.AppTitle + " - " + directory;
+    }
 
     private static ViewerWindow? FromHandle(IntPtr hwnd)
     {
