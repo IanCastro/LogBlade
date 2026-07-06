@@ -35,7 +35,7 @@ internal readonly record struct ViewportTextSelectionContext(
 
 internal interface IViewportReader : IDisposable
 {
-    string FilePath { get; }
+    string SourceName { get; }
     string EncodingName { get; }
     long DataOffset { get; }
     long FileSize { get; }

@@ -2246,7 +2246,7 @@ internal static class Program
         LogSearchBuilder.BuildAppendedFilteredReaderIncremental(
             initial,
             options,
-            new FileInfo(initial.FilePath).Length,
+            new FileInfo(initial.SourceName).Length,
             preloadedVisibleLines: 10,
             update =>
             {
@@ -2271,7 +2271,7 @@ internal static class Program
         LogSearchBuilder.BuildAppendedStagedFilteredReadersIncremental(
             initial,
             options,
-            new FileInfo(initial[0].FilePath).Length,
+            new FileInfo(initial[0].SourceName).Length,
             CreateFilledArray(initial.Count, 10),
             update =>
             {
@@ -3037,9 +3037,14 @@ internal static class Program
             "{\"Level\":\"Info\",\"Message\":\"início\"}\r\n" +
             "{\"Level\":\"Error\",\"Message\":\"alpha\"}\r\n" +
             "{\"Level\":\"Error\",\"Message\":\"beta\"}\r\n";
-        LogContentSource content = LogContentSource.FromMemory("Pasted text", CreateUtf8BomContent(text));
+        byte[] encoded = CreateUtf8BomContent(text);
+        byte[] ownedBuffer = new byte[encoded.Length + 32];
+        encoded.CopyTo(ownedBuffer, 0);
+        Array.Fill(ownedBuffer, (byte)0x7F, encoded.Length, ownedBuffer.Length - encoded.Length);
+        LogContentSource content = LogContentSource.FromMemory("Pasted text", ownedBuffer, encoded.Length);
         AssertEqual("memory source is not file", content.IsFile, false);
         AssertEqual("memory source has no path", content.FilePath, null);
+        AssertEqual("memory source uses valid buffer length", content.Length, (long)encoded.Length);
 
         using (Stream first = content.OpenRead())
         using (Stream second = content.OpenRead())
@@ -3067,6 +3072,7 @@ internal static class Program
 
         using (var source = new LogRecordSource(content, detected.Encoding, detected.DataOffset, parser))
         {
+            AssertEqual("memory record source name", source.SourceName, "Pasted text");
             source.ReadFromPercentage(0d, 10);
             AssertSequence("memory parsed records", source.CurrentDisplayTexts, "INFO início", "ERROR alpha", "ERROR beta");
         }

@@ -94,6 +94,7 @@ internal static class NativeMethods
     public const int WM_APP_VIEWPORT_COMPLETE = WM_APP + 3;
     public const int WM_APP_SEARCH_COMPLETE = WM_APP + 4;
     public const int WM_APP_FILE_CHANGED = WM_APP + 5;
+    public const int WM_APP_PASTE_COMPLETE = WM_APP + 6;
     public const int SB_LINEUP = 0;
     public const int SB_LINEDOWN = 1;
     public const int SB_PAGEUP = 2;

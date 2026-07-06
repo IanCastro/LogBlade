@@ -28,7 +28,7 @@ public sealed record LogViewportRecord(
 
 public interface ILogRecordSource : IDisposable
 {
-    string FilePath { get; }
+    string SourceName { get; }
     string EncodingName { get; }
     long DataOffset { get; }
     long FileSize { get; }

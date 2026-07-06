@@ -36,7 +36,7 @@ internal class ProjectedViewport :
     }
 
     public ILogRecordSource Source => _source;
-    public string FilePath => _source.FilePath;
+    public string SourceName => _source.SourceName;
     public string EncodingName => _source.EncodingName;
     public long DataOffset => _source.DataOffset;
     public long FileSize => _source.FileSize;

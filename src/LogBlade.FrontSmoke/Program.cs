@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Threading;
 
 internal static class Program
 {
@@ -14,6 +15,9 @@ internal static class Program
         {
             Run("main projection", () => RunMainProjection(tempRoot));
             Run("memory projection", RunMemoryProjection);
+            Run("pasted text serialization", RunPastedTextSerialization);
+            Run("pasted text launch failure", RunPastedTextLaunchFailure);
+            Run("pasted text transfer state", RunPastedTextTransferState);
             Run("combined parser", () => RunCombinedParserProjection(tempRoot));
             Run("search projection", () => RunSearchProjection(tempRoot));
             Run("record navigation", () => RunRecordNavigation(tempRoot));
@@ -159,6 +163,114 @@ internal static class Program
         using var searchViewport = new FilteredProjectedViewport(filtered.CloneForWorker());
         searchViewport.ReadFromPercentage(0d, 2);
         AssertSequence("memory search projection", searchViewport.CurrentRows, secondLine);
+    }
+
+    private static void RunPastedTextSerialization()
+    {
+        string[] samples =
+        {
+            string.Empty,
+            "line-1\r\nlinha-ç\n終わり",
+            new string('x', 1024 * 1024)
+        };
+        foreach (string sample in samples)
+        {
+            using var output = new MemoryStream();
+            PastedTextWindowLauncher.WriteUtf8Async(output, sample, CancellationToken.None).GetAwaiter().GetResult();
+            byte[] expected = CreateUtf8BomContent(sample);
+            byte[] actual = output.ToArray();
+            AssertByteSequence("pasted serialization", actual, expected);
+        }
+
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        bool cancelled = false;
+        try
+        {
+            using var output = new MemoryStream();
+            PastedTextWindowLauncher.WriteUtf8Async(output, "cancel", cancellation.Token).GetAwaiter().GetResult();
+        }
+        catch (OperationCanceledException)
+        {
+            cancelled = true;
+        }
+
+        AssertEqual("pasted serialization cancellation", cancelled, true);
+    }
+
+    private static void RunPastedTextLaunchFailure()
+    {
+        string missingExecutable = Path.Combine(Path.GetTempPath(), "missing-" + Guid.NewGuid().ToString("N") + ".exe");
+        PastedTextLaunchResult failure = PastedTextWindowLauncher.LaunchAsync(
+            missingExecutable,
+            "--unused",
+            "content",
+            CancellationToken.None).GetAwaiter().GetResult();
+        AssertEqual("pasted missing executable fails", failure.Success, false);
+        AssertEqual("pasted missing executable is not cancellation", failure.Cancelled, false);
+        AssertEqual("pasted missing executable has error", string.IsNullOrEmpty(failure.ErrorMessage), false);
+
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        PastedTextLaunchResult cancelled = PastedTextWindowLauncher.LaunchAsync(
+            missingExecutable,
+            "--unused",
+            "content",
+            cancellation.Token).GetAwaiter().GetResult();
+        AssertEqual("pasted cancelled launch", cancelled.Cancelled, true);
+        AssertEqual("pasted cancelled launch has no process", cancelled.ProcessId, 0);
+    }
+
+    private static void RunPastedTextTransferState()
+    {
+        var beforeState = new PastedTextTransferState();
+        using (var cancellation = new CancellationTokenSource())
+        {
+            bool terminated = false;
+            bool inputClosed = false;
+            using CancellationTokenRegistration registration = cancellation.Token.Register(() =>
+                beforeState.Cancel(() => terminated = true));
+            cancellation.Cancel();
+            AssertThrowsCancellation(
+                "paste cancellation before close",
+                () => beforeState.Complete(() => inputClosed = true, cancellation.Token));
+            AssertEqual("paste before close terminates", terminated, true);
+            AssertEqual("paste before close keeps input open", inputClosed, false);
+            AssertEqual("paste before close is incomplete", beforeState.IsCompleted, false);
+        }
+
+        var duringState = new PastedTextTransferState();
+        using (var cancellation = new CancellationTokenSource())
+        {
+            bool terminated = false;
+            bool inputClosed = false;
+            using CancellationTokenRegistration registration = cancellation.Token.Register(() =>
+                duringState.Cancel(() => terminated = true));
+            AssertThrowsCancellation(
+                "paste cancellation during close",
+                () => duringState.Complete(
+                    () =>
+                    {
+                        inputClosed = true;
+                        cancellation.Cancel();
+                    },
+                    cancellation.Token));
+            AssertEqual("paste during close closes input", inputClosed, true);
+            AssertEqual("paste during close terminates", terminated, true);
+            AssertEqual("paste during close is incomplete", duringState.IsCompleted, false);
+        }
+
+        var afterState = new PastedTextTransferState();
+        using (var cancellation = new CancellationTokenSource())
+        {
+            bool terminated = false;
+            using CancellationTokenRegistration registration = cancellation.Token.Register(() =>
+                afterState.Cancel(() => terminated = true));
+            afterState.Complete(() => { }, cancellation.Token);
+            cancellation.Cancel();
+            AssertEqual("paste after close is complete", afterState.IsCompleted, true);
+            AssertEqual("paste after close does not terminate", terminated, false);
+        }
     }
 
     private static void RunSearchProjection(string tempRoot)
@@ -657,6 +769,32 @@ internal static class Program
         return content;
     }
 
+    private static void AssertByteSequence(string name, byte[] actual, byte[] expected)
+    {
+        AssertEqual(name + " length", actual.Length, expected.Length);
+        for (int i = 0; i < expected.Length; i++)
+        {
+            if (actual[i] != expected[i])
+            {
+                throw new InvalidOperationException($"{name} byte {i}: expected '{expected[i]}', got '{actual[i]}'.");
+            }
+        }
+    }
+
+    private static void AssertThrowsCancellation(string name, Action action)
+    {
+        try
+        {
+            action();
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(name + ": expected cancellation.");
+    }
+
     private static void AssertEqual<T>(string name, T actual, T expected)
     {
         if (!EqualityComparer<T>.Default.Equals(actual, expected))
@@ -710,7 +848,7 @@ internal sealed class CountingRecordSource : ILogRecordSource
     public int NextCalls { get; private set; }
     public int PreviousCalls { get; private set; }
     public int LastNextCount { get; private set; }
-    public string FilePath => "memory.log";
+    public string SourceName => "memory.log";
     public string EncodingName => "memory";
     public long DataOffset => 0;
     public long FileSize => _records.Count == 0 ? 0 : _records[^1].NextOffset;

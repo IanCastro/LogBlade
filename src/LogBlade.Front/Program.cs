@@ -48,7 +48,12 @@ internal static class Program
         using Stream input = Console.OpenStandardInput();
         using var content = new MemoryStream();
         input.CopyTo(content);
-        return LogContentSource.FromMemory("Pasted text", content.ToArray());
+        if (!content.TryGetBuffer(out ArraySegment<byte> buffer) || buffer.Array is null)
+        {
+            throw new InvalidOperationException("Could not access pasted text buffer.");
+        }
+
+        return LogContentSource.FromMemory("Pasted text", buffer.Array, checked((int)content.Length));
     }
 
     private static void OnUnhandledException(object sender, UnhandledExceptionEventArgs e)

@@ -5,6 +5,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 
 internal sealed class OpenWorkerResult
 {
@@ -98,6 +99,7 @@ internal sealed class ViewerWindow
     private long _nextSearchRequestId;
     private long _latestSearchRequestId;
     private CancellationTokenSource? _activeSearchCancellation;
+    private readonly CancellationTokenSource _pasteTransferCancellation = new();
     private long _activeSearchWorkerRequestId;
     private int _activeSearchWorkerStartLevel;
     private bool _searchInProgress;
@@ -434,6 +436,9 @@ internal sealed class ViewerWindow
                     return IntPtr.Zero;
                 case NativeMethods.WM_APP_FILE_CHANGED:
                     self.OnFileChanged();
+                    return IntPtr.Zero;
+                case NativeMethods.WM_APP_PASTE_COMPLETE:
+                    self.OnPastedTextLaunchComplete(lParam);
                     return IntPtr.Zero;
                 case NativeMethods.WM_CLOSE:
                     if (self._configurationWindowOpen)
@@ -774,56 +779,59 @@ internal sealed class ViewerWindow
             return;
         }
 
-        Process? process = null;
-        try
+        string? executable = Environment.ProcessPath;
+        if (string.IsNullOrEmpty(executable))
         {
-            string? executable = Environment.ProcessPath;
-            if (string.IsNullOrEmpty(executable))
-            {
-                throw new InvalidOperationException("Current executable path is not available.");
-            }
-
-            ProcessStartInfo startInfo = new()
-            {
-                FileName = executable,
-                UseShellExecute = false,
-                RedirectStandardInput = true,
-                StandardInputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
-                CreateNoWindow = true
-            };
-            startInfo.ArgumentList.Add(Program.PastedStdinArgument);
-            process = Process.Start(startInfo);
-            if (process is null)
-            {
-                throw new InvalidOperationException("Process.Start returned null.");
-            }
-
-            Stream input = process.StandardInput.BaseStream;
-            input.Write(Encoding.UTF8.GetPreamble());
-            process.StandardInput.Write(text);
-            process.StandardInput.Close();
-
-            AppLog.Instance.Info(
-                "paste.open_window",
-                "opened",
-                new LogField("storage", "memory"),
-                new LogField("characterCount", text.Length.ToString()),
-                new LogField("pid", process.Id.ToString()));
+            NativeMethods.MessageBoxW(_hwnd, "Current executable path is not available.", Program.AppTitle, NativeMethods.MB_OK | NativeMethods.MB_ICONERROR);
+            return;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
+
+        IntPtr hwnd = _hwnd;
+        CancellationToken cancellationToken = _pasteTransferCancellation.Token;
+        _ = Task.Run(async () =>
         {
-            TryTerminatePastedProcess(process);
+            PastedTextLaunchResult result = await PastedTextWindowLauncher.LaunchAsync(
+                executable,
+                Program.PastedStdinArgument,
+                text,
+                cancellationToken).ConfigureAwait(false);
+            if (result.Success)
+            {
+                AppLog.Instance.Info(
+                    "paste.open_window",
+                    "opened",
+                    new LogField("storage", "memory"),
+                    new LogField("characterCount", text.Length.ToString()),
+                    new LogField("pid", result.ProcessId.ToString()));
+                return;
+            }
+
+            if (result.Cancelled)
+            {
+                AppLog.Instance.Info(
+                    "paste.open_window",
+                    "cancelled",
+                    new LogField("characterCount", text.Length.ToString()),
+                    new LogField("pid", result.ProcessId.ToString()));
+                return;
+            }
+
             AppLog.Instance.Error(
                 "paste.open_window.failed",
                 "failed",
-                new LogField("type", ex.GetType().FullName ?? ex.GetType().Name),
-                new LogField("message", ex.Message));
-            NativeMethods.MessageBoxW(_hwnd, "Failed to open pasted text: " + ex.Message, Program.AppTitle, NativeMethods.MB_OK | NativeMethods.MB_ICONERROR);
-        }
-        finally
-        {
-            process?.Dispose();
-        }
+                new LogField("type", result.ErrorType ?? "unknown"),
+                new LogField("message", result.ErrorMessage ?? "unknown error"));
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+
+            GCHandle handle = GCHandle.Alloc(result);
+            if (!NativeMethods.PostMessageW(hwnd, NativeMethods.WM_APP_PASTE_COMPLETE, IntPtr.Zero, GCHandle.ToIntPtr(handle)))
+            {
+                handle.Free();
+            }
+        });
     }
 
     private bool TryGetClipboardText(out string text)
@@ -865,18 +873,21 @@ internal sealed class ViewerWindow
         }
     }
 
-    private static void TryTerminatePastedProcess(Process? process)
+    private void OnPastedTextLaunchComplete(IntPtr lParam)
     {
-        try
+        GCHandle handle = GCHandle.FromIntPtr(lParam);
+        object? target = handle.Target;
+        handle.Free();
+        if (_closing || target is not PastedTextLaunchResult failure || failure.Success || failure.Cancelled)
         {
-            if (process is not null && !process.HasExited)
-            {
-                process.Kill(entireProcessTree: true);
-            }
+            return;
         }
-        catch
-        {
-        }
+
+        NativeMethods.MessageBoxW(
+            _hwnd,
+            "Failed to open pasted text: " + (failure.ErrorMessage ?? "unknown error"),
+            Program.AppTitle,
+            NativeMethods.MB_OK | NativeMethods.MB_ICONERROR);
     }
 
     private string CreateDefaultParserRuleSample()
@@ -1218,7 +1229,7 @@ internal sealed class ViewerWindow
                 AppLog.Instance.Info(
                     "encoding.detected",
                     "detected",
-                    new LogField("path", result.Reader.FilePath),
+                    new LogField("source", result.Reader.SourceName),
                     new LogField("encoding", result.Reader.EncodingName),
                     new LogField("dataOffset", detected.DataOffset.ToString()));
             }
@@ -4016,7 +4027,7 @@ internal sealed class ViewerWindow
         AppLog.Instance.Info(
             "window.first_render.complete",
             "complete",
-            new LogField("path", pane.Reader.FilePath),
+            new LogField("source", pane.Reader.SourceName),
             new LogField("encoding", pane.Reader.EncodingName),
             new LogField("dataOffset", pane.Reader.DataOffset.ToString()),
             new LogField("fileSize", pane.Reader.FileSize.ToString()),
@@ -4489,6 +4500,7 @@ internal sealed class ViewerWindow
         }
 
         _resourcesDisposed = true;
+        _pasteTransferCancellation.Cancel();
         NativeMethods.KillTimer(_hwnd, SearchDebounceTimerId);
         StopFileWatcher();
         CancelActiveSearch();
@@ -4541,6 +4553,7 @@ internal sealed class ViewerWindow
         DeleteOwnedFont(ref _boldItalicFont);
         _searchResizeGrip = IntPtr.Zero;
         _font = IntPtr.Zero;
+        _pasteTransferCancellation.Dispose();
     }
 
     private static void DeleteOwnedFont(ref IntPtr font)

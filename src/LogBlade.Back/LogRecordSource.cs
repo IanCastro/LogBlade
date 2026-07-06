@@ -55,7 +55,7 @@ public sealed class LogRecordSource : ILogRecordSource
     {
     }
 
-    public string FilePath => _contentSource.FilePath ?? _contentSource.DisplayName;
+    public string SourceName => _contentSource.DisplayName;
     public string EncodingName => LogFileUtilities.DescribeEncoding(_kind);
     public long DataOffset => _dataOffset;
     public long FileSize => _observedZeroFileSize ? 0 : _fileSize;
