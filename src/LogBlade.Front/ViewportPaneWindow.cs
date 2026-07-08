@@ -1344,32 +1344,36 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
     }
 
-    private static bool TryGetWordSelection(string text, int charIndex, out int start, out int end)
+    internal static bool TryGetWordSelection(string text, int charIndex, out int start, out int end)
     {
         start = 0;
         end = 0;
         if (string.IsNullOrEmpty(text) ||
             charIndex < 0 ||
             charIndex >= text.Length ||
-            char.IsWhiteSpace(text[charIndex]))
+            !IsLogTokenCharacter(text[charIndex]))
         {
             return false;
         }
 
         start = charIndex;
-        while (start > 0 && !char.IsWhiteSpace(text[start - 1]))
+        while (start > 0 && IsLogTokenCharacter(text[start - 1]))
         {
             start--;
         }
 
         end = charIndex + 1;
-        while (end < text.Length && !char.IsWhiteSpace(text[end]))
+        while (end < text.Length && IsLogTokenCharacter(text[end]))
         {
             end++;
         }
 
         return end > start;
     }
+
+    private static bool IsLogTokenCharacter(char value) =>
+        char.IsLetterOrDigit(value) ||
+        value is '_' or '.' or '-' or '/' or '\\' or ':' or '@';
 
     private void UpdateTextSelection(int x, int y)
     {

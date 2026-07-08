@@ -29,6 +29,7 @@ internal static class Program
             Run("selection", () => RunSelectionAcrossRecords(tempRoot));
             Run("zero", () => RunZeroProjection(tempRoot));
             Run("word boundary", () => RunWordAcrossSegmentBoundary(tempRoot));
+            Run("word tokens", RunWordTokenSelection);
             Console.WriteLine("Front smoke tests passed.");
             return 0;
         }
@@ -739,6 +740,59 @@ internal static class Program
         AssertEqual("word crosses segment boundary", context.Text.Substring(start, end - start), "hello");
     }
 
+    private static void RunWordTokenSelection()
+    {
+        AssertWordSelection(
+            "word token dotted namespace",
+            "Category=ATG.PricingEngine.Services.SecurityMaster, Level=Info",
+            "PricingEngine",
+            "ATG.PricingEngine.Services.SecurityMaster");
+        AssertWordSelection(
+            "word token job id",
+            "Message=Strategy task JT67_48_250912145048_00064 is running",
+            "250912",
+            "JT67_48_250912145048_00064");
+        AssertWordSelection(
+            "word token date",
+            "Timestamp=2026-06-09 05:50:02.3399",
+            "06-09",
+            "2026-06-09");
+        AssertWordSelection(
+            "word token time",
+            "Timestamp=2026-06-09 05:50:02.3399",
+            "50:02",
+            "05:50:02.3399");
+        AssertWordSelection(
+            "word token json key",
+            "{\"Level\":\"Info\"}",
+            "Level",
+            "Level");
+        AssertWordSelection(
+            "word token json value",
+            "{\"Level\":\"Info\"}",
+            "Info",
+            "Info");
+        AssertWordSelection(
+            "word token equals key",
+            "user=ana",
+            "user",
+            "user");
+        AssertWordSelection(
+            "word token equals value",
+            "user=ana",
+            "ana",
+            "ana");
+        AssertWordSelection(
+            "word token url",
+            "GET /api/orders/123 trace=user@example.com",
+            "orders",
+            "/api/orders/123");
+        AssertEqual(
+            "word token delimiter",
+            ViewportPaneWindow.TryGetWordSelection("user=ana", "user=ana".IndexOf('=', StringComparison.Ordinal), out _, out _),
+            false);
+    }
+
     private static DisplayParserRule JsonParser(string template) => new()
     {
         Name = "smoke",
@@ -793,6 +847,21 @@ internal static class Program
         }
 
         throw new InvalidOperationException(name + ": expected cancellation.");
+    }
+
+    private static void AssertWordSelection(string name, string text, string clickNeedle, string expected)
+    {
+        int charIndex = text.IndexOf(clickNeedle, StringComparison.Ordinal);
+        if (charIndex < 0)
+        {
+            throw new InvalidOperationException(name + ": click needle not found.");
+        }
+
+        AssertEqual(
+            name + " selected",
+            ViewportPaneWindow.TryGetWordSelection(text, charIndex, out int start, out int end),
+            true);
+        AssertEqual(name, text.Substring(start, end - start), expected);
     }
 
     private static void AssertEqual<T>(string name, T actual, T expected)
