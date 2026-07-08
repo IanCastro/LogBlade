@@ -3173,7 +3173,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         selectionStart = 0;
         selectionEnd = 0;
         showIndicator = false;
-        if (_textSelectionSegmentKey is not ViewportTextSegmentKey selectedSegment ||
+        if (_textSelectionSegmentKey is null ||
             _textSelectionContext is not ViewportTextSelectionContext context ||
             _reader is not ITextSelectionViewportReader textReader)
         {
@@ -3193,10 +3193,10 @@ internal sealed class ViewportPaneWindow : IDisposable
             return false;
         }
 
+        showIndicator = true;
         if (!HasTextSelectionRange)
         {
-            showIndicator = currentSegment == selectedSegment;
-            return showIndicator;
+            return true;
         }
 
         int globalStart = Math.Clamp(Math.Min(_textSelectionAnchorChar, _textSelectionFocusChar), 0, context.Text.Length);
@@ -3206,12 +3206,11 @@ internal sealed class ViewportPaneWindow : IDisposable
         int intersectionEnd = Math.Min(globalEnd, segmentEnd);
         if (intersectionEnd <= intersectionStart)
         {
-            return false;
+            return true;
         }
 
         selectionStart = intersectionStart - segmentRange.Start;
         selectionEnd = intersectionEnd - segmentRange.Start;
-        showIndicator = true;
         return true;
     }
 
@@ -4804,6 +4803,7 @@ internal sealed class ViewportPaneWindow : IDisposable
 
         NativeMethods.GetClientRect(_hwnd, out NativeMethods.RECT clientRect);
         IReadOnlyList<string> rows = _reader.CurrentRows;
+        List<NativeMethods.RECT>? textSelectionIndicatorRects = null;
         for (int rowIndex = 0; rowIndex < rows.Count; rowIndex++)
         {
             string row = rows[rowIndex];
@@ -4865,7 +4865,7 @@ internal sealed class ViewportPaneWindow : IDisposable
                 visibleNonEmptyLines++;
             }
 
-            PaintTextSelection(hdc, rowIndex, displayRow, y, clientRect);
+            PaintTextSelection(hdc, rowIndex, displayRow, y, clientRect, ref textSelectionIndicatorRects);
 
             y += _lineHeight;
             if (y >= clientRect.bottom)
@@ -4874,6 +4874,7 @@ internal sealed class ViewportPaneWindow : IDisposable
             }
         }
 
+        PaintTextSelectionIndicatorBlocks(hdc, textSelectionIndicatorRects);
         return visibleNonEmptyLines;
     }
 
@@ -4883,7 +4884,8 @@ internal sealed class ViewportPaneWindow : IDisposable
         IReadOnlyList<string> headers = GetGridHeaders(reader);
         int[] widths = CalculateColumnWidths(reader);
 
-        PaintGridRow(hdc, clientRect, headers, widths, y: 0, isHeader: true, isRowSelected: false, dataRowIndex: -1, highlight: null);
+        List<NativeMethods.RECT>? textSelectionIndicatorRects = null;
+        PaintGridRow(hdc, clientRect, headers, widths, y: 0, isHeader: true, isRowSelected: false, dataRowIndex: -1, highlight: null, textSelectionIndicatorRects: ref textSelectionIndicatorRects);
 
         int y = _lineHeight;
         int visibleNonEmptyLines = 0;
@@ -4894,7 +4896,7 @@ internal sealed class ViewportPaneWindow : IDisposable
             foreach (IReadOnlyList<string> row in reader.CurrentCells)
             {
                 HighlightStyle? highlight = TryGetGridRowHighlight(displayRows, dataRowIndex);
-                PaintGridRow(hdc, clientRect, row, widths, y, isHeader: false, IsDataRowSelected(dataRowIndex), dataRowIndex, highlight);
+                PaintGridRow(hdc, clientRect, row, widths, y, isHeader: false, IsDataRowSelected(dataRowIndex), dataRowIndex, highlight, textSelectionIndicatorRects: ref textSelectionIndicatorRects);
                 visibleNonEmptyLines++;
                 dataRowIndex++;
 
@@ -4912,7 +4914,7 @@ internal sealed class ViewportPaneWindow : IDisposable
                 HighlightStyle? highlight = TryGetHighlightStyle(dataRowIndex, NormalizeDisplayText(row), out HighlightStyle matchedStyle)
                     ? matchedStyle
                     : null;
-                PaintGridRow(hdc, clientRect, new[] { row }, widths, y, isHeader: false, IsDataRowSelected(dataRowIndex), dataRowIndex, highlight);
+                PaintGridRow(hdc, clientRect, new[] { row }, widths, y, isHeader: false, IsDataRowSelected(dataRowIndex), dataRowIndex, highlight, textSelectionIndicatorRects: ref textSelectionIndicatorRects);
                 visibleNonEmptyLines++;
                 dataRowIndex++;
 
@@ -4924,10 +4926,11 @@ internal sealed class ViewportPaneWindow : IDisposable
             }
         }
 
+        PaintTextSelectionIndicatorBlocks(hdc, textSelectionIndicatorRects);
         return visibleNonEmptyLines;
     }
 
-    private void PaintGridRow(IntPtr hdc, NativeMethods.RECT clientRect, IReadOnlyList<string> cells, IReadOnlyList<int> widths, int y, bool isHeader, bool isRowSelected, int dataRowIndex, HighlightStyle? highlight)
+    private void PaintGridRow(IntPtr hdc, NativeMethods.RECT clientRect, IReadOnlyList<string> cells, IReadOnlyList<int> widths, int y, bool isHeader, bool isRowSelected, int dataRowIndex, HighlightStyle? highlight, ref List<NativeMethods.RECT>? textSelectionIndicatorRects)
     {
         if (widths.Count == 0)
         {
@@ -4974,7 +4977,7 @@ internal sealed class ViewportPaneWindow : IDisposable
                 PaintGridCell(hdc, cellRect, Intersect(cellRect, scrollRect), value, widthChars, isHeader, isCellSelected, highlight);
                 if (!isHeader)
                 {
-                    PaintGridTextSelection(hdc, dataRowIndex, i, value, cellRect, Intersect(cellRect, scrollRect), widthChars);
+                    PaintGridTextSelection(hdc, dataRowIndex, i, value, cellRect, Intersect(cellRect, scrollRect), widthChars, ref textSelectionIndicatorRects);
                 }
             }
 
@@ -5495,7 +5498,8 @@ internal sealed class ViewportPaneWindow : IDisposable
         string text,
         NativeMethods.RECT cellRect,
         NativeMethods.RECT visibleRect,
-        int widthChars)
+        int widthChars,
+        ref List<NativeMethods.RECT>? textSelectionIndicatorRects)
     {
         if (_textSelectionColumnIndex != columnIndex ||
             visibleRect.right <= visibleRect.left ||
@@ -5531,7 +5535,7 @@ internal sealed class ViewportPaneWindow : IDisposable
 
         if (showIndicator)
         {
-            PaintTextSelectionModeIndicator(hdc, visibleRect);
+            AddTextSelectionIndicatorRect(ref textSelectionIndicatorRects, visibleRect);
         }
 
         if (!HasTextSelectionRange)
@@ -5597,7 +5601,13 @@ internal sealed class ViewportPaneWindow : IDisposable
         PaintGridDividers(hdc, visibleRect);
     }
 
-    private void PaintTextSelection(IntPtr hdc, int rowIndex, string row, int y, NativeMethods.RECT clientRect)
+    private void PaintTextSelection(
+        IntPtr hdc,
+        int rowIndex,
+        string row,
+        int y,
+        NativeMethods.RECT clientRect,
+        ref List<NativeMethods.RECT>? textSelectionIndicatorRects)
     {
         if (_textSelectionColumnIndex >= 0)
         {
@@ -5638,7 +5648,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         };
         if (showIndicator)
         {
-            PaintTextSelectionModeIndicator(hdc, rowRect);
+            AddTextSelectionIndicatorRect(ref textSelectionIndicatorRects, Intersect(rowRect, clientRect));
         }
 
         if (!HasTextSelectionRange)
@@ -5685,16 +5695,33 @@ internal sealed class ViewportPaneWindow : IDisposable
         NativeMethods.SetTextColor(hdc, NativeMethods.RGB(0, 0, 0));
     }
 
-    private void PaintTextSelectionModeIndicator(IntPtr hdc, NativeMethods.RECT bounds)
+    private static void AddTextSelectionIndicatorRect(ref List<NativeMethods.RECT>? rects, NativeMethods.RECT bounds)
     {
-        NativeMethods.RECT indicatorRect = new()
+        if (bounds.right <= bounds.left || bounds.bottom <= bounds.top)
         {
-            left = bounds.left,
-            top = Math.Max(bounds.top, bounds.bottom - 2),
-            right = bounds.right,
-            bottom = bounds.bottom
-        };
-        if (indicatorRect.right <= indicatorRect.left || indicatorRect.bottom <= indicatorRect.top)
+            return;
+        }
+
+        rects ??= new List<NativeMethods.RECT>();
+        if (rects.Count > 0)
+        {
+            NativeMethods.RECT previous = rects[^1];
+            if (previous.left == bounds.left &&
+                previous.right == bounds.right &&
+                bounds.top <= previous.bottom)
+            {
+                previous.bottom = Math.Max(previous.bottom, bounds.bottom);
+                rects[^1] = previous;
+                return;
+            }
+        }
+
+        rects.Add(bounds);
+    }
+
+    private void PaintTextSelectionIndicatorBlocks(IntPtr hdc, List<NativeMethods.RECT>? rects)
+    {
+        if (rects is null || rects.Count == 0)
         {
             return;
         }
@@ -5702,7 +5729,11 @@ internal sealed class ViewportPaneWindow : IDisposable
         IntPtr brush = _hasFocus
             ? NativeMethods.GetSysColorBrush(NativeMethods.COLOR_HIGHLIGHT)
             : NativeMethods.GetSysColorBrush(NativeMethods.COLOR_BTNSHADOW);
-        NativeMethods.FillRect(hdc, ref indicatorRect, brush);
+        for (int i = 0; i < rects.Count; i++)
+        {
+            NativeMethods.RECT rect = rects[i];
+            NativeMethods.FrameRect(hdc, ref rect, brush);
+        }
     }
 
     private string SliceVisibleText(string text)
