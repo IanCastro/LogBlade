@@ -139,6 +139,9 @@ internal sealed class ViewportPaneWindow : IDisposable
     private int _textSelectionColumnIndex = -1;
     private int _textSelectionAnchorChar = -1;
     private int _textSelectionFocusChar = -1;
+    private bool _textSelectionDragThresholdArmed;
+    private int _textSelectionDragStartX;
+    private int _textSelectionDragStartY;
     private readonly HashSet<int> _cellSelectionColumns = new();
     private HashSet<int>? _cellSelectionDragBaseColumns;
     private List<ViewportRowSelectionRange>? _cellSelectionDragBaseRanges;
@@ -1143,6 +1146,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
+        ArmTextSelectionDragThreshold(x, y);
         return true;
     }
 
@@ -1193,6 +1197,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
+        ArmTextSelectionDragThreshold(x, y);
         return true;
     }
 
@@ -1291,6 +1296,7 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private void StartTextSelection(int rowIndex, ViewportRowSelectionKey rowKey, int charIndex, bool captureMouse, int columnIndex)
     {
+        _textSelectionDragThresholdArmed = false;
         _isSelectingText = true;
         _textSelectionDataIndex = rowIndex;
         _textSelectionColumnIndex = columnIndex;
@@ -1307,6 +1313,7 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private void StartTextSelection(int rowIndex, ViewportRowSelectionKey rowKey, int anchorChar, int focusChar, bool captureMouse, int columnIndex)
     {
+        _textSelectionDragThresholdArmed = false;
         _isSelectingText = true;
         _textSelectionDataIndex = rowIndex;
         _textSelectionColumnIndex = columnIndex;
@@ -1330,6 +1337,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         bool captureMouse,
         int columnIndex)
     {
+        _textSelectionDragThresholdArmed = false;
         _isSelectingText = true;
         _textSelectionDataIndex = rowIndex;
         _textSelectionColumnIndex = columnIndex;
@@ -1377,6 +1385,11 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private void UpdateTextSelection(int x, int y)
     {
+        if (IsTextSelectionMouseMoveInsideDragThreshold(x, y))
+        {
+            return;
+        }
+
         if (_textSelectionSegmentKey is not null &&
             _textSelectionContext is ViewportTextSelectionContext context)
         {
@@ -1494,9 +1507,36 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private void EndTextSelection()
     {
+        _textSelectionDragThresholdArmed = false;
         _isSelectingText = false;
         NativeMethods.ReleaseCapture();
         NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
+    }
+
+    private void ArmTextSelectionDragThreshold(int x, int y)
+    {
+        _textSelectionDragThresholdArmed = true;
+        _textSelectionDragStartX = x;
+        _textSelectionDragStartY = y;
+    }
+
+    private bool IsTextSelectionMouseMoveInsideDragThreshold(int x, int y)
+    {
+        if (!_textSelectionDragThresholdArmed)
+        {
+            return false;
+        }
+
+        int dragWidth = Math.Max(1, NativeMethods.GetSystemMetrics(NativeMethods.SM_CXDRAG));
+        int dragHeight = Math.Max(1, NativeMethods.GetSystemMetrics(NativeMethods.SM_CYDRAG));
+        if (Math.Abs(x - _textSelectionDragStartX) <= dragWidth &&
+            Math.Abs(y - _textSelectionDragStartY) <= dragHeight)
+        {
+            return true;
+        }
+
+        _textSelectionDragThresholdArmed = false;
+        return false;
     }
 
     private bool TryHitTestMainTextRow(int x, int y, out int rowIndex, out ViewportRowSelectionKey rowKey, out string text)
@@ -2747,6 +2787,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         _selectionMouseStartedWithShift = false;
         _cellSelectionMouseStartedWithControl = false;
         _cellSelectionMouseStartedWithShift = false;
+        _textSelectionDragThresholdArmed = false;
         _selectionDragBaseRanges = null;
         _selectionDragBaseExcludedRows = null;
         _selectionDragBaseSelectAllRows = false;
@@ -2795,6 +2836,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         _isSelectingText = false;
+        _textSelectionDragThresholdArmed = false;
         _textSelectionRowKey = null;
         _textSelectionSegmentKey = null;
         _textSelectionContext = null;
