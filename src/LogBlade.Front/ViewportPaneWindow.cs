@@ -899,7 +899,7 @@ internal sealed class ViewportPaneWindow : IDisposable
 
         if (_isSelectingText)
         {
-            UpdateTextSelection(x);
+            UpdateTextSelection(x, y);
             return;
         }
 
@@ -1112,8 +1112,12 @@ internal sealed class ViewportPaneWindow : IDisposable
             return false;
         }
 
+        if (!TryGetTextWordCharIndexFromX(x, text, out int localCharIndex))
+        {
+            return false;
+        }
+
         ClearSelection(invalidate: false);
-        int localCharIndex = GetTextCharIndexFromX(x, text);
         if (TryGetTextSelectionContext(rowIndex, out ViewportTextSegmentKey segmentKey, out ViewportTextSelectionContext context, out ViewportTextSegmentRange segmentRange))
         {
             int globalCharIndex = Math.Clamp(segmentRange.Start + localCharIndex, segmentRange.Start, segmentRange.Start + segmentRange.Length);
@@ -1157,8 +1161,12 @@ internal sealed class ViewportPaneWindow : IDisposable
             return false;
         }
 
+        if (!TryGetGridCellWordCharIndexFromX(x, cellRect, widthChars, text, out int localCharIndex))
+        {
+            return false;
+        }
+
         ClearSelection(invalidate: false);
-        int localCharIndex = GetGridCellTextCharIndexFromX(x, cellRect, widthChars, text);
         if (columnIndex == 1 &&
             TryGetTextSelectionContext(rowIndex, out ViewportTextSegmentKey segmentKey, out ViewportTextSelectionContext context, out ViewportTextSegmentRange segmentRange))
         {
@@ -1363,48 +1371,25 @@ internal sealed class ViewportPaneWindow : IDisposable
         return end > start;
     }
 
-    private void UpdateTextSelection(int x)
+    private void UpdateTextSelection(int x, int y)
     {
-        if (_textSelectionSegmentKey is ViewportTextSegmentKey segmentKey &&
+        if (_textSelectionSegmentKey is not null &&
             _textSelectionContext is ViewportTextSelectionContext context)
         {
-            if (!TryFindCurrentTextSegmentIndex(segmentKey, out int logicalRowIndex) ||
-                !TryGetTextSegmentRange(context, segmentKey, out ViewportTextSegmentRange segmentRange))
+            if (!TryGetLogicalTextSelectionFocus(
+                    x,
+                    y,
+                    context,
+                    out int logicalRowIndex,
+                    out ViewportTextSegmentKey focusSegment,
+                    out ViewportTextSegmentRange segmentRange,
+                    out int localCharIndex))
             {
-                ClearTextSelection(invalidate: true);
                 return;
             }
 
             _textSelectionDataIndex = logicalRowIndex;
-            int localCharIndex;
-            if (_textSelectionColumnIndex == 1)
-            {
-                if (!TryGetGridCellTextAndRect(
-                        logicalRowIndex,
-                        1,
-                        out string cellText,
-                        out NativeMethods.RECT cellRect,
-                        out _,
-                        out int widthChars))
-                {
-                    ClearTextSelection(invalidate: true);
-                    return;
-                }
-
-                localCharIndex = GetGridCellTextCharIndexFromX(x, cellRect, widthChars, cellText);
-            }
-            else
-            {
-                IReadOnlyList<string> logicalRows = _reader?.CurrentRows ?? Array.Empty<string>();
-                if (logicalRowIndex < 0 || logicalRowIndex >= logicalRows.Count)
-                {
-                    ClearTextSelection(invalidate: true);
-                    return;
-                }
-
-                localCharIndex = GetTextCharIndexFromX(x, logicalRows[logicalRowIndex]);
-            }
-
+            _textSelectionSegmentKey = focusSegment;
             _textSelectionFocusChar = Math.Clamp(
                 segmentRange.Start + localCharIndex,
                 segmentRange.Start,
@@ -1451,6 +1436,58 @@ internal sealed class ViewportPaneWindow : IDisposable
         NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
     }
 
+    private bool TryGetLogicalTextSelectionFocus(
+        int x,
+        int y,
+        ViewportTextSelectionContext context,
+        out int rowIndex,
+        out ViewportTextSegmentKey segmentKey,
+        out ViewportTextSegmentRange segmentRange,
+        out int localCharIndex)
+    {
+        rowIndex = -1;
+        segmentKey = default;
+        segmentRange = default;
+        localCharIndex = 0;
+
+        int targetRow = GetDataRowIndexFromY(y, clamp: true);
+        if (targetRow < 0 ||
+            !TryGetTextSelectionContext(targetRow, out segmentKey, out _, out segmentRange) ||
+            segmentKey.GroupKey != context.GroupKey)
+        {
+            return false;
+        }
+
+        if (_textSelectionColumnIndex == 1)
+        {
+            if (!TryGetGridCellTextAndRect(
+                    targetRow,
+                    1,
+                    out string cellText,
+                    out NativeMethods.RECT cellRect,
+                    out _,
+                    out int widthChars))
+            {
+                return false;
+            }
+
+            localCharIndex = GetGridCellTextCharIndexFromX(x, cellRect, widthChars, cellText);
+        }
+        else
+        {
+            IReadOnlyList<string> logicalRows = _reader?.CurrentRows ?? Array.Empty<string>();
+            if (targetRow < 0 || targetRow >= logicalRows.Count)
+            {
+                return false;
+            }
+
+            localCharIndex = GetTextCharIndexFromX(x, logicalRows[targetRow]);
+        }
+
+        rowIndex = targetRow;
+        return true;
+    }
+
     private void EndTextSelection()
     {
         _isSelectingText = false;
@@ -1478,12 +1515,56 @@ internal sealed class ViewportPaneWindow : IDisposable
         return Math.Clamp(_xOffsetChars + visibleChar, 0, text.Length);
     }
 
+    private bool TryGetTextWordCharIndexFromX(int x, string text, out int charIndex)
+    {
+        charIndex = -1;
+        if (text.Length == 0)
+        {
+            return false;
+        }
+
+        int visibleChar = x <= 0 ? 0 : x / Math.Max(1, _charWidth);
+        int candidate = _xOffsetChars + visibleChar;
+        if (candidate < 0 || candidate >= text.Length)
+        {
+            return false;
+        }
+
+        charIndex = candidate;
+        return true;
+    }
+
     private int GetGridCellTextCharIndexFromX(int x, NativeMethods.RECT cellRect, int widthChars, string text)
     {
         int textLeft = cellRect.left + GridCellPaddingPx;
         int visibleChar = x <= textLeft ? 0 : (x - textLeft) / Math.Max(1, _charWidth);
         int visibleCapacity = Math.Min(text.Length, GetGridTextCapacityChars(widthChars));
         return Math.Clamp(visibleChar, 0, visibleCapacity);
+    }
+
+    private bool TryGetGridCellWordCharIndexFromX(
+        int x,
+        NativeMethods.RECT cellRect,
+        int widthChars,
+        string text,
+        out int charIndex)
+    {
+        charIndex = -1;
+        if (text.Length == 0)
+        {
+            return false;
+        }
+
+        int textLeft = cellRect.left + GridCellPaddingPx;
+        int visibleChar = x <= textLeft ? 0 : (x - textLeft) / Math.Max(1, _charWidth);
+        int visibleCapacity = Math.Min(text.Length, GetGridTextCapacityChars(widthChars));
+        if (visibleChar < 0 || visibleChar >= visibleCapacity)
+        {
+            return false;
+        }
+
+        charIndex = visibleChar;
+        return true;
     }
 
     private bool BeginRowSelection(int x, int y)
