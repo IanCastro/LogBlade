@@ -12,6 +12,8 @@ internal sealed class RuleManagerWindow
     private const int IdRemoveButton = 203;
     private const int IdDuplicateButton = 204;
     private const int IdCloseButton = 205;
+    private const int IdUpButton = 206;
+    private const int IdDownButton = 207;
 
     private readonly List<DisplayParserRule> _rules;
     private readonly string _defaultRuleSample;
@@ -26,6 +28,8 @@ internal sealed class RuleManagerWindow
     private IntPtr _editButton;
     private IntPtr _removeButton;
     private IntPtr _duplicateButton;
+    private IntPtr _upButton;
+    private IntPtr _downButton;
     private IntPtr _closeButton;
     private bool _closed;
     private bool _updatingList;
@@ -220,6 +224,8 @@ internal sealed class RuleManagerWindow
         _editButton = CreateButton("Edit", IdEditButton);
         _removeButton = CreateButton("Remove", IdRemoveButton);
         _duplicateButton = CreateButton("Duplicate", IdDuplicateButton);
+        _upButton = CreateButton("Up", IdUpButton);
+        _downButton = CreateButton("Down", IdDownButton);
         _closeButton = CreateButton("Close", IdCloseButton);
         ReloadList(_activeRuleName);
         Layout();
@@ -263,6 +269,18 @@ internal sealed class RuleManagerWindow
         if (notification == NativeMethods.BN_CLICKED && id == IdDuplicateButton)
         {
             DuplicateSelectedRule();
+            return;
+        }
+
+        if (notification == NativeMethods.BN_CLICKED && id == IdUpButton)
+        {
+            MoveSelectedRule(-1);
+            return;
+        }
+
+        if (notification == NativeMethods.BN_CLICKED && id == IdDownButton)
+        {
+            MoveSelectedRule(1);
             return;
         }
 
@@ -449,6 +467,29 @@ internal sealed class RuleManagerWindow
         PublishActiveRulePreview();
     }
 
+    private void MoveSelectedRule(int direction)
+    {
+        int index = GetSelectedRuleIndex();
+        int targetIndex = index + direction;
+        if (index < 0 || targetIndex < 0 || targetIndex >= _rules.Count)
+        {
+            return;
+        }
+
+        List<DisplayParserRule> nextRules = new(_rules);
+        (nextRules[index], nextRules[targetIndex]) = (nextRules[targetIndex], nextRules[index]);
+        if (!TrySaveRules(nextRules))
+        {
+            return;
+        }
+
+        _rules.Clear();
+        _rules.AddRange(nextRules);
+        _activeRuleName = _rules[targetIndex].Name;
+        ReloadList(_activeRuleName);
+        PublishActiveRulePreview();
+    }
+
     private void UpdateActiveRuleFromSelection()
     {
         int index = GetSelectedRuleIndex();
@@ -551,6 +592,10 @@ internal sealed class RuleManagerWindow
         Move(_editButton, buttonLeft, y, buttonWidth, buttonHeight);
         y += buttonHeight + gap;
         Move(_duplicateButton, buttonLeft, y, buttonWidth, buttonHeight);
+        y += buttonHeight + gap;
+        Move(_upButton, buttonLeft, y, buttonWidth, buttonHeight);
+        y += buttonHeight + gap;
+        Move(_downButton, buttonLeft, y, buttonWidth, buttonHeight);
         y += buttonHeight + gap;
         Move(_removeButton, buttonLeft, y, buttonWidth, buttonHeight);
         Move(_closeButton, buttonLeft, height - margin - buttonHeight, buttonWidth, buttonHeight);
