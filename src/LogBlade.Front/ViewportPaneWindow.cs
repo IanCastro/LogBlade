@@ -4753,15 +4753,13 @@ internal sealed class ViewportPaneWindow : IDisposable
             return;
         }
 
-        IntPtr oldFont = NativeMethods.SelectObject(hdc, _font);
-        NativeMethods.SetBkMode(hdc, NativeMethods.TRANSPARENT);
-        NativeMethods.SetTextColor(hdc, NativeMethods.RGB(0, 0, 0));
         NativeMethods.RECT clientRect;
         NativeMethods.GetClientRect(_hwnd, out clientRect);
-        NativeMethods.FillRect(hdc, ref clientRect, NativeMethods.GetSysColorBrush(NativeMethods.COLOR_WINDOW));
-
-        int visibleNonEmptyLines = PaintContent(hdc);
-        NativeMethods.SelectObject(hdc, oldFont);
+        int width = GetRectWidth(clientRect);
+        int height = GetRectHeight(clientRect);
+        int visibleNonEmptyLines = width > 0 && height > 0
+            ? PaintBuffered(hdc, clientRect, width, height)
+            : PaintViewportToDc(hdc, clientRect);
         NativeMethods.EndPaint(_hwnd, ref ps);
 
         bool useful = _reader is not null && (!_reader.HasContent || visibleNonEmptyLines > 0);
@@ -4770,6 +4768,61 @@ internal sealed class ViewportPaneWindow : IDisposable
             NativeMethods.DwmFlush();
             _onUsefulPaint(this);
             _usefulPaintNotified = true;
+        }
+    }
+
+    private int PaintBuffered(IntPtr targetDc, NativeMethods.RECT clientRect, int width, int height)
+    {
+        IntPtr memoryDc = NativeMethods.CreateCompatibleDC(targetDc);
+        if (memoryDc == IntPtr.Zero)
+        {
+            return PaintViewportToDc(targetDc, clientRect);
+        }
+
+        IntPtr bitmap = IntPtr.Zero;
+        IntPtr previousBitmap = IntPtr.Zero;
+        try
+        {
+            bitmap = NativeMethods.CreateCompatibleBitmap(targetDc, width, height);
+            if (bitmap == IntPtr.Zero)
+            {
+                return PaintViewportToDc(targetDc, clientRect);
+            }
+
+            previousBitmap = NativeMethods.SelectObject(memoryDc, bitmap);
+            int visibleNonEmptyLines = PaintViewportToDc(memoryDc, clientRect);
+            NativeMethods.BitBlt(targetDc, 0, 0, width, height, memoryDc, 0, 0, NativeMethods.SRCCOPY);
+            return visibleNonEmptyLines;
+        }
+        finally
+        {
+            if (previousBitmap != IntPtr.Zero)
+            {
+                NativeMethods.SelectObject(memoryDc, previousBitmap);
+            }
+
+            if (bitmap != IntPtr.Zero)
+            {
+                NativeMethods.DeleteObject(bitmap);
+            }
+
+            NativeMethods.DeleteDC(memoryDc);
+        }
+    }
+
+    private int PaintViewportToDc(IntPtr hdc, NativeMethods.RECT clientRect)
+    {
+        IntPtr oldFont = NativeMethods.SelectObject(hdc, _font);
+        try
+        {
+            NativeMethods.SetBkMode(hdc, NativeMethods.TRANSPARENT);
+            NativeMethods.SetTextColor(hdc, NativeMethods.RGB(0, 0, 0));
+            NativeMethods.FillRect(hdc, ref clientRect, NativeMethods.GetSysColorBrush(NativeMethods.COLOR_WINDOW));
+            return PaintContent(hdc);
+        }
+        finally
+        {
+            NativeMethods.SelectObject(hdc, oldFont);
         }
     }
 

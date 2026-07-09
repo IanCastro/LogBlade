@@ -39,6 +39,7 @@ internal static class NativeMethods
     public const int SIZE_MAXIMIZED = 2;
     public const int SM_CXDRAG = 68;
     public const int SM_CYDRAG = 69;
+    public const int SRCCOPY = 0x00CC0020;
     public const uint SWP_NOSIZE = 0x0001;
     public const uint SWP_NOMOVE = 0x0002;
     public const uint SWP_NOZORDER = 0x0004;
@@ -502,6 +503,20 @@ internal static class NativeMethods
 
     [DllImport("gdi32.dll")]
     public static extern int IntersectClipRect(IntPtr hdc, int left, int top, int right, int bottom);
+
+    [DllImport("gdi32.dll")]
+    public static extern IntPtr CreateCompatibleDC(IntPtr hdc);
+
+    [DllImport("gdi32.dll")]
+    public static extern IntPtr CreateCompatibleBitmap(IntPtr hdc, int cx, int cy);
+
+    [DllImport("gdi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool DeleteDC(IntPtr hdc);
+
+    [DllImport("gdi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool BitBlt(IntPtr hdc, int x, int y, int cx, int cy, IntPtr hdcSrc, int x1, int y1, int rop);
 
     [DllImport("gdi32.dll", CharSet = CharSet.Unicode)]
     public static extern IntPtr CreateFontW(
