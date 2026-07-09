@@ -230,6 +230,12 @@ internal sealed class RuleManagerWindow
         int id = NativeMethods.LowWord(wParam);
         int notification = NativeMethods.HighWord(wParam);
 
+        if (id == IdRulesList && notification == NativeMethods.LBN_SELCHANGE && !_updatingList)
+        {
+            UpdateActiveRuleFromSelection();
+            return;
+        }
+
         if (id == IdRulesList && notification == NativeMethods.LBN_DBLCLK && !_updatingList)
         {
             EditSelectedRule();
@@ -440,6 +446,13 @@ internal sealed class RuleManagerWindow
         _rules.AddRange(nextRules);
         _activeRuleName = duplicate.Name;
         ReloadList(duplicate.Name);
+        PublishActiveRulePreview();
+    }
+
+    private void UpdateActiveRuleFromSelection()
+    {
+        int index = GetSelectedRuleIndex();
+        _activeRuleName = index >= 0 ? _rules[index].Name : null;
         PublishActiveRulePreview();
     }
 
