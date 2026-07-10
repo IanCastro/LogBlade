@@ -11,18 +11,20 @@ internal static class Program
         AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
         AppLog.Instance.Info("startup.begin", "begin", new LogField("argsCount", args.Length.ToString()));
 
-        if (args.Length != 1)
+        if (args.Length > 1)
         {
             AppLog.Instance.Error("startup.args_invalid", "invalid_arguments", new LogField("argsCount", args.Length.ToString()));
-            ShowStartupError("Usage: LogBlade.exe <path>");
+            ShowStartupError("Usage: LogBlade.exe [path]");
             return 1;
         }
 
         try
         {
-            LogContentSource contentSource = string.Equals(args[0], PastedStdinArgument, StringComparison.Ordinal)
-                ? ReadPastedContent()
-                : LogContentSource.FromFile(args[0]);
+            LogContentSource contentSource = args.Length == 0
+                ? LogContentSource.FromMemory("Untitled", Array.Empty<byte>())
+                : string.Equals(args[0], PastedStdinArgument, StringComparison.Ordinal)
+                    ? ReadPastedContent()
+                    : LogContentSource.FromFile(args[0]);
             var viewer = new ViewerWindow(contentSource);
             viewer.Run();
             return 0;

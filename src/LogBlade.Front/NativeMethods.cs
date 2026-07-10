@@ -164,6 +164,7 @@ internal static class NativeMethods
     public const int VK_END = 0x23;
     public const int VK_A = 0x41;
     public const int VK_C = 0x43;
+    public const int VK_O = 0x4F;
     public const int VK_V = 0x56;
     public const int VK_CONTROL = 0x11;
     public const int VK_SHIFT = 0x10;
@@ -175,6 +176,10 @@ internal static class NativeMethods
     public const int LR_SHARED = 0x00008000;
     public const int CC_RGBINIT = 0x00000001;
     public const int CC_FULLOPEN = 0x00000002;
+    public const int OFN_FILEMUSTEXIST = 0x00001000;
+    public const int OFN_PATHMUSTEXIST = 0x00000800;
+    public const int OFN_EXPLORER = 0x00080000;
+    public const int OFN_NOCHANGEDIR = 0x00000008;
     public const uint GMEM_MOVEABLE = 0x0002;
     public static readonly IntPtr IDC_ARROW = new(32512);
     public static readonly IntPtr IDC_SIZENS = new(32645);
@@ -338,6 +343,34 @@ internal static class NativeMethods
         public string? lpTemplateName;
     }
 
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct OPENFILENAMEW
+    {
+        public int lStructSize;
+        public IntPtr hwndOwner;
+        public IntPtr hInstance;
+        public IntPtr lpstrFilter;
+        public IntPtr lpstrCustomFilter;
+        public int nMaxCustFilter;
+        public int nFilterIndex;
+        public IntPtr lpstrFile;
+        public int nMaxFile;
+        public IntPtr lpstrFileTitle;
+        public int nMaxFileTitle;
+        public IntPtr lpstrInitialDir;
+        public IntPtr lpstrTitle;
+        public int Flags;
+        public short nFileOffset;
+        public short nFileExtension;
+        public IntPtr lpstrDefExt;
+        public IntPtr lCustData;
+        public IntPtr lpfnHook;
+        public IntPtr lpTemplateName;
+        public IntPtr pvReserved;
+        public int dwReserved;
+        public int FlagsEx;
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     public struct DRAWITEMSTRUCT
     {
@@ -376,6 +409,13 @@ internal static class NativeMethods
     [DllImport("comdlg32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool ChooseColorW(ref CHOOSECOLORW lpcc);
+
+    [DllImport("comdlg32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetOpenFileNameW(ref OPENFILENAMEW lpofn);
+
+    [DllImport("comdlg32.dll")]
+    public static extern int CommDlgExtendedError();
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

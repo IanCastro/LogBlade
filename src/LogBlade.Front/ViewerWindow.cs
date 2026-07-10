@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 
 internal sealed class OpenWorkerResult
 {
+    public long RequestId { get; set; }
     public bool Success { get; set; }
     public string? Message { get; set; }
     public DetectedEncodingInfo? DetectedEncoding { get; set; }
@@ -46,6 +47,8 @@ internal sealed class ViewerWindow
 {
     private const int TopBarHeight = 34;
     private const int TopBarPadding = 4;
+    private const int OpenButtonWidth = 72;
+    private const int PasteButtonWidth = 64;
     private const int ParserLabelWidth = 52;
     private const int ParserComboWidth = 360;
     private const int HighlightingButtonWidth = 110;
@@ -64,12 +67,14 @@ internal sealed class ViewerWindow
     private const string SearchResizeGripClassName = "LogBladeSearchResizeGripWindow";
     private const string ConfigureParserText = "Configure";
 
-    private readonly LogContentSource _contentSource;
+    private LogContentSource _contentSource;
     private IntPtr _hwnd;
     private IntPtr _font;
     private IntPtr _boldFont;
     private IntPtr _italicFont;
     private IntPtr _boldItalicFont;
+    private IntPtr _openButton;
+    private IntPtr _pasteButton;
     private IntPtr _parserLabel;
     private IntPtr _parserCombo;
     private IntPtr _highlightingButton;
@@ -84,6 +89,8 @@ internal sealed class ViewerWindow
     private bool _resourcesDisposed;
     private bool _updatingParserCombo;
     private bool _updatingSearchControls;
+    private long _nextOpenRequestId;
+    private long _latestOpenRequestId;
     private List<DisplayParserRule> _parserRules = new();
     private DisplayParserRule? _previewParserRule;
     private bool _parserPreviewActive;
@@ -176,6 +183,8 @@ internal sealed class ViewerWindow
     private readonly record struct WindowLayout(
         NativeMethods.RECT ClientRect,
         NativeMethods.RECT TopBarRect,
+        NativeMethods.RECT OpenButtonRect,
+        NativeMethods.RECT PasteButtonRect,
         NativeMethods.RECT ParserLabelRect,
         NativeMethods.RECT ParserComboRect,
         NativeMethods.RECT HighlightingButtonRect,
@@ -509,7 +518,7 @@ internal sealed class ViewerWindow
             italicFont: _italicFont,
             boldItalicFont: _boldItalicFont,
             onUsefulPaint: OnMainPaneUsefulPaint,
-            onPasteRequested: OpenClipboardTextInNewWindow,
+            onPasteRequested: OpenClipboardText,
             onHostVerticalResizeHit: OnMainPaneResizeHit,
             onHostVerticalResizeBegin: OnMainPaneResizeBegin);
         _mainPane.Create(_hwnd, hInstance);
@@ -525,6 +534,42 @@ internal sealed class ViewerWindow
 
     private void CreateParserControls(IntPtr hInstance)
     {
+        _openButton = NativeMethods.CreateWindowExW(
+            0,
+            "BUTTON",
+            "Open...",
+            NativeMethods.WS_CHILD | NativeMethods.WS_VISIBLE | NativeMethods.WS_TABSTOP | NativeMethods.BS_PUSHBUTTON,
+            0,
+            0,
+            1,
+            1,
+            _hwnd,
+            IntPtr.Zero,
+            hInstance,
+            IntPtr.Zero);
+        if (_openButton == IntPtr.Zero)
+        {
+            throw new InvalidOperationException("CreateWindowExW failed for open button.");
+        }
+
+        _pasteButton = NativeMethods.CreateWindowExW(
+            0,
+            "BUTTON",
+            "Paste",
+            NativeMethods.WS_CHILD | NativeMethods.WS_VISIBLE | NativeMethods.WS_TABSTOP | NativeMethods.BS_PUSHBUTTON,
+            0,
+            0,
+            1,
+            1,
+            _hwnd,
+            IntPtr.Zero,
+            hInstance,
+            IntPtr.Zero);
+        if (_pasteButton == IntPtr.Zero)
+        {
+            throw new InvalidOperationException("CreateWindowExW failed for paste button.");
+        }
+
         _parserLabel = NativeMethods.CreateWindowExW(
             0,
             "STATIC",
@@ -563,6 +608,8 @@ internal sealed class ViewerWindow
             throw new InvalidOperationException("CreateWindowExW failed for parser combo.");
         }
 
+        NativeMethods.SendMessageW(_openButton, NativeMethods.WM_SETFONT, _font, new IntPtr(1));
+        NativeMethods.SendMessageW(_pasteButton, NativeMethods.WM_SETFONT, _font, new IntPtr(1));
         NativeMethods.SendMessageW(_parserLabel, NativeMethods.WM_SETFONT, _font, new IntPtr(1));
         NativeMethods.SendMessageW(_parserCombo, NativeMethods.WM_SETFONT, _font, new IntPtr(1));
 
@@ -762,16 +809,101 @@ internal sealed class ViewerWindow
 
     private bool OnKeyDown(int key)
     {
+        if (key == NativeMethods.VK_O && IsControlKeyDown())
+        {
+            OpenFileInCurrentWindow();
+            return true;
+        }
+
         if (key == NativeMethods.VK_V && IsControlKeyDown())
         {
-            OpenClipboardTextInNewWindow();
+            OpenClipboardText();
             return true;
         }
 
         return false;
     }
 
-    private void OpenClipboardTextInNewWindow()
+    private void OpenFileInCurrentWindow()
+    {
+        if (!TryShowOpenFileDialog(out string? selectedPath) || selectedPath is null)
+        {
+            return;
+        }
+
+        try
+        {
+            LoadContentSource(LogContentSource.FromFile(selectedPath));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            NativeMethods.MessageBoxW(_hwnd, "Failed to open file: " + ex.Message, Program.AppTitle, NativeMethods.MB_OK | NativeMethods.MB_ICONERROR);
+        }
+    }
+
+    private bool TryShowOpenFileDialog(out string? selectedPath)
+    {
+        selectedPath = null;
+        const int fileBufferChars = 32768;
+        IntPtr filterBuffer = IntPtr.Zero;
+        IntPtr fileBuffer = IntPtr.Zero;
+        IntPtr titleBuffer = IntPtr.Zero;
+        try
+        {
+            filterBuffer = Marshal.StringToHGlobalUni("Log files\0*.log;*.txt;*.*\0All files\0*.*\0\0");
+            titleBuffer = Marshal.StringToHGlobalUni("Open log file");
+            fileBuffer = Marshal.AllocHGlobal(fileBufferChars * sizeof(char));
+            Marshal.Copy(new byte[fileBufferChars * sizeof(char)], 0, fileBuffer, fileBufferChars * sizeof(char));
+
+            NativeMethods.OPENFILENAMEW ofn = new()
+            {
+                lStructSize = Marshal.SizeOf<NativeMethods.OPENFILENAMEW>(),
+                hwndOwner = _hwnd,
+                lpstrFilter = filterBuffer,
+                lpstrFile = fileBuffer,
+                nMaxFile = fileBufferChars,
+                lpstrTitle = titleBuffer,
+                Flags = NativeMethods.OFN_EXPLORER | NativeMethods.OFN_FILEMUSTEXIST | NativeMethods.OFN_PATHMUSTEXIST | NativeMethods.OFN_NOCHANGEDIR
+            };
+
+            if (!NativeMethods.GetOpenFileNameW(ref ofn))
+            {
+                int dialogError = NativeMethods.CommDlgExtendedError();
+                if (dialogError != 0)
+                {
+                    AppLog.Instance.Error(
+                        "file.dialog.failed",
+                        "failed",
+                        new LogField("error", "0x" + dialogError.ToString("X")));
+                    NativeMethods.MessageBoxW(_hwnd, "Failed to open file dialog. Error: 0x" + dialogError.ToString("X"), Program.AppTitle, NativeMethods.MB_OK | NativeMethods.MB_ICONERROR);
+                }
+
+                return false;
+            }
+
+            selectedPath = Marshal.PtrToStringUni(fileBuffer);
+            return !string.IsNullOrEmpty(selectedPath);
+        }
+        finally
+        {
+            if (filterBuffer != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(filterBuffer);
+            }
+
+            if (fileBuffer != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(fileBuffer);
+            }
+
+            if (titleBuffer != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(titleBuffer);
+            }
+        }
+    }
+
+    private void OpenClipboardText()
     {
         if (!TryGetClipboardText(out string text) || text.Length == 0)
         {
@@ -779,6 +911,32 @@ internal sealed class ViewerWindow
             return;
         }
 
+        if (ShouldLoadPastedTextInCurrentWindow())
+        {
+            LoadContentSource(LogContentSource.FromMemory("Pasted text", CreatePastedTextBuffer(text)));
+            return;
+        }
+
+        OpenClipboardTextInNewWindow(text);
+    }
+
+    private bool ShouldLoadPastedTextInCurrentWindow()
+        => !_contentSource.IsFile &&
+            string.Equals(_contentSource.DisplayName, "Untitled", StringComparison.Ordinal) &&
+            _contentSource.Length == 0;
+
+    private static byte[] CreatePastedTextBuffer(string text)
+    {
+        byte[] preamble = Encoding.UTF8.GetPreamble();
+        byte[] body = Encoding.UTF8.GetBytes(text);
+        byte[] content = new byte[preamble.Length + body.Length];
+        Buffer.BlockCopy(preamble, 0, content, 0, preamble.Length);
+        Buffer.BlockCopy(body, 0, content, preamble.Length, body.Length);
+        return content;
+    }
+
+    private void OpenClipboardTextInNewWindow(string text)
+    {
         string? executable = Environment.ProcessPath;
         if (string.IsNullOrEmpty(executable))
         {
@@ -1069,7 +1227,7 @@ internal sealed class ViewerWindow
             boldItalicFont: _boldItalicFont,
             onStale: OnFilteredPaneStale,
             onRowActivated: OnFilteredRowActivated,
-            onPasteRequested: OpenClipboardTextInNewWindow,
+            onPasteRequested: OpenClipboardText,
             onHostVerticalResizeHit: OnResultsPaneResizeHit,
             onHostVerticalResizeBegin: OnResultsPaneResizeBegin);
         level.ResultsPane.Create(_hwnd, hInstance);
@@ -1130,6 +1288,24 @@ internal sealed class ViewerWindow
         s_searchResizeGripRegistered = true;
     }
 
+    private void LoadContentSource(LogContentSource contentSource)
+    {
+        _contentSource = contentSource;
+        if (_hwnd != IntPtr.Zero)
+        {
+            NativeMethods.SetWindowTextW(_hwnd, ComposeWindowTitle());
+        }
+
+        BeginBackgroundOpen();
+    }
+
+    private string GetMainEmptyContentText()
+        => !_contentSource.IsFile &&
+            string.Equals(_contentSource.DisplayName, "Untitled", StringComparison.Ordinal) &&
+            _contentSource.Length == 0
+                ? "Open a file with Open... or paste text with Paste / Ctrl+V."
+                : "(empty file)";
+
     private void BeginBackgroundOpen()
     {
         if (_closing || _hwnd == IntPtr.Zero || _mainPane is null)
@@ -1137,6 +1313,8 @@ internal sealed class ViewerWindow
             return;
         }
 
+        long openRequestId = ++_nextOpenRequestId;
+        _latestOpenRequestId = openRequestId;
         NativeMethods.KillTimer(_hwnd, SearchDebounceTimerId);
         _latestSearchRequestId = ++_nextSearchRequestId;
         CancelActiveSearch();
@@ -1150,7 +1328,10 @@ internal sealed class ViewerWindow
         _searchErrorText = string.Empty;
         _appendSearchPending = false;
         _appendSearchInProgress = false;
+        _searchStale = false;
         ClearPausedSearchCheckpoint();
+        ClearPendingLowerSearchChange();
+        _mainPane.SetEmptyContentText(GetMainEmptyContentText());
         _mainPane.SetStatus("Loading file...");
         SetActiveSearchResultStatus(string.Empty);
         InvalidateHost();
@@ -1177,6 +1358,7 @@ internal sealed class ViewerWindow
         ThreadPool.QueueUserWorkItem(_ =>
         {
             var result = new OpenWorkerResult();
+            result.RequestId = openRequestId;
             try
             {
                 AppLog.Instance.Info("file.open.begin", "begin", new LogField("source", workerSource.DisplayName));
@@ -1208,6 +1390,12 @@ internal sealed class ViewerWindow
         handle.Free();
         if (result is null)
         {
+            return;
+        }
+
+        if (result.RequestId != _latestOpenRequestId)
+        {
+            result.Reader?.Dispose();
             return;
         }
 
@@ -2629,6 +2817,18 @@ internal sealed class ViewerWindow
     private void OnCommand(IntPtr wParam, IntPtr lParam)
     {
         int notification = NativeMethods.HighWord(wParam);
+        if (lParam == _openButton && notification == NativeMethods.BN_CLICKED)
+        {
+            OpenFileInCurrentWindow();
+            return;
+        }
+
+        if (lParam == _pasteButton && notification == NativeMethods.BN_CLICKED)
+        {
+            OpenClipboardText();
+            return;
+        }
+
         if (lParam == _parserCombo && notification == NativeMethods.CBN_SELCHANGE && !_updatingParserCombo)
         {
             OnParserSelectionChanged();
@@ -4250,15 +4450,45 @@ internal sealed class ViewerWindow
             right = clientRect.right,
             bottom = topBarBottom
         };
+        int controlTop = topBarRect.top + TopBarPadding;
+        int controlBottom = Math.Min(topBarRect.bottom, controlTop + SearchInputRowHeight);
+        int controlsRight = Math.Max(topBarRect.left + TopBarPadding, topBarRect.right - TopBarPadding);
+        int controlCursor = topBarRect.left + TopBarPadding;
+        int openButtonWidth = Math.Min(OpenButtonWidth, Math.Max(0, controlsRight - controlCursor));
+        NativeMethods.RECT openButtonRect = new()
+        {
+            left = controlCursor,
+            top = controlTop,
+            right = controlCursor + openButtonWidth,
+            bottom = controlBottom
+        };
+        if (openButtonWidth > 0)
+        {
+            controlCursor = openButtonRect.right + SearchToggleGap;
+        }
+
+        int pasteButtonWidth = Math.Min(PasteButtonWidth, Math.Max(0, controlsRight - controlCursor));
+        NativeMethods.RECT pasteButtonRect = new()
+        {
+            left = controlCursor,
+            top = controlTop,
+            right = controlCursor + pasteButtonWidth,
+            bottom = controlBottom
+        };
+        if (pasteButtonWidth > 0)
+        {
+            controlCursor = pasteButtonRect.right + SearchToggleGap;
+        }
+
+        int parserLabelWidth = Math.Min(ParserLabelWidth, Math.Max(0, controlsRight - controlCursor));
         NativeMethods.RECT parserLabelRect = new()
         {
-            left = topBarRect.left + TopBarPadding,
-            top = topBarRect.top + TopBarPadding + 4,
-            right = topBarRect.left + TopBarPadding + ParserLabelWidth,
-            bottom = Math.Min(topBarRect.bottom, topBarRect.top + TopBarPadding + 4 + SearchInputRowHeight)
+            left = controlCursor,
+            top = controlTop + 4,
+            right = controlCursor + parserLabelWidth,
+            bottom = Math.Min(topBarRect.bottom, controlTop + 4 + SearchInputRowHeight)
         };
-        int parserComboLeft = parserLabelRect.right + SearchToggleGap;
-        int controlsRight = Math.Max(parserComboLeft, topBarRect.right - TopBarPadding);
+        int parserComboLeft = parserLabelRect.right + (parserLabelWidth > 0 ? SearchToggleGap : 0);
         int availableControlsWidth = Math.Max(0, controlsRight - parserComboLeft);
         int highlightingWidth = Math.Min(HighlightingButtonWidth, availableControlsWidth);
         int highlightingGap = highlightingWidth > 0 ? SearchToggleGap : 0;
@@ -4266,16 +4496,16 @@ internal sealed class ViewerWindow
         NativeMethods.RECT parserComboRect = new()
         {
             left = parserComboLeft,
-            top = topBarRect.top + TopBarPadding,
+            top = controlTop,
             right = parserComboLeft + parserComboWidth,
-            bottom = topBarRect.top + TopBarPadding + 220
+            bottom = controlTop + 220
         };
         NativeMethods.RECT highlightingButtonRect = new()
         {
             left = parserComboRect.right + highlightingGap,
-            top = topBarRect.top + TopBarPadding,
+            top = controlTop,
             right = Math.Min(controlsRight, parserComboRect.right + highlightingGap + highlightingWidth),
-            bottom = Math.Min(topBarRect.bottom, topBarRect.top + TopBarPadding + SearchInputRowHeight)
+            bottom = controlBottom
         };
         int viewerBottom = Math.Max(topBarBottom, clientRect.bottom - searchAreaHeight);
         int searchAreaTop = viewerBottom;
@@ -4379,11 +4609,35 @@ internal sealed class ViewerWindow
             }
             : CreateZeroRect();
 
-        _layout = new WindowLayout(clientRect, topBarRect, parserLabelRect, parserComboRect, highlightingButtonRect, viewerRect, searchAreaRect, searchLevelLayouts, progressRect);
+        _layout = new WindowLayout(clientRect, topBarRect, openButtonRect, pasteButtonRect, parserLabelRect, parserComboRect, highlightingButtonRect, viewerRect, searchAreaRect, searchLevelLayouts, progressRect);
     }
 
     private void ApplyLayout()
     {
+        if (_openButton != IntPtr.Zero)
+        {
+            NativeMethods.MoveWindow(
+                _openButton,
+                _layout.OpenButtonRect.left,
+                _layout.OpenButtonRect.top,
+                GetRectWidth(_layout.OpenButtonRect),
+                GetRectHeight(_layout.OpenButtonRect),
+                true);
+            NativeMethods.ShowWindow(_openButton, GetRectWidth(_layout.OpenButtonRect) > 0 ? NativeMethods.SW_SHOW : NativeMethods.SW_HIDE);
+        }
+
+        if (_pasteButton != IntPtr.Zero)
+        {
+            NativeMethods.MoveWindow(
+                _pasteButton,
+                _layout.PasteButtonRect.left,
+                _layout.PasteButtonRect.top,
+                GetRectWidth(_layout.PasteButtonRect),
+                GetRectHeight(_layout.PasteButtonRect),
+                true);
+            NativeMethods.ShowWindow(_pasteButton, GetRectWidth(_layout.PasteButtonRect) > 0 ? NativeMethods.SW_SHOW : NativeMethods.SW_HIDE);
+        }
+
         if (_parserLabel != IntPtr.Zero)
         {
             NativeMethods.MoveWindow(
@@ -4393,7 +4647,7 @@ internal sealed class ViewerWindow
                 GetRectWidth(_layout.ParserLabelRect),
                 GetRectHeight(_layout.ParserLabelRect),
                 true);
-            NativeMethods.ShowWindow(_parserLabel, NativeMethods.SW_SHOW);
+            NativeMethods.ShowWindow(_parserLabel, GetRectWidth(_layout.ParserLabelRect) > 0 ? NativeMethods.SW_SHOW : NativeMethods.SW_HIDE);
         }
 
         if (_parserCombo != IntPtr.Zero)
@@ -4405,7 +4659,7 @@ internal sealed class ViewerWindow
                 GetRectWidth(_layout.ParserComboRect),
                 GetRectHeight(_layout.ParserComboRect),
                 true);
-            NativeMethods.ShowWindow(_parserCombo, NativeMethods.SW_SHOW);
+            NativeMethods.ShowWindow(_parserCombo, GetRectWidth(_layout.ParserComboRect) > 0 ? NativeMethods.SW_SHOW : NativeMethods.SW_HIDE);
         }
 
         if (_highlightingButton != IntPtr.Zero)
@@ -4512,6 +4766,18 @@ internal sealed class ViewerWindow
         }
 
         _mainPane?.Dispose();
+
+        if (_openButton != IntPtr.Zero)
+        {
+            NativeMethods.DestroyWindow(_openButton);
+            _openButton = IntPtr.Zero;
+        }
+
+        if (_pasteButton != IntPtr.Zero)
+        {
+            NativeMethods.DestroyWindow(_pasteButton);
+            _pasteButton = IntPtr.Zero;
+        }
 
         if (_parserCombo != IntPtr.Zero)
         {
