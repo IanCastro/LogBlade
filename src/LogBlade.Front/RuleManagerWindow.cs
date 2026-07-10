@@ -297,13 +297,19 @@ internal sealed class RuleManagerWindow
             return;
         }
 
-        RuleEditorWindow editor = new(_rules, _defaultRuleSample, _onPreviewChanged);
+        ParserStageEditorWindow editor = new(
+            _rules,
+            _defaultRuleSample,
+            string.Empty,
+            _onPreviewChanged,
+            TrySaveNewRule);
         DisplayParserRule? saved;
         _ruleEditorOpen = true;
         _openRuleEditorTarget = null;
         try
         {
-            saved = editor.ShowModal(_hwnd);
+            editor.ShowModal(_hwnd);
+            saved = editor.SavedRule;
         }
         finally
         {
@@ -317,15 +323,7 @@ internal sealed class RuleManagerWindow
             return;
         }
 
-        List<DisplayParserRule> nextRules = new(_rules) { saved };
-        if (!TrySaveRules(nextRules))
-        {
-            PublishActiveRulePreview();
-            return;
-        }
-
-        _rules.Clear();
-        _rules.AddRange(nextRules);
+        _rules.Add(saved);
         _activeRuleName = saved.Name;
         ReloadList(saved.Name);
         PublishActiveRulePreview();
@@ -346,6 +344,12 @@ internal sealed class RuleManagerWindow
         }
 
         DisplayParserRule target = _rules[index];
+        if (target.Stages.Count == 1)
+        {
+            EditSingleStageRule(target);
+            return;
+        }
+
         RuleEditorWindow editor = new(_rules, CopyRule(target), _onPreviewChanged);
         DisplayParserRule? saved;
         _ruleEditorOpen = true;
@@ -390,6 +394,37 @@ internal sealed class RuleManagerWindow
         _rules.Clear();
         _rules.AddRange(nextRules);
         _activeRuleName = nextActiveRuleName;
+        ReloadList(saved.Name);
+        PublishActiveRulePreview();
+    }
+
+    private void EditSingleStageRule(DisplayParserRule target)
+    {
+        ParserStageEditorWindow editor = new(
+            _rules,
+            CopyRule(target),
+            _onPreviewChanged,
+            savedRule => TrySaveEditedRule(target, savedRule));
+        DisplayParserRule? saved;
+        _ruleEditorOpen = true;
+        _openRuleEditorTarget = target;
+        try
+        {
+            editor.ShowModal(_hwnd);
+            saved = editor.SavedRule;
+        }
+        finally
+        {
+            _openRuleEditorTarget = null;
+            _ruleEditorOpen = false;
+        }
+
+        if (saved is null)
+        {
+            PublishActiveRulePreview();
+            return;
+        }
+
         ReloadList(saved.Name);
         PublishActiveRulePreview();
     }
@@ -555,6 +590,50 @@ internal sealed class RuleManagerWindow
         }
     }
 
+    private string? TrySaveNewRule(DisplayParserRule rule)
+    {
+        List<DisplayParserRule> nextRules = new(_rules) { rule };
+        try
+        {
+            DisplayParserRuleStore.Save(nextRules);
+            return null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or NotSupportedException or ArgumentException)
+        {
+            return "Failed to save parser rules: " + ex.Message;
+        }
+    }
+
+    private string? TrySaveEditedRule(DisplayParserRule target, DisplayParserRule rule)
+    {
+        int currentIndex = _rules.IndexOf(target);
+        if (currentIndex < 0)
+        {
+            return "The edited rule is no longer available.";
+        }
+
+        bool editedActiveRule = _activeRuleName is not null &&
+            string.Equals(target.Name, _activeRuleName, StringComparison.OrdinalIgnoreCase);
+        string? nextActiveRuleName = editedActiveRule || _activeRuleName is null
+            ? rule.Name
+            : _activeRuleName;
+        List<DisplayParserRule> nextRules = new(_rules);
+        nextRules[currentIndex] = rule;
+        try
+        {
+            DisplayParserRuleStore.Save(nextRules);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or NotSupportedException or ArgumentException)
+        {
+            return "Failed to save parser rules: " + ex.Message;
+        }
+
+        _rules.Clear();
+        _rules.AddRange(nextRules);
+        _activeRuleName = nextActiveRuleName;
+        return null;
+    }
+
     private void Close()
     {
         if (_ruleEditorOpen)
@@ -683,4 +762,5 @@ internal sealed class RuleManagerWindow
             }
         }
     }
+
 }

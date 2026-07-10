@@ -12,18 +12,29 @@ internal sealed class ParserStageEditorWindow
     private const int IdTemplateEdit = 105;
     private const int IdPreviewEdit = 106;
     private const int IdBeforeEdit = 107;
+    private const int IdNameEdit = 108;
     private const int IdSaveButton = 201;
     private const int IdCancelButton = 202;
+    private const int IdAddNewStageButton = 203;
+    private const int IdUndoStageButton = 204;
 
     private readonly DisplayParserStage? _initialStage;
+    private readonly IReadOnlyList<DisplayParserRule>? _existingRules;
+    private readonly string? _originalRuleName;
     private readonly List<DisplayParserStage> _previousStages;
     private readonly string _sample;
+    private readonly string? _initialRuleName;
     private readonly Dictionary<DisplayParserMode, ParserStageDraft> _drafts = new();
     private readonly Action<DisplayParserStage?>? _onPreviewChanged;
+    private readonly Action<DisplayParserRule?>? _onRulePreviewChanged;
+    private readonly Func<DisplayParserRule, string?>? _saveCreatedRule;
+    private readonly bool _createRuleMode;
     private IntPtr _hwnd;
     private IntPtr _owner;
     private IntPtr _font;
     private GCHandle _selfHandle;
+    private IntPtr _nameLabel;
+    private IntPtr _nameEdit;
     private IntPtr _typeLabel;
     private IntPtr _regexRadio;
     private IntPtr _jsonRadio;
@@ -37,6 +48,8 @@ internal sealed class ParserStageEditorWindow
     private IntPtr _previewLabel;
     private IntPtr _previewEdit;
     private IntPtr _saveButton;
+    private IntPtr _addNewStageButton;
+    private IntPtr _undoStageButton;
     private IntPtr _cancelButton;
     private DisplayParserMode _mode;
     private bool _closed;
@@ -70,18 +83,88 @@ internal sealed class ParserStageEditorWindow
     {
     }
 
+    public ParserStageEditorWindow(
+        IReadOnlyList<DisplayParserRule> existingRules,
+        string sample,
+        string initialRuleName,
+        Action<DisplayParserRule?>? onRulePreviewChanged,
+        Func<DisplayParserRule, string?> saveCreatedRule)
+        : this(
+            initialStage: null,
+            stages: Array.Empty<DisplayParserStage>(),
+            sample,
+            stageIndex: 0,
+            onPreviewChanged: null,
+            existingRules,
+            originalRuleName: null,
+            initialRuleName,
+            onRulePreviewChanged,
+            saveCreatedRule)
+    {
+    }
+
+    public ParserStageEditorWindow(
+        IReadOnlyList<DisplayParserRule> existingRules,
+        DisplayParserRule initialRule,
+        Action<DisplayParserRule?>? onRulePreviewChanged,
+        Func<DisplayParserRule, string?> saveRule)
+        : this(
+            initialStage: initialRule.Stages.Count == 0 ? null : initialRule.Stages[0].Clone(),
+            stages: initialRule.Stages,
+            sample: initialRule.Sample,
+            stageIndex: 0,
+            onPreviewChanged: null,
+            existingRules,
+            originalRuleName: initialRule.Name,
+            initialRuleName: initialRule.Name,
+            onRulePreviewChanged,
+            saveRule)
+    {
+    }
+
     private ParserStageEditorWindow(
         DisplayParserStage? initialStage,
         IReadOnlyList<DisplayParserStage> stages,
         string sample,
         int stageIndex,
         Action<DisplayParserStage?>? onPreviewChanged)
+        : this(
+            initialStage,
+            stages,
+            sample,
+            stageIndex,
+            onPreviewChanged,
+            existingRules: null,
+            originalRuleName: null,
+            initialRuleName: null,
+            onRulePreviewChanged: null,
+            saveCreatedRule: null)
+    {
+    }
+
+    private ParserStageEditorWindow(
+        DisplayParserStage? initialStage,
+        IReadOnlyList<DisplayParserStage> stages,
+        string sample,
+        int stageIndex,
+        Action<DisplayParserStage?>? onPreviewChanged,
+        IReadOnlyList<DisplayParserRule>? existingRules,
+        string? originalRuleName,
+        string? initialRuleName,
+        Action<DisplayParserRule?>? onRulePreviewChanged,
+        Func<DisplayParserRule, string?>? saveCreatedRule)
     {
         _initialStage = initialStage;
         _mode = initialStage?.Mode ?? DisplayParserMode.Json;
+        _existingRules = existingRules;
+        _originalRuleName = originalRuleName;
         _sample = sample;
+        _initialRuleName = initialRuleName;
         _previousStages = ClonePreviousStages(stages, stageIndex);
         _onPreviewChanged = onPreviewChanged;
+        _onRulePreviewChanged = onRulePreviewChanged;
+        _saveCreatedRule = saveCreatedRule;
+        _createRuleMode = existingRules is not null;
         if (initialStage is not null)
         {
             _drafts[initialStage.Mode] = new ParserStageDraft(initialStage.Rule, initialStage.Template);
@@ -89,6 +172,7 @@ internal sealed class ParserStageEditorWindow
     }
 
     public DisplayParserStage? SavedStage { get; private set; }
+    public DisplayParserRule? SavedRule { get; private set; }
 
     public DisplayParserStage? ShowModal(IntPtr owner)
     {
@@ -104,6 +188,10 @@ internal sealed class ParserStageEditorWindow
             AuxiliaryWindowRegistry.Register(modalHwnd);
             registered = true;
             NativeMethods.UpdateWindow(_hwnd);
+            if (_createRuleMode && _nameEdit != IntPtr.Zero)
+            {
+                NativeMethods.SetFocus(_nameEdit);
+            }
 
             NativeMethods.MSG msg;
             while (!_closed && NativeMethods.GetMessageW(out msg, IntPtr.Zero, 0, 0) > 0)
@@ -166,7 +254,7 @@ internal sealed class ParserStageEditorWindow
             NativeMethods.CW_USEDEFAULT,
             NativeMethods.CW_USEDEFAULT,
             720,
-            680,
+            _createRuleMode ? 720 : 680,
             _owner,
             IntPtr.Zero,
             NativeMethods.GetModuleHandleW(null),
@@ -245,6 +333,13 @@ internal sealed class ParserStageEditorWindow
         _hwnd = hwnd;
         _font = NativeMethods.GetStockObject(NativeMethods.DEFAULT_GUI_FONT);
 
+        if (_createRuleMode)
+        {
+            _nameLabel = CreateLabel("Nome");
+            _nameEdit = CreateEdit(IdNameEdit, multiline: false, readOnly: false);
+            NativeMethods.SetWindowTextW(_nameEdit, _initialRuleName ?? string.Empty);
+        }
+
         _typeLabel = CreateLabel("Tipo");
         _regexRadio = CreateRadio("Regex", IdRegexMode);
         _regexReplaceRadio = CreateRadio("Regex Replace", IdRegexReplaceMode);
@@ -258,6 +353,12 @@ internal sealed class ParserStageEditorWindow
         _previewLabel = CreateLabel("Preview");
         _previewEdit = CreateEdit(IdPreviewEdit, multiline: true, readOnly: true);
         _saveButton = CreateButton("Save", IdSaveButton);
+        if (_createRuleMode)
+        {
+            _addNewStageButton = CreateButton("Add New Stage", IdAddNewStageButton);
+            _undoStageButton = CreateButton("Undo Stage", IdUndoStageButton);
+        }
+
         _cancelButton = CreateButton("Cancel", IdCancelButton);
 
         SetButtonChecked(_regexRadio, _mode == DisplayParserMode.Regex);
@@ -266,6 +367,7 @@ internal sealed class ParserStageEditorWindow
         LoadModeDraft(_mode);
 
         UpdateModeUi();
+        UpdateUndoStageButton();
         UpdatePreview();
     }
 
@@ -312,6 +414,18 @@ internal sealed class ParserStageEditorWindow
             return;
         }
 
+        if (_createRuleMode && notification == NativeMethods.BN_CLICKED && id == IdAddNewStageButton)
+        {
+            AddNewStage();
+            return;
+        }
+
+        if (_createRuleMode && notification == NativeMethods.BN_CLICKED && id == IdUndoStageButton)
+        {
+            UndoStage();
+            return;
+        }
+
         if (notification == NativeMethods.BN_CLICKED && id == IdCancelButton)
         {
             Close();
@@ -320,6 +434,12 @@ internal sealed class ParserStageEditorWindow
 
     private void SaveStage()
     {
+        if (_createRuleMode)
+        {
+            SaveCreatedRule();
+            return;
+        }
+
         DisplayParserStage stage = CreateStageFromControls();
 
         try
@@ -334,6 +454,58 @@ internal sealed class ParserStageEditorWindow
 
         SavedStage = stage;
         Close();
+    }
+
+    private void SaveCreatedRule()
+    {
+        if (!TryCreateRuleFromControls(out DisplayParserRule? rule))
+        {
+            return;
+        }
+
+        DisplayParserRule createdRule = rule!;
+        string? error = _saveCreatedRule?.Invoke(createdRule);
+        if (!string.IsNullOrEmpty(error))
+        {
+            ShowError(error);
+            return;
+        }
+
+        SavedRule = createdRule;
+        Close();
+    }
+
+    private void AddNewStage()
+    {
+        if (!TryCreateValidatedStage(out DisplayParserStage? stage))
+        {
+            return;
+        }
+
+        _previousStages.Add(stage!.Clone());
+        _drafts.Clear();
+        _mode = DisplayParserMode.Json;
+        SetButtonChecked(_regexRadio, false);
+        SetButtonChecked(_regexReplaceRadio, false);
+        SetButtonChecked(_jsonRadio, true);
+        LoadModeDraft(_mode);
+        UpdateModeUi();
+        UpdateUndoStageButton();
+        UpdatePreview();
+    }
+
+    private void UndoStage()
+    {
+        if (_previousStages.Count == 0)
+        {
+            return;
+        }
+
+        DisplayParserStage stage = _previousStages[^1];
+        _previousStages.RemoveAt(_previousStages.Count - 1);
+        LoadStageIntoControls(stage);
+        UpdateUndoStageButton();
+        UpdatePreview();
     }
 
     private void Close()
@@ -351,7 +523,7 @@ internal sealed class ParserStageEditorWindow
             return;
         }
 
-        int width = Math.Max(520, client.right - client.left);
+        int width = Math.Max(_createRuleMode ? 620 : 520, client.right - client.left);
         int height = Math.Max(560, client.bottom - client.top);
         const int margin = 16;
         const int labelWidth = 78;
@@ -363,6 +535,13 @@ internal sealed class ParserStageEditorWindow
         bool hasTemplate = _mode is DisplayParserMode.Regex or DisplayParserMode.RegexReplace;
         int ruleHeight = hasTemplate ? 72 : 90;
         int templateHeight = 56;
+
+        if (_createRuleMode)
+        {
+            Move(_nameLabel, margin, y + 4, labelWidth, rowHeight);
+            Move(_nameEdit, inputLeft, y, inputWidth, rowHeight);
+            y += rowHeight + gap;
+        }
 
         Move(_typeLabel, margin, y + 4, labelWidth, rowHeight);
         Move(_regexRadio, inputLeft, y, 76, rowHeight);
@@ -399,13 +578,22 @@ internal sealed class ParserStageEditorWindow
         y += previewHeight + gap;
 
         Move(_cancelButton, width - margin - 90, y, 90, rowHeight);
-        Move(_saveButton, width - margin - 190, y, 90, rowHeight);
+        if (_createRuleMode)
+        {
+            Move(_addNewStageButton, width - margin - 220, y, 120, rowHeight);
+            Move(_undoStageButton, width - margin - 320, y, 90, rowHeight);
+            Move(_saveButton, width - margin - 420, y, 90, rowHeight);
+        }
+        else
+        {
+            Move(_saveButton, width - margin - 190, y, 90, rowHeight);
+        }
     }
 
     private static void SetMinimumWindowSize(IntPtr lParam)
     {
         NativeMethods.MINMAXINFO info = Marshal.PtrToStructure<NativeMethods.MINMAXINFO>(lParam);
-        info.ptMinTrackSize.x = 560;
+        info.ptMinTrackSize.x = 660;
         info.ptMinTrackSize.y = 600;
         Marshal.StructureToPtr(info, lParam, fDeleteOld: false);
     }
@@ -435,6 +623,28 @@ internal sealed class ParserStageEditorWindow
         {
             _updatingModeControls = false;
         }
+    }
+
+    private void LoadStageIntoControls(DisplayParserStage stage)
+    {
+        _drafts.Clear();
+        _drafts[stage.Mode] = new ParserStageDraft(stage.Rule, stage.Template);
+        _mode = stage.Mode;
+        SetButtonChecked(_regexRadio, _mode == DisplayParserMode.Regex);
+        SetButtonChecked(_regexReplaceRadio, _mode == DisplayParserMode.RegexReplace);
+        SetButtonChecked(_jsonRadio, _mode == DisplayParserMode.Json);
+        LoadModeDraft(_mode);
+        UpdateModeUi();
+    }
+
+    private void UpdateUndoStageButton()
+    {
+        if (!_createRuleMode || _undoStageButton == IntPtr.Zero)
+        {
+            return;
+        }
+
+        NativeMethods.EnableWindow(_undoStageButton, _previousStages.Count > 0);
     }
 
     private ParserStageDraft CreateDefaultDraft(DisplayParserMode mode)
@@ -488,13 +698,13 @@ internal sealed class ParserStageEditorWindow
             catch (ArgumentException ex)
             {
                 NativeMethods.SetWindowTextW(_previewEdit, ex.Message);
-                _onPreviewChanged?.Invoke(null);
+                PublishInvalidPreview();
                 return;
             }
 
             string output = EvaluateLines(input, new DisplayParserRule { Stages = new List<DisplayParserStage> { stage } });
             NativeMethods.SetWindowTextW(_previewEdit, output);
-            _onPreviewChanged?.Invoke(stage.Clone());
+            PublishValidPreview(stage);
         }
         finally
         {
@@ -513,6 +723,104 @@ internal sealed class ParserStageEditorWindow
             Rule = rawRule,
             Template = _mode is DisplayParserMode.Regex or DisplayParserMode.RegexReplace ? rawTemplate : string.Empty
         };
+    }
+
+    private bool TryCreateRuleFromControls(out DisplayParserRule? rule)
+    {
+        rule = null;
+        string name = GetWindowText(_nameEdit).Trim();
+        if (name.Length == 0)
+        {
+            ShowError("Name is required.");
+            return false;
+        }
+
+        if (_existingRules is not null)
+        {
+            for (int i = 0; i < _existingRules.Count; i++)
+            {
+                bool isCurrentRule = _originalRuleName is not null &&
+                    string.Equals(_existingRules[i].Name, _originalRuleName, StringComparison.OrdinalIgnoreCase);
+                if (!isCurrentRule && string.Equals(_existingRules[i].Name, name, StringComparison.OrdinalIgnoreCase))
+                {
+                    ShowError("A rule with this name already exists.");
+                    return false;
+                }
+            }
+        }
+
+        if (!TryCreateValidatedStage(out DisplayParserStage? currentStage))
+        {
+            return false;
+        }
+
+        List<DisplayParserStage> stages = CloneStages(_previousStages);
+        stages.Add(currentStage!.Clone());
+        rule = new DisplayParserRule
+        {
+            Name = name,
+            Stages = stages,
+            Sample = _sample
+        };
+
+        try
+        {
+            DisplayParserEvaluator.ValidateRule(rule);
+        }
+        catch (ArgumentException ex)
+        {
+            ShowError(ex.Message);
+            rule = null;
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool TryCreateValidatedStage(out DisplayParserStage? stage)
+    {
+        stage = CreateStageFromControls();
+        try
+        {
+            DisplayParserEvaluator.ValidateStage(stage);
+            return true;
+        }
+        catch (ArgumentException ex)
+        {
+            ShowError(ex.Message);
+            stage = null;
+            return false;
+        }
+    }
+
+    private void PublishInvalidPreview()
+    {
+        if (_createRuleMode)
+        {
+            _onRulePreviewChanged?.Invoke(null);
+        }
+        else
+        {
+            _onPreviewChanged?.Invoke(null);
+        }
+    }
+
+    private void PublishValidPreview(DisplayParserStage stage)
+    {
+        if (!_createRuleMode)
+        {
+            _onPreviewChanged?.Invoke(stage.Clone());
+            return;
+        }
+
+        List<DisplayParserStage> stages = CloneStages(_previousStages);
+        stages.Add(stage.Clone());
+        _onRulePreviewChanged?.Invoke(new DisplayParserRule
+        {
+            Name = GetWindowText(_nameEdit),
+            Stages = stages,
+            Sample = _sample
+        });
     }
 
     private static string EvaluateLines(string text, DisplayParserRule rule)
