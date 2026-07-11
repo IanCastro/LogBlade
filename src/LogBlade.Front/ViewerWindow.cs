@@ -695,6 +695,11 @@ internal sealed class ViewerWindow
     private void SetParserComboSelection(int ruleIndex)
     {
         int comboIndex = ruleIndex >= 0 ? ruleIndex + 1 : 0;
+        SetParserComboIndex(comboIndex);
+    }
+
+    private void SetParserComboIndex(int comboIndex)
+    {
         NativeMethods.SendMessageW(_parserCombo, NativeMethods.CB_SETCURSEL, new IntPtr(comboIndex), IntPtr.Zero);
     }
 
@@ -748,13 +753,14 @@ internal sealed class ViewerWindow
     {
         if (_configurationWindowOpen)
         {
-            SetParserComboSelection(_selectedParserRuleIndex);
             return;
         }
 
         string? activeRuleName = GetSelectedParserRule()?.Name;
         RuleManagerWindow manager = new(_parserRules, activeRuleName, CreateDefaultParserRuleSample(), ApplyParserPreview);
         string? selectedRuleName;
+        SetParserComboIndex(_parserRules.Count + 1);
+        NativeMethods.EnableWindow(_parserCombo, false);
         _configurationWindowOpen = true;
         try
         {
@@ -763,6 +769,7 @@ internal sealed class ViewerWindow
         finally
         {
             _configurationWindowOpen = false;
+            NativeMethods.EnableWindow(_parserCombo, true);
             _parserPreviewActive = false;
             _previewParserRule = null;
         }
