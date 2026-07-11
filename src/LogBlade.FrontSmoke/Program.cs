@@ -31,6 +31,7 @@ internal static class Program
             Run("word boundary", () => RunWordAcrossSegmentBoundary(tempRoot));
             Run("word tokens", RunWordTokenSelection);
             Run("word drag snapping", RunWordDragSnapping);
+            Run("non-word double click", RunNonWordDoubleClickSelection);
             Console.WriteLine("Front smoke tests passed.");
             return 0;
         }
@@ -813,7 +814,13 @@ internal static class Program
             "hello world,test",
             "hello",
             ",",
-            "hello world");
+            "hello world,");
+        AssertWordDragSelection(
+            "word drag immediate space right",
+            "hello world",
+            "hello",
+            " ",
+            "hello ");
         AssertWordDragSelection(
             "word drag log token",
             "Category=ATG.PricingEngine.Services.SecurityMaster Level=Info",
@@ -826,6 +833,43 @@ internal static class Program
             "hello",
             "ell",
             "hello");
+        AssertNonWordDragSelection(
+            "non-word drag right",
+            "user=ana",
+            "=",
+            "ana",
+            "=ana");
+        AssertNonWordDragSelection(
+            "non-word drag left",
+            "user=ana",
+            "=",
+            "ser",
+            "user=");
+        AssertNonWordDragSelection(
+            "non-word space drag right",
+            "hello world",
+            " ",
+            "or",
+            " world");
+        AssertNonWordDragSelection(
+            "non-word drag delimiter right",
+            "user=ana,bob",
+            "=",
+            ",",
+            "=ana,");
+    }
+
+    private static void RunNonWordDoubleClickSelection()
+    {
+        AssertSingleCharacterSelection("non-word equals", "user=ana", "=", "=");
+        AssertSingleCharacterSelection("non-word space", "hello world", " ", " ");
+        AssertSingleCharacterSelection("non-word quote", "{\"Level\":\"Info\"}", "\"", "\"");
+        AssertSingleCharacterSelection("non-word comma", "a,b", ",", ",");
+        AssertSingleCharacterSelectionAtIndex("non-word end clamps previous", "abc", 3, "c");
+        AssertEqual(
+            "non-word empty",
+            ViewportPaneWindow.TryGetSingleCharacterSelection(string.Empty, 0, out _, out _),
+            false);
     }
 
     private static DisplayParserRule JsonParser(string template) => new()
@@ -921,6 +965,51 @@ internal static class Program
         ViewportPaneWindow.SnapWordSelectionForDrag(text, wordStart, wordEnd, focusIndex, out int anchor, out int focus);
         int start = Math.Min(anchor, focus);
         int end = Math.Max(anchor, focus);
+        AssertEqual(name, text.Substring(start, end - start), expected);
+    }
+
+    private static void AssertNonWordDragSelection(string name, string text, string initialNeedle, string focusNeedle, string expected)
+    {
+        int initialIndex = text.IndexOf(initialNeedle, StringComparison.Ordinal);
+        if (initialIndex < 0)
+        {
+            throw new InvalidOperationException(name + ": initial needle not found.");
+        }
+
+        int focusIndex = text.IndexOf(focusNeedle, StringComparison.Ordinal);
+        if (focusIndex < 0)
+        {
+            throw new InvalidOperationException(name + ": focus needle not found.");
+        }
+
+        if (!ViewportPaneWindow.TryGetSingleCharacterSelection(text, initialIndex, out int charStart, out int charEnd))
+        {
+            throw new InvalidOperationException(name + ": initial character not found.");
+        }
+
+        ViewportPaneWindow.SnapWordSelectionForDrag(text, charStart, charEnd, focusIndex, out int anchor, out int focus);
+        int start = Math.Min(anchor, focus);
+        int end = Math.Max(anchor, focus);
+        AssertEqual(name, text.Substring(start, end - start), expected);
+    }
+
+    private static void AssertSingleCharacterSelection(string name, string text, string clickNeedle, string expected)
+    {
+        int charIndex = text.IndexOf(clickNeedle, StringComparison.Ordinal);
+        if (charIndex < 0)
+        {
+            throw new InvalidOperationException(name + ": click needle not found.");
+        }
+
+        AssertSingleCharacterSelectionAtIndex(name, text, charIndex, expected);
+    }
+
+    private static void AssertSingleCharacterSelectionAtIndex(string name, string text, int charIndex, string expected)
+    {
+        AssertEqual(
+            name + " selected",
+            ViewportPaneWindow.TryGetSingleCharacterSelection(text, charIndex, out int start, out int end),
+            true);
         AssertEqual(name, text.Substring(start, end - start), expected);
     }
 
