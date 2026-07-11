@@ -29,6 +29,7 @@ $nativeAotSucceeded = $false
 if ($LASTEXITCODE -eq 0) {
     $nativeAotSucceeded = $true
     Remove-Item -Recurse -Force $publish -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path $publish | Out-Null
     Move-Item -Force -Path (Join-Path $aotPublish '*') -Destination $publish
     Remove-Item -Recurse -Force $aotPublish -ErrorAction SilentlyContinue
 }

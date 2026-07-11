@@ -3,16 +3,9 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 
 internal static class DisplayParserRuleStore
 {
-    private static readonly JsonSerializerOptions s_jsonOptions = new()
-    {
-        WriteIndented = true,
-        Converters = { new JsonStringEnumConverter() }
-    };
-
     public static string StorePath => Path.Combine(FindRepoRoot(), ".local", "parser-rules.json");
 
     public static List<DisplayParserRule> Load()
@@ -26,7 +19,7 @@ internal static class DisplayParserRuleStore
         try
         {
             string json = File.ReadAllText(path, Encoding.UTF8);
-            List<DisplayParserRule> rules = JsonSerializer.Deserialize<List<DisplayParserRule>>(json, s_jsonOptions) ?? new List<DisplayParserRule>();
+            List<DisplayParserRule> rules = JsonSerializer.Deserialize(json, LogBladeJsonSerializerContext.Default.ListDisplayParserRule) ?? new List<DisplayParserRule>();
             rules.RemoveAll(rule => rule.Stages is null || rule.Stages.Count == 0);
             return rules;
         }
@@ -40,7 +33,7 @@ internal static class DisplayParserRuleStore
     {
         string path = StorePath;
         Directory.CreateDirectory(Path.GetDirectoryName(path) ?? ".");
-        string json = JsonSerializer.Serialize(rules, s_jsonOptions);
+        string json = JsonSerializer.Serialize(new List<DisplayParserRule>(rules), LogBladeJsonSerializerContext.Default.ListDisplayParserRule);
         File.WriteAllText(path, json, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
     }
 
