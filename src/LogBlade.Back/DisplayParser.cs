@@ -212,6 +212,11 @@ public static class DisplayParserEvaluator
                 throw new ArgumentException("Regex error: " + ex.Message, nameof(stage), ex);
             }
 
+            if (stage.Mode == DisplayParserMode.RegexReplace)
+            {
+                _ = DecodeRegexReplacementEscapes(stage.Template);
+            }
+
             return;
         }
 
@@ -318,7 +323,70 @@ public static class DisplayParserEvaluator
     private static string EvaluateRegexReplace(string pattern, string? replacement, string input)
     {
         Regex regex = new(pattern, RegexOptions.CultureInvariant);
-        return regex.Replace(input, replacement ?? string.Empty);
+        return regex.Replace(input, DecodeRegexReplacementEscapes(replacement ?? string.Empty));
+    }
+
+    private static string DecodeRegexReplacementEscapes(string replacement)
+    {
+        if (replacement.IndexOf('\\') < 0)
+        {
+            return replacement;
+        }
+
+        StringBuilder output = new(replacement.Length);
+        for (int i = 0; i < replacement.Length; i++)
+        {
+            char current = replacement[i];
+            if (current != '\\' || i + 1 >= replacement.Length)
+            {
+                output.Append(current);
+                continue;
+            }
+
+            char escaped = replacement[++i];
+            switch (escaped)
+            {
+                case 'r':
+                    output.Append('\r');
+                    break;
+                case 'n':
+                    output.Append('\n');
+                    break;
+                case 't':
+                    output.Append('\t');
+                    break;
+                case '\\':
+                    output.Append('\\');
+                    break;
+                case 'u':
+                    if (i + 4 >= replacement.Length)
+                    {
+                        throw new ArgumentException("Replacement Unicode escape must use four hex digits.");
+                    }
+
+                    int value = 0;
+                    for (int digit = 0; digit < 4; digit++)
+                    {
+                        int hex = GetHexValue(replacement[i + 1 + digit]);
+                        if (hex < 0)
+                        {
+                            throw new ArgumentException("Replacement Unicode escape contains invalid hex digits.");
+                        }
+
+                        value = (value << 4) | hex;
+                    }
+
+                    output.Append((char)value);
+                    i += 4;
+                    break;
+                default:
+                    output.Append('\\');
+                    output.Append(escaped);
+                    break;
+            }
+        }
+
+        return output.ToString();
     }
 
     private static string EvaluateJson(string template, string input)
@@ -676,6 +744,26 @@ public static class DisplayParserEvaluator
     {
         return string.Equals(value, "upper", StringComparison.OrdinalIgnoreCase)
             || string.Equals(value, "lower", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static int GetHexValue(char value)
+    {
+        if (value is >= '0' and <= '9')
+        {
+            return value - '0';
+        }
+
+        if (value is >= 'a' and <= 'f')
+        {
+            return value - 'a' + 10;
+        }
+
+        if (value is >= 'A' and <= 'F')
+        {
+            return value - 'A' + 10;
+        }
+
+        return -1;
     }
 
     private static string GetGroupValue(Group group)

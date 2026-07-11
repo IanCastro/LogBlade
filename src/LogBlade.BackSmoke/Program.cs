@@ -44,9 +44,13 @@ internal static class Program
             RunDisplayParserRegexReplacePreservesSpaces();
             RunDisplayParserRegexReplaceAllowsSpacePattern();
             RunDisplayParserRegexReplaceGroups();
+            RunDisplayParserRegexReplaceReplacementUnicodeEscape();
+            RunDisplayParserRegexReplaceReplacementEscapes();
+            RunDisplayParserRegexReplacePreservesUnknownReplacementEscape();
             RunDisplayParserRegexReplaceNoMatchAllowsNextStage();
             RunDisplayParserRegexReplaceThenJsonTemplate();
             RunDisplayParserRegexReplaceInvalidRegexValidation();
+            RunDisplayParserRegexReplaceInvalidReplacementEscapeValidation();
             RunMemoryContentSource();
             RunSearchUsesDisplayParserLiteral(tempRoot);
             RunSearchUsesDisplayParserRegexCaptures(tempRoot);
@@ -495,6 +499,27 @@ internal static class Program
         AssertEqual("display parser regex replace groups", DisplayParserEvaluator.EvaluateOrOriginal(rule, "user=ana id=42"), "user:ana id:42");
     }
 
+    private static void RunDisplayParserRegexReplaceReplacementUnicodeEscape()
+    {
+        DisplayParserRule rule = ParserRule(RegexReplaceStage(@"\|", @"\u0001"));
+
+        AssertEqual("display parser regex replace replacement unicode escape", DisplayParserEvaluator.EvaluateOrOriginal(rule, "a|b"), "a\u0001b");
+    }
+
+    private static void RunDisplayParserRegexReplaceReplacementEscapes()
+    {
+        DisplayParserRule rule = ParserRule(RegexReplaceStage(@"x", @"\t\n\r\\"));
+
+        AssertEqual("display parser regex replace replacement escapes", DisplayParserEvaluator.EvaluateOrOriginal(rule, "x"), "\t\n\r\\");
+    }
+
+    private static void RunDisplayParserRegexReplacePreservesUnknownReplacementEscape()
+    {
+        DisplayParserRule rule = ParserRule(RegexReplaceStage(@"x", @"\q"));
+
+        AssertEqual("display parser regex replace preserves unknown replacement escape", DisplayParserEvaluator.EvaluateOrOriginal(rule, "x"), @"\q");
+    }
+
     private static void RunDisplayParserRegexReplaceNoMatchAllowsNextStage()
     {
         DisplayParserRule rule = ParserRule(
@@ -525,6 +550,20 @@ internal static class Program
         }
 
         throw new InvalidOperationException("display parser regex replace invalid regex: expected validation failure.");
+    }
+
+    private static void RunDisplayParserRegexReplaceInvalidReplacementEscapeValidation()
+    {
+        try
+        {
+            DisplayParserEvaluator.ValidateStage(RegexReplaceStage(@"x", @"\u00ZZ"));
+        }
+        catch (ArgumentException ex) when (ex.Message.Contains("Unicode escape", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        throw new InvalidOperationException("display parser regex replace invalid replacement escape: expected validation failure.");
     }
 
     private static void RunSearchUsesDisplayParserLiteral(string tempRoot)
