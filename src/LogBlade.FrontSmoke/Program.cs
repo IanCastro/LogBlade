@@ -32,6 +32,7 @@ internal static class Program
             Run("word tokens", RunWordTokenSelection);
             Run("word drag snapping", RunWordDragSnapping);
             Run("non-word double click", RunNonWordDoubleClickSelection);
+            Run("display text normalization", RunDisplayTextNormalization);
             Console.WriteLine("Front smoke tests passed.");
             return 0;
         }
@@ -870,6 +871,21 @@ internal static class Program
             "non-word empty",
             ViewportPaneWindow.TryGetSingleCharacterSelection(string.Empty, 0, out _, out _),
             false);
+    }
+
+    private static void RunDisplayTextNormalization()
+    {
+        AssertEqual("display normalization valid text", ViewportPaneWindow.NormalizeDisplayText("abc-123"), "abc-123");
+        AssertEqual("display normalization tab", ViewportPaneWindow.NormalizeDisplayText("a\tb"), "a b");
+        AssertEqual("display normalization replacement", ViewportPaneWindow.NormalizeDisplayText("a\uFFFDb"), "a□b");
+        AssertEqual("display normalization nul", ViewportPaneWindow.NormalizeDisplayText("a\0b"), "a□b");
+        AssertEqual("display normalization control", ViewportPaneWindow.NormalizeDisplayText("a\u0001b"), "a□b");
+        AssertEqual("display normalization high surrogate", ViewportPaneWindow.NormalizeDisplayText("a\uD800b"), "a□b");
+        AssertEqual("display normalization low surrogate", ViewportPaneWindow.NormalizeDisplayText("a\uDC00b"), "a□b");
+        string validSurrogatePair = "a\uD83D\uDE00b";
+        string normalizedPair = ViewportPaneWindow.NormalizeDisplayText(validSurrogatePair);
+        AssertEqual("display normalization valid surrogate pair", normalizedPair, validSurrogatePair);
+        AssertEqual("display normalization length", ViewportPaneWindow.NormalizeDisplayText("a\t\uFFFD\u0001\uD800b").Length, 6);
     }
 
     private static DisplayParserRule JsonParser(string template) => new()

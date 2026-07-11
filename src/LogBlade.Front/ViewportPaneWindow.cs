@@ -5333,8 +5333,64 @@ internal sealed class ViewportPaneWindow : IDisposable
         return value.Substring(0, widthChars - 1) + ">";
     }
 
-    private static string NormalizeDisplayText(string value) =>
-        value.IndexOf('\t') >= 0 ? value.Replace('\t', ' ') : value;
+    internal static string NormalizeDisplayText(string value)
+    {
+        int firstProblemIndex = -1;
+        for (int i = 0; i < value.Length; i++)
+        {
+            if (NeedsDisplayReplacement(value, i))
+            {
+                firstProblemIndex = i;
+                break;
+            }
+        }
+
+        if (firstProblemIndex < 0)
+        {
+            return value;
+        }
+
+        char[] normalized = value.ToCharArray();
+        for (int i = firstProblemIndex; i < normalized.Length; i++)
+        {
+            char current = normalized[i];
+            if (current == '\t')
+            {
+                normalized[i] = ' ';
+            }
+            else if (current == '\uFFFD' || IsIsolatedSurrogate(normalized, i) || char.IsControl(current))
+            {
+                normalized[i] = '□';
+            }
+        }
+
+        return new string(normalized);
+    }
+
+    private static bool NeedsDisplayReplacement(string value, int index)
+    {
+        char current = value[index];
+        return current == '\t' ||
+            current == '\uFFFD' ||
+            char.IsControl(current) ||
+            IsIsolatedSurrogate(value, index);
+    }
+
+    private static bool IsIsolatedSurrogate(ReadOnlySpan<char> value, int index)
+    {
+        char current = value[index];
+        if (char.IsHighSurrogate(current))
+        {
+            return index + 1 >= value.Length || !char.IsLowSurrogate(value[index + 1]);
+        }
+
+        if (char.IsLowSurrogate(current))
+        {
+            return index == 0 || !char.IsHighSurrogate(value[index - 1]);
+        }
+
+        return false;
+    }
 
     private static bool Intersects(NativeMethods.RECT a, NativeMethods.RECT b)
     {
