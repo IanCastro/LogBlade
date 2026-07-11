@@ -48,6 +48,12 @@ internal sealed class ViewportPaneWindow : IDisposable
         Column
     }
 
+    private enum TextSelectionGranularity
+    {
+        Character,
+        Word
+    }
+
     private readonly record struct GridCellKey(ViewportRowSelectionKey RowKey, int ColumnIndex);
 
     private const int WheelLinesPerNotch = 3;
@@ -139,6 +145,9 @@ internal sealed class ViewportPaneWindow : IDisposable
     private int _textSelectionColumnIndex = -1;
     private int _textSelectionAnchorChar = -1;
     private int _textSelectionFocusChar = -1;
+    private TextSelectionGranularity _textSelectionGranularity;
+    private int _textSelectionWordStart = -1;
+    private int _textSelectionWordEnd = -1;
     private bool _textSelectionDragThresholdArmed;
     private int _textSelectionDragStartX;
     private int _textSelectionDragStartY;
@@ -1126,7 +1135,17 @@ internal sealed class ViewportPaneWindow : IDisposable
             int globalCharIndex = Math.Clamp(segmentRange.Start + localCharIndex, segmentRange.Start, segmentRange.Start + segmentRange.Length);
             if (TryGetWordSelection(context.Text, globalCharIndex, out int wordStart, out int wordEnd))
             {
-                StartLogicalTextSelection(rowIndex, segmentKey, context, wordStart, wordEnd, captureMouse: true, columnIndex: -1);
+                StartLogicalTextSelection(
+                    rowIndex,
+                    segmentKey,
+                    context,
+                    wordStart,
+                    wordEnd,
+                    captureMouse: true,
+                    columnIndex: -1,
+                    TextSelectionGranularity.Word,
+                    wordStart,
+                    wordEnd);
             }
             else
             {
@@ -1137,7 +1156,16 @@ internal sealed class ViewportPaneWindow : IDisposable
         {
             if (TryGetWordSelection(text, localCharIndex, out int wordStart, out int wordEnd))
             {
-                StartTextSelection(rowIndex, rowKey, wordStart, wordEnd, captureMouse: true, columnIndex: -1);
+                StartTextSelection(
+                    rowIndex,
+                    rowKey,
+                    wordStart,
+                    wordEnd,
+                    captureMouse: true,
+                    columnIndex: -1,
+                    TextSelectionGranularity.Word,
+                    wordStart,
+                    wordEnd);
             }
             else
             {
@@ -1177,7 +1205,17 @@ internal sealed class ViewportPaneWindow : IDisposable
             int globalCharIndex = Math.Clamp(segmentRange.Start + localCharIndex, segmentRange.Start, segmentRange.Start + segmentRange.Length);
             if (TryGetWordSelection(context.Text, globalCharIndex, out int wordStart, out int wordEnd))
             {
-                StartLogicalTextSelection(rowIndex, segmentKey, context, wordStart, wordEnd, captureMouse: true, columnIndex: columnIndex);
+                StartLogicalTextSelection(
+                    rowIndex,
+                    segmentKey,
+                    context,
+                    wordStart,
+                    wordEnd,
+                    captureMouse: true,
+                    columnIndex: columnIndex,
+                    TextSelectionGranularity.Word,
+                    wordStart,
+                    wordEnd);
             }
             else
             {
@@ -1188,7 +1226,16 @@ internal sealed class ViewportPaneWindow : IDisposable
         {
             if (TryGetWordSelection(text, localCharIndex, out int wordStart, out int wordEnd))
             {
-                StartTextSelection(rowIndex, rowKey, wordStart, wordEnd, captureMouse: true, columnIndex: columnIndex);
+                StartTextSelection(
+                    rowIndex,
+                    rowKey,
+                    wordStart,
+                    wordEnd,
+                    captureMouse: true,
+                    columnIndex: columnIndex,
+                    TextSelectionGranularity.Word,
+                    wordStart,
+                    wordEnd);
             }
             else
             {
@@ -1296,22 +1343,19 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private void StartTextSelection(int rowIndex, ViewportRowSelectionKey rowKey, int charIndex, bool captureMouse, int columnIndex)
     {
-        _textSelectionDragThresholdArmed = false;
-        _isSelectingText = true;
-        _textSelectionDataIndex = rowIndex;
-        _textSelectionColumnIndex = columnIndex;
-        _textSelectionRowKey = rowKey;
-        _textSelectionSegmentKey = null;
-        _textSelectionContext = null;
-        _textSelectionAnchorChar = charIndex;
-        _textSelectionFocusChar = charIndex;
-        if (captureMouse)
-        {
-            NativeMethods.SetCapture(_hwnd);
-        }
+        StartTextSelection(rowIndex, rowKey, charIndex, charIndex, captureMouse, columnIndex);
     }
 
-    private void StartTextSelection(int rowIndex, ViewportRowSelectionKey rowKey, int anchorChar, int focusChar, bool captureMouse, int columnIndex)
+    private void StartTextSelection(
+        int rowIndex,
+        ViewportRowSelectionKey rowKey,
+        int anchorChar,
+        int focusChar,
+        bool captureMouse,
+        int columnIndex,
+        TextSelectionGranularity granularity = TextSelectionGranularity.Character,
+        int wordStart = -1,
+        int wordEnd = -1)
     {
         _textSelectionDragThresholdArmed = false;
         _isSelectingText = true;
@@ -1322,6 +1366,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         _textSelectionContext = null;
         _textSelectionAnchorChar = anchorChar;
         _textSelectionFocusChar = focusChar;
+        SetTextSelectionGranularity(granularity, wordStart, wordEnd);
         if (captureMouse)
         {
             NativeMethods.SetCapture(_hwnd);
@@ -1335,7 +1380,10 @@ internal sealed class ViewportPaneWindow : IDisposable
         int anchorChar,
         int focusChar,
         bool captureMouse,
-        int columnIndex)
+        int columnIndex,
+        TextSelectionGranularity granularity = TextSelectionGranularity.Character,
+        int wordStart = -1,
+        int wordEnd = -1)
     {
         _textSelectionDragThresholdArmed = false;
         _isSelectingText = true;
@@ -1346,10 +1394,18 @@ internal sealed class ViewportPaneWindow : IDisposable
         _textSelectionContext = context;
         _textSelectionAnchorChar = anchorChar;
         _textSelectionFocusChar = focusChar;
+        SetTextSelectionGranularity(granularity, wordStart, wordEnd);
         if (captureMouse)
         {
             NativeMethods.SetCapture(_hwnd);
         }
+    }
+
+    private void SetTextSelectionGranularity(TextSelectionGranularity granularity, int wordStart = -1, int wordEnd = -1)
+    {
+        _textSelectionGranularity = granularity;
+        _textSelectionWordStart = granularity == TextSelectionGranularity.Word ? wordStart : -1;
+        _textSelectionWordEnd = granularity == TextSelectionGranularity.Word ? wordEnd : -1;
     }
 
     internal static bool TryGetWordSelection(string text, int charIndex, out int start, out int end)
@@ -1383,6 +1439,68 @@ internal sealed class ViewportPaneWindow : IDisposable
         char.IsLetterOrDigit(value) ||
         value is '_' or '.' or '-' or '/' or '\\' or ':' or '@';
 
+    internal static void SnapWordSelectionForDrag(
+        string text,
+        int wordStart,
+        int wordEnd,
+        int rawFocus,
+        out int anchor,
+        out int focus)
+    {
+        int length = text.Length;
+        int start = Math.Clamp(wordStart, 0, length);
+        int end = Math.Clamp(wordEnd, start, length);
+        int raw = Math.Clamp(rawFocus, 0, length);
+        if (start >= end)
+        {
+            anchor = raw;
+            focus = raw;
+            return;
+        }
+
+        if (raw < start)
+        {
+            anchor = end;
+            focus = SnapWordDragBoundary(text, raw, movingLeft: true);
+            return;
+        }
+
+        if (raw > end)
+        {
+            anchor = start;
+            focus = SnapWordDragBoundary(text, raw, movingLeft: false);
+            return;
+        }
+
+        anchor = start;
+        focus = end;
+    }
+
+    private static int SnapWordDragBoundary(string text, int rawFocus, bool movingLeft)
+    {
+        int raw = Math.Clamp(rawFocus, 0, text.Length);
+        if (raw >= text.Length)
+        {
+            return text.Length;
+        }
+
+        return TryGetWordSelection(text, raw, out int wordStart, out int wordEnd)
+            ? movingLeft ? wordStart : wordEnd
+            : raw;
+    }
+
+    private int ApplyTextSelectionGranularity(string text, int rawFocus)
+    {
+        if (_textSelectionGranularity != TextSelectionGranularity.Word)
+        {
+            return rawFocus;
+        }
+
+        SnapWordSelectionForDrag(text, _textSelectionWordStart, _textSelectionWordEnd, rawFocus, out int anchor, out int focus);
+        _textSelectionAnchorChar = anchor;
+        return focus;
+    }
+
     private void UpdateTextSelection(int x, int y)
     {
         if (IsTextSelectionMouseMoveInsideDragThreshold(x, y))
@@ -1407,10 +1525,11 @@ internal sealed class ViewportPaneWindow : IDisposable
 
             _textSelectionDataIndex = logicalRowIndex;
             _textSelectionSegmentKey = focusSegment;
-            _textSelectionFocusChar = Math.Clamp(
+            int rawFocusChar = Math.Clamp(
                 segmentRange.Start + localCharIndex,
                 segmentRange.Start,
                 segmentRange.Start + segmentRange.Length);
+            _textSelectionFocusChar = ApplyTextSelectionGranularity(context.Text, rawFocusChar);
             NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
             return;
         }
@@ -1443,11 +1562,13 @@ internal sealed class ViewportPaneWindow : IDisposable
                 return;
             }
 
-            _textSelectionFocusChar = GetGridCellTextCharIndexFromX(x, cellRect, widthChars, cellText);
+            int rawFocusChar = GetGridCellTextCharIndexFromX(x, cellRect, widthChars, cellText);
+            _textSelectionFocusChar = ApplyTextSelectionGranularity(cellText, rawFocusChar);
         }
         else
         {
-            _textSelectionFocusChar = GetTextCharIndexFromX(x, rows[rowIndex]);
+            int rawFocusChar = GetTextCharIndexFromX(x, rows[rowIndex]);
+            _textSelectionFocusChar = ApplyTextSelectionGranularity(rows[rowIndex], rawFocusChar);
         }
 
         NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
@@ -2805,6 +2926,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         _textSelectionColumnIndex = -1;
         _textSelectionAnchorChar = -1;
         _textSelectionFocusChar = -1;
+        SetTextSelectionGranularity(TextSelectionGranularity.Character);
         _cellSelectionAnchorDataIndex = -1;
         _cellSelectionFocusDataIndex = -1;
         _gridAxisAnchorColumn = -1;
@@ -2844,6 +2966,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         _textSelectionColumnIndex = -1;
         _textSelectionAnchorChar = -1;
         _textSelectionFocusChar = -1;
+        SetTextSelectionGranularity(TextSelectionGranularity.Character);
         if (hadSelection && invalidate && _hwnd != IntPtr.Zero)
         {
             NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);

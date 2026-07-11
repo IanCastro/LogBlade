@@ -30,6 +30,7 @@ internal static class Program
             Run("zero", () => RunZeroProjection(tempRoot));
             Run("word boundary", () => RunWordAcrossSegmentBoundary(tempRoot));
             Run("word tokens", RunWordTokenSelection);
+            Run("word drag snapping", RunWordDragSnapping);
             Console.WriteLine("Front smoke tests passed.");
             return 0;
         }
@@ -793,6 +794,40 @@ internal static class Program
             false);
     }
 
+    private static void RunWordDragSnapping()
+    {
+        AssertWordDragSelection(
+            "word drag right",
+            "hello world test",
+            "hello",
+            "or",
+            "hello world");
+        AssertWordDragSelection(
+            "word drag left",
+            "hello world test",
+            "world",
+            "ell",
+            "hello world");
+        AssertWordDragSelection(
+            "word drag delimiter right",
+            "hello world,test",
+            "hello",
+            ",",
+            "hello world");
+        AssertWordDragSelection(
+            "word drag log token",
+            "Category=ATG.PricingEngine.Services.SecurityMaster Level=Info",
+            "ATG",
+            "SecurityMaster",
+            "ATG.PricingEngine.Services.SecurityMaster");
+        AssertWordDragSelection(
+            "word drag inside original",
+            "hello world",
+            "hello",
+            "ell",
+            "hello");
+    }
+
     private static DisplayParserRule JsonParser(string template) => new()
     {
         Name = "smoke",
@@ -861,6 +896,31 @@ internal static class Program
             name + " selected",
             ViewportPaneWindow.TryGetWordSelection(text, charIndex, out int start, out int end),
             true);
+        AssertEqual(name, text.Substring(start, end - start), expected);
+    }
+
+    private static void AssertWordDragSelection(string name, string text, string initialNeedle, string focusNeedle, string expected)
+    {
+        int initialIndex = text.IndexOf(initialNeedle, StringComparison.Ordinal);
+        if (initialIndex < 0)
+        {
+            throw new InvalidOperationException(name + ": initial needle not found.");
+        }
+
+        int focusIndex = text.IndexOf(focusNeedle, StringComparison.Ordinal);
+        if (focusIndex < 0)
+        {
+            throw new InvalidOperationException(name + ": focus needle not found.");
+        }
+
+        if (!ViewportPaneWindow.TryGetWordSelection(text, initialIndex, out int wordStart, out int wordEnd))
+        {
+            throw new InvalidOperationException(name + ": initial word not found.");
+        }
+
+        ViewportPaneWindow.SnapWordSelectionForDrag(text, wordStart, wordEnd, focusIndex, out int anchor, out int focus);
+        int start = Math.Min(anchor, focus);
+        int end = Math.Max(anchor, focus);
         AssertEqual(name, text.Substring(start, end - start), expected);
     }
 
