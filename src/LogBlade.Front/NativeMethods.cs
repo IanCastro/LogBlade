@@ -21,6 +21,7 @@ internal static class NativeMethods
     public const int ES_AUTOVSCROLL = 0x0040;
     public const int ES_MULTILINE = 0x0004;
     public const int ES_READONLY = 0x0800;
+    public const uint EM_SETREADONLY = 0x00CF;
     public const int ES_WANTRETURN = 0x1000;
     public const int BS_AUTOCHECKBOX = 0x00000003;
     public const int BS_AUTORADIOBUTTON = 0x00000009;

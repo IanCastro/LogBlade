@@ -22,7 +22,7 @@ internal sealed class ParserStageEditorWindow
     private readonly IReadOnlyList<DisplayParserRule>? _existingRules;
     private readonly string? _originalRuleName;
     private readonly List<DisplayParserStage> _previousStages;
-    private readonly string _sample;
+    private string _sampleText;
     private readonly string? _initialRuleName;
     private readonly Dictionary<DisplayParserMode, ParserStageDraft> _drafts = new();
     private readonly Action<DisplayParserStage?>? _onPreviewChanged;
@@ -55,6 +55,8 @@ internal sealed class ParserStageEditorWindow
     private bool _closed;
     private bool _updatingModeControls;
     private bool _updatingPreview;
+
+    private bool CanEditStageInput => _previousStages.Count == 0;
 
     private static readonly NativeMethods.WindowProc s_wndProc = WindowProc;
     private static bool s_registered;
@@ -158,7 +160,7 @@ internal sealed class ParserStageEditorWindow
         _mode = initialStage?.Mode ?? DisplayParserMode.Json;
         _existingRules = existingRules;
         _originalRuleName = originalRuleName;
-        _sample = sample;
+        _sampleText = sample;
         _initialRuleName = initialRuleName;
         _previousStages = ClonePreviousStages(stages, stageIndex);
         _onPreviewChanged = onPreviewChanged;
@@ -349,9 +351,14 @@ internal sealed class ParserStageEditorWindow
         _templateLabel = CreateLabel("Display");
         _templateEdit = CreateEdit(IdTemplateEdit, multiline: true, readOnly: false);
         _beforeLabel = CreateLabel("Before");
-        _beforeEdit = CreateEdit(IdBeforeEdit, multiline: true, readOnly: true);
+        _beforeEdit = CreateEdit(IdBeforeEdit, multiline: true, readOnly: !CanEditStageInput);
         _previewLabel = CreateLabel("Preview");
         _previewEdit = CreateEdit(IdPreviewEdit, multiline: true, readOnly: true);
+        if (CanEditStageInput)
+        {
+            NativeMethods.SetWindowTextW(_beforeEdit, _sampleText);
+        }
+
         _saveButton = CreateButton("Save", IdSaveButton);
         if (_createRuleMode)
         {
@@ -403,6 +410,15 @@ internal sealed class ParserStageEditorWindow
         if (!_updatingModeControls &&
             notification == NativeMethods.EN_CHANGE &&
             id is IdRuleEdit or IdTemplateEdit)
+        {
+            UpdatePreview();
+            return;
+        }
+
+        if (!_updatingModeControls &&
+            notification == NativeMethods.EN_CHANGE &&
+            id == IdBeforeEdit &&
+            CanEditStageInput)
         {
             UpdatePreview();
             return;
@@ -482,7 +498,9 @@ internal sealed class ParserStageEditorWindow
             return;
         }
 
+        _sampleText = GetStageInput();
         _previousStages.Add(stage!.Clone());
+        UpdateBeforeEditReadOnly();
         _drafts.Clear();
         _mode = DisplayParserMode.Json;
         SetButtonChecked(_regexRadio, false);
@@ -503,6 +521,12 @@ internal sealed class ParserStageEditorWindow
 
         DisplayParserStage stage = _previousStages[^1];
         _previousStages.RemoveAt(_previousStages.Count - 1);
+        UpdateBeforeEditReadOnly();
+        if (CanEditStageInput)
+        {
+            NativeMethods.SetWindowTextW(_beforeEdit, _sampleText);
+        }
+
         LoadStageIntoControls(stage);
         UpdateUndoStageButton();
         UpdatePreview();
@@ -647,11 +671,19 @@ internal sealed class ParserStageEditorWindow
         NativeMethods.EnableWindow(_undoStageButton, _previousStages.Count > 0);
     }
 
+    private void UpdateBeforeEditReadOnly()
+    {
+        if (_beforeEdit != IntPtr.Zero)
+        {
+            NativeMethods.SendMessageW(_beforeEdit, NativeMethods.EM_SETREADONLY, new IntPtr(CanEditStageInput ? 0 : 1), IntPtr.Zero);
+        }
+    }
+
     private ParserStageDraft CreateDefaultDraft(DisplayParserMode mode)
     {
         if (mode == DisplayParserMode.Regex)
         {
-            return new ParserStageDraft(@": (?<json>.*)", "{json}");
+            return new ParserStageDraft("(.*)", "{0}");
         }
 
         if (mode == DisplayParserMode.RegexReplace)
@@ -662,7 +694,7 @@ internal sealed class ParserStageEditorWindow
         string generatedTemplate = DisplayParserEvaluator.GenerateJsonTemplateFromSample(GetStageInput());
         return new ParserStageDraft(
             generatedTemplate.Length == 0
-                ? "{Timestamp} [{Logger}] {upper:Level} {Logger} - {Message}"
+                ? "key1 - {key1}, key2 - {key2}"
                 : generatedTemplate,
             string.Empty);
     }
@@ -688,7 +720,10 @@ internal sealed class ParserStageEditorWindow
         try
         {
             string input = GetStageInput();
-            NativeMethods.SetWindowTextW(_beforeEdit, input);
+            if (!CanEditStageInput)
+            {
+                NativeMethods.SetWindowTextW(_beforeEdit, input);
+            }
 
             DisplayParserStage stage = CreateStageFromControls();
             try
@@ -760,7 +795,7 @@ internal sealed class ParserStageEditorWindow
         {
             Name = name,
             Stages = stages,
-            Sample = _sample
+            Sample = GetRuleSample()
         };
 
         try
@@ -819,7 +854,7 @@ internal sealed class ParserStageEditorWindow
         {
             Name = GetWindowText(_nameEdit),
             Stages = stages,
-            Sample = _sample
+            Sample = GetRuleSample()
         });
     }
 
@@ -829,9 +864,15 @@ internal sealed class ParserStageEditorWindow
     }
 
     private string GetStageInput() =>
-        _previousStages.Count == 0
-            ? _sample
-            : EvaluateLines(_sample, new DisplayParserRule { Stages = CloneStages(_previousStages) });
+        CanEditStageInput
+            ? GetEditableStageInput()
+            : EvaluateLines(_sampleText, new DisplayParserRule { Stages = CloneStages(_previousStages) });
+
+    private string GetRuleSample() =>
+        CanEditStageInput ? GetEditableStageInput() : _sampleText;
+
+    private string GetEditableStageInput() =>
+        _beforeEdit == IntPtr.Zero ? _sampleText : GetWindowText(_beforeEdit);
 
     private static DisplayParserStage? GetInitialStage(IReadOnlyList<DisplayParserStage> stages, int stageIndex)
     {
