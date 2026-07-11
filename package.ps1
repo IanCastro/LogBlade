@@ -1,3 +1,8 @@
+param(
+    [Parameter(Position = 0)]
+    [string]$Path
+)
+
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -12,6 +17,11 @@ $artifacts = Join-Path $root 'artifacts'
 $publish = Join-Path $artifacts 'publish'
 $aotPublish = Join-Path $artifacts 'publish-aot'
 $project = Join-Path $src 'LogBlade.Front\LogBlade.Front.csproj'
+$resolvedLogPath = $null
+
+if (-not [string]::IsNullOrWhiteSpace($Path)) {
+    $resolvedLogPath = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
+}
 
 New-Item -ItemType Directory -Force -Path $artifacts, $publish, $aotPublish, $dotnetHome, $dotnetTools, $appData, $nugetPackages, $nugetHttpCache | Out-Null
 
@@ -44,8 +54,12 @@ if (-not $nativeAotSucceeded) {
     }
 }
 
-if (Test-Path (Join-Path $publish 'LogBlade.exe')) {
+$publishExe = Join-Path $publish 'LogBlade.exe'
+if (Test-Path $publishExe) {
     Write-Host "Packaged to $publish"
+    if ($resolvedLogPath) {
+        Start-Process -FilePath $publishExe -WorkingDirectory $root -ArgumentList @($resolvedLogPath) | Out-Null
+    }
 } else {
     throw "No runnable distribution artifact was produced in $publish"
 }
