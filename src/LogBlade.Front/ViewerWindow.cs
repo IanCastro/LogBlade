@@ -49,7 +49,6 @@ internal sealed class ViewerWindow
     private const int TopBarPadding = 4;
     private const int OpenButtonWidth = 72;
     private const int PasteButtonWidth = 64;
-    private const int ParserLabelWidth = 52;
     private const int ParserComboWidth = 360;
     private const int HighlightingButtonWidth = 110;
     private const int SearchInputRowHeight = 24;
@@ -65,7 +64,8 @@ internal sealed class ViewerWindow
     private const int InvertMatchToggleWidth = 120;
     private const int SearchResizeHitSlopPx = 4;
     private const string SearchResizeGripClassName = "LogBladeSearchResizeGripWindow";
-    private const string ConfigureParserText = "Configure";
+    private const string NoParserText = "Choose a parser...";
+    private const string ConfigureParserText = "Configure parsers...";
 
     private LogContentSource _contentSource;
     private IntPtr _hwnd;
@@ -75,7 +75,6 @@ internal sealed class ViewerWindow
     private IntPtr _boldItalicFont;
     private IntPtr _openButton;
     private IntPtr _pasteButton;
-    private IntPtr _parserLabel;
     private IntPtr _parserCombo;
     private IntPtr _highlightingButton;
     private IntPtr _searchResizeGrip;
@@ -185,7 +184,6 @@ internal sealed class ViewerWindow
         NativeMethods.RECT TopBarRect,
         NativeMethods.RECT OpenButtonRect,
         NativeMethods.RECT PasteButtonRect,
-        NativeMethods.RECT ParserLabelRect,
         NativeMethods.RECT ParserComboRect,
         NativeMethods.RECT HighlightingButtonRect,
         NativeMethods.RECT ViewerRect,
@@ -399,6 +397,13 @@ internal sealed class ViewerWindow
                 case NativeMethods.WM_COMMAND:
                     self.OnCommand(wParam, lParam);
                     return IntPtr.Zero;
+                case NativeMethods.WM_DRAWITEM:
+                    if (self.OnDrawItem(lParam))
+                    {
+                        return new IntPtr(1);
+                    }
+
+                    return NativeMethods.DefWindowProcW(hwnd, msg, wParam, lParam);
                 case NativeMethods.WM_TIMER:
                     self.OnTimer((nuint)wParam);
                     return IntPtr.Zero;
@@ -570,30 +575,11 @@ internal sealed class ViewerWindow
             throw new InvalidOperationException("CreateWindowExW failed for paste button.");
         }
 
-        _parserLabel = NativeMethods.CreateWindowExW(
-            0,
-            "STATIC",
-            "Parser",
-            NativeMethods.WS_CHILD | NativeMethods.WS_VISIBLE,
-            0,
-            0,
-            1,
-            1,
-            _hwnd,
-            IntPtr.Zero,
-            hInstance,
-            IntPtr.Zero);
-
-        if (_parserLabel == IntPtr.Zero)
-        {
-            throw new InvalidOperationException("CreateWindowExW failed for parser label.");
-        }
-
         _parserCombo = NativeMethods.CreateWindowExW(
             0,
             "COMBOBOX",
             string.Empty,
-            NativeMethods.WS_CHILD | NativeMethods.WS_VISIBLE | NativeMethods.WS_TABSTOP | NativeMethods.WS_VSCROLL | NativeMethods.CBS_DROPDOWNLIST | NativeMethods.CBS_HASSTRINGS,
+            NativeMethods.WS_CHILD | NativeMethods.WS_VISIBLE | NativeMethods.WS_TABSTOP | NativeMethods.WS_VSCROLL | NativeMethods.CBS_DROPDOWNLIST | NativeMethods.CBS_OWNERDRAWFIXED | NativeMethods.CBS_HASSTRINGS,
             0,
             0,
             1,
@@ -610,7 +596,6 @@ internal sealed class ViewerWindow
 
         NativeMethods.SendMessageW(_openButton, NativeMethods.WM_SETFONT, _font, new IntPtr(1));
         NativeMethods.SendMessageW(_pasteButton, NativeMethods.WM_SETFONT, _font, new IntPtr(1));
-        NativeMethods.SendMessageW(_parserLabel, NativeMethods.WM_SETFONT, _font, new IntPtr(1));
         NativeMethods.SendMessageW(_parserCombo, NativeMethods.WM_SETFONT, _font, new IntPtr(1));
 
         _highlightingButton = NativeMethods.CreateWindowExW(
@@ -695,7 +680,7 @@ internal sealed class ViewerWindow
         _parserRules = DisplayParserRuleStore.Load();
         _updatingParserCombo = true;
         NativeMethods.SendMessageW(_parserCombo, NativeMethods.CB_RESETCONTENT, IntPtr.Zero, IntPtr.Zero);
-        NativeMethods.SendMessageW(_parserCombo, NativeMethods.CB_ADDSTRING, IntPtr.Zero, string.Empty);
+        NativeMethods.SendMessageW(_parserCombo, NativeMethods.CB_ADDSTRING, IntPtr.Zero, NoParserText);
         for (int i = 0; i < _parserRules.Count; i++)
         {
             NativeMethods.SendMessageW(_parserCombo, NativeMethods.CB_ADDSTRING, IntPtr.Zero, _parserRules[i].Name);
@@ -2814,6 +2799,102 @@ internal sealed class ViewerWindow
         level.ResultsPane = null;
     }
 
+    private bool OnDrawItem(IntPtr lParam)
+    {
+        if (lParam == IntPtr.Zero || _parserCombo == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        NativeMethods.DRAWITEMSTRUCT item = Marshal.PtrToStructure<NativeMethods.DRAWITEMSTRUCT>(lParam);
+        if (item.hwndItem != _parserCombo)
+        {
+            return false;
+        }
+
+        int itemIndex = unchecked((int)item.itemID);
+        if (itemIndex < 0)
+        {
+            return true;
+        }
+
+        string text = GetParserComboItemText(itemIndex);
+        bool selected = (item.itemState & NativeMethods.ODS_SELECTED) != 0;
+        bool configureItem = itemIndex == _parserRules.Count + 1;
+        NativeMethods.RECT rect = item.rcItem;
+        IntPtr backgroundBrush = selected
+            ? NativeMethods.GetSysColorBrush(NativeMethods.COLOR_HIGHLIGHT)
+            : configureItem
+                ? NativeMethods.GetSysColorBrush(NativeMethods.COLOR_3DFACE)
+            : NativeMethods.GetSysColorBrush(NativeMethods.COLOR_WINDOW);
+        NativeMethods.FillRect(item.hDC, ref rect, backgroundBrush);
+        if (configureItem && !selected)
+        {
+            NativeMethods.RECT separator = rect;
+            separator.bottom = Math.Min(separator.bottom, separator.top + 1);
+            NativeMethods.FillRect(item.hDC, ref separator, NativeMethods.GetSysColorBrush(NativeMethods.COLOR_BTNSHADOW));
+        }
+
+        int savedDc = NativeMethods.SaveDC(item.hDC);
+        try
+        {
+            NativeMethods.SetBkMode(item.hDC, NativeMethods.TRANSPARENT);
+            int textColor = selected
+                ? NativeMethods.GetSysColor(NativeMethods.COLOR_HIGHLIGHTTEXT)
+                    : itemIndex == 0
+                        ? NativeMethods.RGB(150, 150, 150)
+                    : NativeMethods.GetSysColor(NativeMethods.COLOR_WINDOWTEXT);
+            NativeMethods.SetTextColor(item.hDC, textColor);
+
+            IntPtr font = configureItem && _boldFont != IntPtr.Zero ? _boldFont : _font;
+            IntPtr oldFont = font != IntPtr.Zero
+                ? NativeMethods.SelectObject(item.hDC, font)
+                : IntPtr.Zero;
+            try
+            {
+                NativeMethods.RECT textRect = rect;
+                textRect.left += 4;
+                textRect.right = Math.Max(textRect.left, textRect.right - 4);
+                NativeMethods.DrawTextW(
+                    item.hDC,
+                    text,
+                    text.Length,
+                    ref textRect,
+                    NativeMethods.DT_LEFT | NativeMethods.DT_VCENTER | NativeMethods.DT_SINGLELINE | NativeMethods.DT_END_ELLIPSIS | NativeMethods.DT_NOPREFIX);
+            }
+            finally
+            {
+                if (oldFont != IntPtr.Zero)
+                {
+                    NativeMethods.SelectObject(item.hDC, oldFont);
+                }
+            }
+
+        }
+        finally
+        {
+            NativeMethods.RestoreDC(item.hDC, savedDc);
+        }
+
+        return true;
+    }
+
+    private string GetParserComboItemText(int itemIndex)
+    {
+        if (itemIndex == 0)
+        {
+            return NoParserText;
+        }
+
+        int ruleIndex = itemIndex - 1;
+        if (ruleIndex >= 0 && ruleIndex < _parserRules.Count)
+        {
+            return _parserRules[ruleIndex].Name;
+        }
+
+        return ConfigureParserText;
+    }
+
     private void OnCommand(IntPtr wParam, IntPtr lParam)
     {
         int notification = NativeMethods.HighWord(wParam);
@@ -4480,15 +4561,7 @@ internal sealed class ViewerWindow
             controlCursor = pasteButtonRect.right + SearchToggleGap;
         }
 
-        int parserLabelWidth = Math.Min(ParserLabelWidth, Math.Max(0, controlsRight - controlCursor));
-        NativeMethods.RECT parserLabelRect = new()
-        {
-            left = controlCursor,
-            top = controlTop + 4,
-            right = controlCursor + parserLabelWidth,
-            bottom = Math.Min(topBarRect.bottom, controlTop + 4 + SearchInputRowHeight)
-        };
-        int parserComboLeft = parserLabelRect.right + (parserLabelWidth > 0 ? SearchToggleGap : 0);
+        int parserComboLeft = controlCursor;
         int availableControlsWidth = Math.Max(0, controlsRight - parserComboLeft);
         int highlightingWidth = Math.Min(HighlightingButtonWidth, availableControlsWidth);
         int highlightingGap = highlightingWidth > 0 ? SearchToggleGap : 0;
@@ -4609,7 +4682,7 @@ internal sealed class ViewerWindow
             }
             : CreateZeroRect();
 
-        _layout = new WindowLayout(clientRect, topBarRect, openButtonRect, pasteButtonRect, parserLabelRect, parserComboRect, highlightingButtonRect, viewerRect, searchAreaRect, searchLevelLayouts, progressRect);
+        _layout = new WindowLayout(clientRect, topBarRect, openButtonRect, pasteButtonRect, parserComboRect, highlightingButtonRect, viewerRect, searchAreaRect, searchLevelLayouts, progressRect);
     }
 
     private void ApplyLayout()
@@ -4636,18 +4709,6 @@ internal sealed class ViewerWindow
                 GetRectHeight(_layout.PasteButtonRect),
                 true);
             NativeMethods.ShowWindow(_pasteButton, GetRectWidth(_layout.PasteButtonRect) > 0 ? NativeMethods.SW_SHOW : NativeMethods.SW_HIDE);
-        }
-
-        if (_parserLabel != IntPtr.Zero)
-        {
-            NativeMethods.MoveWindow(
-                _parserLabel,
-                _layout.ParserLabelRect.left,
-                _layout.ParserLabelRect.top,
-                GetRectWidth(_layout.ParserLabelRect),
-                GetRectHeight(_layout.ParserLabelRect),
-                true);
-            NativeMethods.ShowWindow(_parserLabel, GetRectWidth(_layout.ParserLabelRect) > 0 ? NativeMethods.SW_SHOW : NativeMethods.SW_HIDE);
         }
 
         if (_parserCombo != IntPtr.Zero)
@@ -4783,12 +4844,6 @@ internal sealed class ViewerWindow
         {
             NativeMethods.DestroyWindow(_parserCombo);
             _parserCombo = IntPtr.Zero;
-        }
-
-        if (_parserLabel != IntPtr.Zero)
-        {
-            NativeMethods.DestroyWindow(_parserLabel);
-            _parserLabel = IntPtr.Zero;
         }
 
         if (_highlightingButton != IntPtr.Zero)

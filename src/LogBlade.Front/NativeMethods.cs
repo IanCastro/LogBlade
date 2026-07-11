@@ -27,6 +27,7 @@ internal static class NativeMethods
     public const int BS_AUTORADIOBUTTON = 0x00000009;
     public const int BS_PUSHBUTTON = 0x00000000;
     public const int CBS_DROPDOWNLIST = 0x0003;
+    public const int CBS_OWNERDRAWFIXED = 0x0010;
     public const int CBS_HASSTRINGS = 0x0200;
     public const int LBS_NOTIFY = 0x0001;
     public const int LBS_OWNERDRAWFIXED = 0x0010;
