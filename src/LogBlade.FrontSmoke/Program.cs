@@ -100,6 +100,44 @@ internal static class Program
             viewport.CurrentRows,
             "o\",\"Message\":\"run",
             "ning\"}");
+
+        viewport.ReadPrevious(1);
+        AssertSequence(
+            "combined parser reparses when start scrolls into view",
+            viewport.CurrentRows,
+            "INFO - running",
+            "plain");
+
+        string firstFragment = "a[0]: {\"Level\":\"Inf\r\n";
+        string secondFragment = "a[1]: o\",\"Message\":\"run\r\n";
+        string thirdFragment = "a[2]: ning \r\n";
+        string fourthFragment = "a[3]: done\"}\r\n";
+        string splitPath = WriteLog(
+            tempRoot,
+            "combined-parser-group-start.log",
+            firstFragment +
+            secondFragment +
+            thirdFragment +
+            fourthFragment +
+            "plain\r\n");
+        long fourthOffset =
+            Encoding.UTF8.GetByteCount(firstFragment) +
+            Encoding.UTF8.GetByteCount(secondFragment) +
+            Encoding.UTF8.GetByteCount(thirdFragment);
+        using var splitViewport = new ProjectedViewport(new LogRecordSource(splitPath, Encoding.UTF8, 0, parser), wrapLongLines: true);
+        splitViewport.ReadFromOffset(fourthOffset, 2);
+        AssertSequence(
+            "combined parser starts on final continuation",
+            splitViewport.CurrentRows,
+            "done\"}",
+            "plain");
+
+        splitViewport.ReadPrevious(2);
+        AssertSequence(
+            "combined parser reparses from group start",
+            splitViewport.CurrentRows,
+            "INFO - running done",
+            "plain");
     }
 
     private static void RunMainProjection(string tempRoot)

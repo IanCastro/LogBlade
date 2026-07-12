@@ -24,7 +24,8 @@ public sealed record LogViewportRecord(
     long NextOffset,
     string DisplayText,
     string LogicalText,
-    IReadOnlyList<string>? Cells = null);
+    IReadOnlyList<string>? Cells = null,
+    long GroupStartOffset = -1);
 
 public interface ILogRecordSource : IDisposable
 {

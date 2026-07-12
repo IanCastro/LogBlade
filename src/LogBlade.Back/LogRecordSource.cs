@@ -21,6 +21,8 @@ public sealed class LogRecordSource : ILogRecordSource
     private int _anchorCharacterIndex;
     private bool _viewportLoaded;
 
+    private readonly record struct RecordsBeforeResult(List<LogViewportRecord> Records, bool IncompleteAtEnd);
+
     private LogRecordSource(
         LogContentSource contentSource,
         LogEncodingKind kind,
@@ -196,9 +198,19 @@ public sealed class LogRecordSource : ILogRecordSource
         }
 
         int windowCount = Math.Max(1, _recordWindowCount);
-        List<LogViewportRecord> previous = ReadRecordsBefore(_topOffset, count);
+        RecordsBeforeResult previousResult = ReadRecordsBefore(_topOffset, count);
+        List<LogViewportRecord> previous = previousResult.Records;
         if (previous.Count == 0)
         {
+            return CurrentRecords;
+        }
+
+        if (_displayParserRule is not null && previousResult.IncompleteAtEnd)
+        {
+            long reloadOffset = previous[0].GroupStartOffset >= _dataOffset
+                ? previous[0].GroupStartOffset
+                : previous[0].Key.StartOffset;
+            LoadFromOffset(reloadOffset, windowCount, reloadOffset);
             return CurrentRecords;
         }
 
@@ -230,7 +242,7 @@ public sealed class LogRecordSource : ILogRecordSource
         double clamped = Math.Clamp(percentage, 0d, 100d);
         if (clamped >= 100d)
         {
-            List<LogViewportRecord> tail = ReadRecordsBefore(_fileSize, count);
+            List<LogViewportRecord> tail = ReadRecordsBefore(_fileSize, count).Records;
             long startOffset = tail.Count > 0 ? tail[0].Key.StartOffset : _dataOffset;
             LoadFromOffset(startOffset, count, startOffset);
             return CurrentRecords;
@@ -479,34 +491,43 @@ public sealed class LogRecordSource : ILogRecordSource
         _viewportEndOffset = _currentRecords[^1].NextOffset;
     }
 
-    private IEnumerable<LogViewportRecord> EnumerateFrom(long startOffset, long endOffset)
+    private IEnumerable<LogViewportRecord> EnumerateFrom(long startOffset, long endOffset, Action<bool>? onCompleted = null)
     {
         DisplayParserRecordSequence sequence = new(_displayParserRule);
-        foreach (DisplayParserRecord record in sequence.Enumerate(
-            SearchRealLineScanner.Enumerate(
-                _contentSource,
-                _encoding,
-                _kind,
-                startOffset,
-                endOffset,
-                CancellationToken.None,
-                firstLineNumber: 1)))
+        try
         {
-            yield return new LogViewportRecord(
-                new LogRecordKey(record.StartOffset, record.EndOffset),
-                record.NextOffset,
-                record.Text,
-                record.Text);
+            foreach (DisplayParserRecord record in sequence.Enumerate(
+                SearchRealLineScanner.Enumerate(
+                    _contentSource,
+                    _encoding,
+                    _kind,
+                    startOffset,
+                    endOffset,
+                    CancellationToken.None,
+                    firstLineNumber: 1)))
+            {
+                yield return new LogViewportRecord(
+                    new LogRecordKey(record.StartOffset, record.EndOffset),
+                    record.NextOffset,
+                    record.Text,
+                    record.Text,
+                    GroupStartOffset: record.GroupStartOffset);
+            }
+        }
+        finally
+        {
+            onCompleted?.Invoke(sequence.IncompleteRecordStartOffset >= 0);
         }
     }
 
-    private List<LogViewportRecord> ReadRecordsBefore(long beforeOffset, int count)
+    private RecordsBeforeResult ReadRecordsBefore(long beforeOffset, int count)
     {
         count = Math.Max(1, count);
         long scanStart = beforeOffset;
         int physicalLines = 0;
         int targetPhysicalLines = count + 1;
         List<LogViewportRecord> candidates = new();
+        bool incompleteAtEnd = false;
 
         while (scanStart > _dataOffset)
         {
@@ -528,13 +549,15 @@ public sealed class LogRecordSource : ILogRecordSource
             }
 
             candidates.Clear();
-            foreach (LogViewportRecord record in EnumerateFrom(scanStart, beforeOffset))
+            bool rangeIncomplete = false;
+            foreach (LogViewportRecord record in EnumerateFrom(scanStart, beforeOffset, incomplete => rangeIncomplete = incomplete))
             {
                 if (record.Key.StartOffset < beforeOffset)
                 {
                     candidates.Add(record);
                 }
             }
+            incompleteAtEnd = rangeIncomplete;
 
             if (candidates.Count > count || scanStart <= _dataOffset)
             {
@@ -545,9 +568,10 @@ public sealed class LogRecordSource : ILogRecordSource
         }
 
         int take = Math.Min(count, candidates.Count);
-        return take == 0
+        List<LogViewportRecord> records = take == 0
             ? new List<LogViewportRecord>()
             : candidates.GetRange(candidates.Count - take, take);
+        return new RecordsBeforeResult(records, incompleteAtEnd);
     }
 
     private int ReadCharacterCount(long startOffset, long endOffset)
