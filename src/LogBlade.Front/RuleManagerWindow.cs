@@ -86,6 +86,11 @@ internal sealed class RuleManagerWindow
             NativeMethods.MSG msg;
             while (!_closed && NativeMethods.GetMessageW(out msg, IntPtr.Zero, 0, 0) > 0)
             {
+                if (TryHandleClipboardShortcut(msg))
+                {
+                    continue;
+                }
+
                 NativeMethods.TranslateMessage(ref msg);
                 NativeMethods.DispatchMessageW(ref msg);
             }
@@ -618,6 +623,111 @@ internal sealed class RuleManagerWindow
         PublishActiveRulePreview();
     }
 
+    private bool TryHandleClipboardShortcut(NativeMethods.MSG msg)
+    {
+        if (_ruleEditorOpen ||
+            msg.message != NativeMethods.WM_KEYDOWN ||
+            !IsControlKeyDown() ||
+            !IsMessageForThisWindow(msg.hwnd))
+        {
+            return false;
+        }
+
+        int key = msg.wParam.ToInt32();
+        if (key == NativeMethods.VK_C)
+        {
+            CopySelectedRuleToClipboard();
+            return true;
+        }
+
+        if (key == NativeMethods.VK_V)
+        {
+            PasteRulesFromClipboard();
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool IsMessageForThisWindow(IntPtr hwnd)
+    {
+        while (hwnd != IntPtr.Zero)
+        {
+            if (hwnd == _hwnd)
+            {
+                return true;
+            }
+
+            hwnd = NativeMethods.GetParent(hwnd);
+        }
+
+        return false;
+    }
+
+    private void CopySelectedRuleToClipboard()
+    {
+        int index = GetSelectedRuleIndex();
+        if (index < 0)
+        {
+            ShowError("Select a rule to copy.");
+            return;
+        }
+
+        string json = JsonSerializer.Serialize(_rules[index].Clone(), LogBladeJsonSerializerContext.Default.DisplayParserRule);
+        if (!ClipboardText.TrySetText(_hwnd, json))
+        {
+            ShowError("Failed to copy parser rule to the clipboard.");
+        }
+    }
+
+    private void PasteRulesFromClipboard()
+    {
+        if (!ClipboardText.TryGetText(_hwnd, out string text))
+        {
+            ShowError("Clipboard does not contain a parser rule.");
+            return;
+        }
+
+        if (!TryParseClipboardRules(text, out List<DisplayParserRule> pastedRules, out string error))
+        {
+            ShowError(error);
+            return;
+        }
+
+        if (pastedRules.Count == 0)
+        {
+            ShowError("Clipboard does not contain parser rules to paste.");
+            return;
+        }
+
+        HashSet<string> usedNames = new(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < _rules.Count; i++)
+        {
+            usedNames.Add(_rules[i].Name);
+        }
+
+        List<DisplayParserRule> nextRules = new(_rules);
+        string? firstPastedName = null;
+        for (int i = 0; i < pastedRules.Count; i++)
+        {
+            DisplayParserRule rule = pastedRules[i].Clone();
+            rule.Name = CreateUniquePastedName(rule.Name, usedNames);
+            firstPastedName ??= rule.Name;
+            nextRules.Add(rule);
+        }
+
+        if (!TrySaveRules(nextRules))
+        {
+            return;
+        }
+
+        _rules.Clear();
+        _rules.AddRange(nextRules);
+        _activeRuleName = firstPastedName;
+        ReloadList(_activeRuleName);
+        PublishActiveRulePreview();
+    }
+
     private void UpdateActiveRuleFromSelection()
     {
         int index = GetSelectedRuleIndex();
@@ -925,6 +1035,9 @@ internal sealed class RuleManagerWindow
         }
     }
 
+    private static bool IsControlKeyDown() =>
+        (NativeMethods.GetKeyState(NativeMethods.VK_CONTROL) & unchecked((short)0x8000)) != 0;
+
     private static DisplayParserRule CopyRule(DisplayParserRule source)
     {
         return source.Clone();
@@ -996,6 +1109,118 @@ internal sealed class RuleManagerWindow
 
         error = string.Empty;
         return true;
+    }
+
+    private bool TryParseClipboardRules(string text, out List<DisplayParserRule> rules, out string error)
+    {
+        rules = new List<DisplayParserRule>();
+        error = string.Empty;
+        string json = NormalizeClipboardJson(text);
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            error = "Clipboard does not contain a parser rule.";
+            return false;
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(json);
+            if (document.RootElement.ValueKind == JsonValueKind.Object &&
+                document.RootElement.TryGetProperty("parserRules", out _))
+            {
+                DisplayParserRulesExportPackage? package = JsonSerializer.Deserialize(json, LogBladeJsonSerializerContext.Default.DisplayParserRulesExportPackage);
+                if (!TryValidateImportedPackage(package, out error))
+                {
+                    return false;
+                }
+
+                rules = CloneRules(package!.ParserRules);
+                return true;
+            }
+
+            DisplayParserRule? rule = JsonSerializer.Deserialize(json, LogBladeJsonSerializerContext.Default.DisplayParserRule);
+            if (!TryValidateClipboardRule(rule, out error))
+            {
+                return false;
+            }
+
+            rules.Add(rule!.Clone());
+            return true;
+        }
+        catch (JsonException ex)
+        {
+            error = "Clipboard does not contain valid parser rule JSON: " + ex.Message;
+            return false;
+        }
+        catch (NotSupportedException ex)
+        {
+            error = "Clipboard does not contain supported parser rule JSON: " + ex.Message;
+            return false;
+        }
+    }
+
+    private static bool TryValidateClipboardRule(DisplayParserRule? rule, out string error)
+    {
+        if (rule is null)
+        {
+            error = "Clipboard does not contain a parser rule.";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(rule.Name))
+        {
+            error = "Parser rule name is required.";
+            return false;
+        }
+
+        try
+        {
+            DisplayParserEvaluator.ValidateRule(rule);
+        }
+        catch (ArgumentException ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+
+        error = string.Empty;
+        return true;
+    }
+
+    private static string NormalizeClipboardJson(string text)
+    {
+        string json = text.Trim();
+        while (json.EndsWith(",", StringComparison.Ordinal))
+        {
+            json = json[..^1].TrimEnd();
+        }
+
+        return json;
+    }
+
+    private static string CreateUniquePastedName(string name, HashSet<string> usedNames)
+    {
+        string baseName = string.IsNullOrWhiteSpace(name) ? "Rule" : name.Trim();
+        string candidate = baseName;
+        if (usedNames.Add(candidate))
+        {
+            return candidate;
+        }
+
+        candidate = baseName + " Copy";
+        if (usedNames.Add(candidate))
+        {
+            return candidate;
+        }
+
+        for (int suffix = 2; ; suffix++)
+        {
+            candidate = baseName + " Copy " + suffix.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (usedNames.Add(candidate))
+            {
+                return candidate;
+            }
+        }
     }
 
     private string CreateDuplicateName(string name)

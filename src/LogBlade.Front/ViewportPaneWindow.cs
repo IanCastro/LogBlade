@@ -4906,53 +4906,7 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private bool SetClipboardText(string text)
     {
-        if (string.IsNullOrEmpty(text) || !NativeMethods.OpenClipboard(_hwnd))
-        {
-            return false;
-        }
-
-        IntPtr handle = IntPtr.Zero;
-        try
-        {
-            NativeMethods.EmptyClipboard();
-            char[] chars = (text + "\0").ToCharArray();
-            nuint byteCount = (nuint)(chars.Length * sizeof(char));
-            handle = NativeMethods.GlobalAlloc(NativeMethods.GMEM_MOVEABLE, new UIntPtr(byteCount));
-            if (handle == IntPtr.Zero)
-            {
-                return false;
-            }
-
-            IntPtr target = NativeMethods.GlobalLock(handle);
-            if (target == IntPtr.Zero)
-            {
-                NativeMethods.GlobalFree(handle);
-                handle = IntPtr.Zero;
-                return false;
-            }
-
-            Marshal.Copy(chars, 0, target, chars.Length);
-            NativeMethods.GlobalUnlock(handle);
-
-            if (NativeMethods.SetClipboardData(NativeMethods.CF_UNICODETEXT, handle) == IntPtr.Zero)
-            {
-                NativeMethods.GlobalFree(handle);
-                handle = IntPtr.Zero;
-                return false;
-            }
-
-            handle = IntPtr.Zero;
-            return true;
-        }
-        finally
-        {
-            if (handle != IntPtr.Zero)
-            {
-                NativeMethods.GlobalFree(handle);
-            }
-
-            NativeMethods.CloseClipboard();
-        }
+        return ClipboardText.TrySetText(_hwnd, text);
     }
 
     private static bool IsControlKeyDown() =>

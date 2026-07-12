@@ -1011,41 +1011,7 @@ internal sealed class ViewerWindow
 
     private bool TryGetClipboardText(out string text)
     {
-        text = string.Empty;
-        if (!NativeMethods.IsClipboardFormatAvailable(NativeMethods.CF_UNICODETEXT) ||
-            !NativeMethods.OpenClipboard(_hwnd))
-        {
-            return false;
-        }
-
-        try
-        {
-            IntPtr handle = NativeMethods.GetClipboardData(NativeMethods.CF_UNICODETEXT);
-            if (handle == IntPtr.Zero)
-            {
-                return false;
-            }
-
-            IntPtr data = NativeMethods.GlobalLock(handle);
-            if (data == IntPtr.Zero)
-            {
-                return false;
-            }
-
-            try
-            {
-                text = Marshal.PtrToStringUni(data) ?? string.Empty;
-                return text.Length > 0;
-            }
-            finally
-            {
-                NativeMethods.GlobalUnlock(handle);
-            }
-        }
-        finally
-        {
-            NativeMethods.CloseClipboard();
-        }
+        return ClipboardText.TryGetText(_hwnd, out text);
     }
 
     private void OnPastedTextLaunchComplete(IntPtr lParam)
