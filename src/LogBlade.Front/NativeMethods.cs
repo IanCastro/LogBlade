@@ -34,8 +34,12 @@ internal static class NativeMethods
     public const int LBS_HASSTRINGS = 0x0040;
     public const int CW_USEDEFAULT = unchecked((int)0x80000000);
     public const int SW_HIDE = 0;
+    public const int SW_SHOWNORMAL = 1;
+    public const int SW_SHOWMINIMIZED = 2;
+    public const int SW_SHOWMAXIMIZED = 3;
     public const int SW_SHOW = 5;
     public const int SW_SHOWDEFAULT = 10;
+    public const uint MONITOR_DEFAULTTONULL = 0;
     public const int SIZE_RESTORED = 0;
     public const int SIZE_MINIMIZED = 1;
     public const int SIZE_MAXIMIZED = 2;
@@ -331,6 +335,17 @@ internal static class NativeMethods
         public nuint PrivateUsage;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct WINDOWPLACEMENT
+    {
+        public uint length;
+        public uint flags;
+        public uint showCmd;
+        public POINT ptMinPosition;
+        public POINT ptMaxPosition;
+        public RECT rcNormalPosition;
+    }
+
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     public struct CHOOSECOLORW
     {
@@ -438,6 +453,10 @@ internal static class NativeMethods
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetWindowPlacement(IntPtr hWnd, ref WINDOWPLACEMENT lpwndpl);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool MoveWindow(IntPtr hWnd, int X, int Y, int nWidth, int nHeight, bool bRepaint);
 
     [DllImport("user32.dll", SetLastError = true)]
@@ -501,6 +520,9 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     public static extern bool GetClientRect(IntPtr hWnd, out RECT lpRect);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr MonitorFromRect(ref RECT lprc, uint dwFlags);
 
     [DllImport("user32.dll")]
     public static extern bool InvalidateRect(IntPtr hWnd, IntPtr lpRect, bool bErase);

@@ -66,6 +66,8 @@ internal sealed class ViewerWindow
     private const string SearchResizeGripClassName = "LogBladeSearchResizeGripWindow";
     private const string NoParserText = "Choose a parser...";
     private const string ConfigureParserText = "Configure parsers...";
+    private const int DefaultWindowWidth = 1100;
+    private const int DefaultWindowHeight = 760;
 
     private LogContentSource _contentSource;
     private IntPtr _hwnd;
@@ -86,6 +88,7 @@ internal sealed class ViewerWindow
     private bool _closing;
     private bool _configurationWindowOpen;
     private bool _resourcesDisposed;
+    private bool _windowStateSaved;
     private bool _updatingParserCombo;
     private bool _updatingSearchControls;
     private long _knownContentFileSize;
@@ -235,16 +238,21 @@ internal sealed class ViewerWindow
             throw new InvalidOperationException("RegisterClassExW failed.");
         }
 
+        WindowStateSettings? savedWindowState = WindowStateStore.Load();
+        int initialX = savedWindowState?.Left ?? NativeMethods.CW_USEDEFAULT;
+        int initialY = savedWindowState?.Top ?? NativeMethods.CW_USEDEFAULT;
+        int initialWidth = savedWindowState?.Width ?? DefaultWindowWidth;
+        int initialHeight = savedWindowState?.Height ?? DefaultWindowHeight;
         _selfHandle = GCHandle.Alloc(this);
         _hwnd = NativeMethods.CreateWindowExW(
             0,
             className,
             windowTitle,
             NativeMethods.WS_OVERLAPPEDWINDOW | NativeMethods.WS_CLIPCHILDREN,
-            NativeMethods.CW_USEDEFAULT,
-            NativeMethods.CW_USEDEFAULT,
-            1100,
-            760,
+            initialX,
+            initialY,
+            initialWidth,
+            initialHeight,
             IntPtr.Zero,
             IntPtr.Zero,
             hInstance,
@@ -268,7 +276,12 @@ internal sealed class ViewerWindow
 
         NativeMethods.SetWindowTextW(_hwnd, windowTitle);
         AppIcon.ApplyToWindow(_hwnd);
-        NativeMethods.ShowWindow(_hwnd, NativeMethods.SW_SHOWDEFAULT);
+        int showCommand = savedWindowState is null
+            ? NativeMethods.SW_SHOWDEFAULT
+            : savedWindowState.WindowState == WindowStateStore.MaximizedState
+                ? NativeMethods.SW_SHOWMAXIMIZED
+                : NativeMethods.SW_SHOWNORMAL;
+        NativeMethods.ShowWindow(_hwnd, showCommand);
         NativeMethods.UpdateWindow(_hwnd);
         NativeMethods.PostMessageW(_hwnd, NativeMethods.WM_APP_BEGIN_OPEN, IntPtr.Zero, IntPtr.Zero);
 
@@ -462,9 +475,11 @@ internal sealed class ViewerWindow
                         return IntPtr.Zero;
                     }
 
+                    self.SaveWindowState();
                     return NativeMethods.DefWindowProcW(hwnd, msg, wParam, lParam);
                 case NativeMethods.WM_DESTROY:
                     self._closing = true;
+                    self.SaveWindowState();
                     self.DisposeResources();
                     NativeMethods.PostQuitMessage(0);
                     return IntPtr.Zero;
@@ -1546,6 +1561,56 @@ internal sealed class ViewerWindow
         RecalculateLayout();
         ApplyLayout();
         InvalidateHost();
+    }
+
+    private void SaveWindowState()
+    {
+        if (_windowStateSaved || _hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        _windowStateSaved = true;
+        NativeMethods.WINDOWPLACEMENT placement = new()
+        {
+            length = (uint)Marshal.SizeOf<NativeMethods.WINDOWPLACEMENT>()
+        };
+
+        if (!NativeMethods.GetWindowPlacement(_hwnd, ref placement))
+        {
+            return;
+        }
+
+        NativeMethods.RECT rect = placement.rcNormalPosition;
+        WindowStateSettings settings = new()
+        {
+            Left = rect.left,
+            Top = rect.top,
+            Width = rect.right - rect.left,
+            Height = rect.bottom - rect.top,
+            WindowState = placement.showCmd == NativeMethods.SW_SHOWMAXIMIZED
+                ? WindowStateStore.MaximizedState
+                : WindowStateStore.NormalState
+        };
+
+        if (!WindowStateStore.IsValidForRestore(settings, _ => true))
+        {
+            return;
+        }
+
+        try
+        {
+            WindowStateStore.Save(settings);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            AppLog.Instance.Error(
+                "window.state.save_failed",
+                "failed",
+                new LogField("path", WindowStateStore.StorePath),
+                new LogField("type", ex.GetType().FullName ?? ex.GetType().Name),
+                new LogField("reason", ex.Message));
+        }
     }
 
     private bool OnSetCursor()

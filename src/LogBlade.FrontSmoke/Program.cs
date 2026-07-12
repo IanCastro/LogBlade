@@ -33,6 +33,7 @@ internal static class Program
             Run("word drag snapping", RunWordDragSnapping);
             Run("non-word double click", RunNonWordDoubleClickSelection);
             Run("display text normalization", RunDisplayTextNormalization);
+            Run("window state store", () => RunWindowStateStore(tempRoot));
             Console.WriteLine("Front smoke tests passed.");
             return 0;
         }
@@ -886,6 +887,53 @@ internal static class Program
         string normalizedPair = ViewportPaneWindow.NormalizeDisplayText(validSurrogatePair);
         AssertEqual("display normalization valid surrogate pair", normalizedPair, validSurrogatePair);
         AssertEqual("display normalization length", ViewportPaneWindow.NormalizeDisplayText("a\t\uFFFD\u0001\uD800b").Length, 6);
+    }
+
+    private static void RunWindowStateStore(string tempRoot)
+    {
+        string path = Path.Combine(tempRoot, "window-state.json");
+        WindowStateSettings settings = new()
+        {
+            Left = 12,
+            Top = 34,
+            Width = 1024,
+            Height = 768,
+            WindowState = WindowStateStore.MaximizedState
+        };
+
+        WindowStateStore.Save(path, settings);
+        byte[] savedBytes = File.ReadAllBytes(path);
+        AssertEqual("window state no bom", savedBytes.Length >= 3 && savedBytes[0] == 0xEF && savedBytes[1] == 0xBB && savedBytes[2] == 0xBF, false);
+
+        WindowStateSettings? loaded = WindowStateStore.Load(path, _ => true);
+        AssertEqual("window state loaded", loaded is not null, true);
+        AssertEqual("window state left", loaded!.Left, settings.Left);
+        AssertEqual("window state top", loaded.Top, settings.Top);
+        AssertEqual("window state width", loaded.Width, settings.Width);
+        AssertEqual("window state height", loaded.Height, settings.Height);
+        AssertEqual("window state state", loaded.WindowState, settings.WindowState);
+
+        AssertEqual(
+            "window state monitor reject",
+            WindowStateStore.Load(path, _ => false) is null,
+            true);
+
+        settings.Width = 20;
+        WindowStateStore.Save(path, settings);
+        AssertEqual("window state rejects small width", WindowStateStore.Load(path, _ => true) is null, true);
+
+        settings.Width = 1024;
+        settings.WindowState = "Minimized";
+        WindowStateStore.Save(path, settings);
+        AssertEqual("window state rejects unsupported state", WindowStateStore.Load(path, _ => true) is null, true);
+
+        settings.Left = int.MaxValue;
+        settings.WindowState = WindowStateStore.NormalState;
+        WindowStateStore.Save(path, settings);
+        AssertEqual("window state rejects overflow", WindowStateStore.Load(path, _ => true) is null, true);
+
+        File.WriteAllText(path, "{not-json", Encoding.UTF8);
+        AssertEqual("window state corrupt json", WindowStateStore.Load(path, _ => true) is null, true);
     }
 
     private static DisplayParserRule JsonParser(string template) => new()
