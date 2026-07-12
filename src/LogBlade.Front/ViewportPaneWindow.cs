@@ -5449,18 +5449,11 @@ internal sealed class ViewportPaneWindow : IDisposable
     private int GetDefaultLineNumberColumnWidthChars(IColumnViewportReader reader)
     {
         int maxLength = GetGridHeaders(reader)[0].Length;
-        if (reader is ILineNumberColumnViewportReader lineNumberReader && lineNumberReader.MaxLineNumber > 0)
+        foreach (IReadOnlyList<string> row in reader.CurrentCells)
         {
-            maxLength = Math.Max(maxLength, lineNumberReader.MaxLineNumber.ToString().Length);
-        }
-        else
-        {
-            foreach (IReadOnlyList<string> row in reader.CurrentCells)
+            if (row.Count > 0)
             {
-                if (row.Count > 0)
-                {
-                    maxLength = Math.Max(maxLength, row[0].Length);
-                }
+                maxLength = Math.Max(maxLength, row[0].Length);
             }
         }
 
