@@ -2041,7 +2041,10 @@ internal sealed class ViewerWindow
                 SetSearchLevelControls(_searchLevels[i], activeLevels[i].Snapshot);
             }
 
-            SetSearchLevelControls(_searchLevels[activeLevels.Count], new SearchLevelSnapshot(string.Empty, UseRegex: true, IgnoreCase: false, InvertMatch: false));
+            SearchLevelState emptyLevel = _searchLevels[activeLevels.Count];
+            SetSearchLevelControls(
+                emptyLevel,
+                new SearchLevelSnapshot(string.Empty, emptyLevel.UseRegex, emptyLevel.IgnoreCase, emptyLevel.InvertMatch));
         }
         finally
         {
