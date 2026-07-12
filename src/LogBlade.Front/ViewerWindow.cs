@@ -741,6 +741,12 @@ internal sealed class ViewerWindow
         int configureIndex = _parserRules.Count + 1;
         if (selected == configureIndex)
         {
+            if (_configurationWindowOpen)
+            {
+                SetParserComboSelection(_selectedParserRuleIndex);
+                return;
+            }
+
             OpenRuleManager();
             return;
         }
@@ -761,6 +767,7 @@ internal sealed class ViewerWindow
         string? selectedRuleName;
         SetParserComboIndex(_parserRules.Count + 1);
         NativeMethods.EnableWindow(_parserCombo, false);
+        NativeMethods.EnableWindow(_highlightingButton, false);
         _configurationWindowOpen = true;
         try
         {
@@ -770,6 +777,7 @@ internal sealed class ViewerWindow
         {
             _configurationWindowOpen = false;
             NativeMethods.EnableWindow(_parserCombo, true);
+            NativeMethods.EnableWindow(_highlightingButton, true);
             _parserPreviewActive = false;
             _previewParserRule = null;
         }
