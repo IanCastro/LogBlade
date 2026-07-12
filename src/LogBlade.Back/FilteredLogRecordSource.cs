@@ -36,7 +36,8 @@ public sealed class FilteredLogRecordSource : ILogRecordSource
         long totalLineCount = 0,
         DisplayParserRule? displayParserRule = null,
         long parserRescanOffset = -1,
-        long parserRescanLineNumber = 0)
+        long parserRescanLineNumber = 0,
+        IReadOnlyList<string>? columnHeaders = null)
     {
         _contentSource = contentSource;
         _kind = kind;
@@ -47,7 +48,8 @@ public sealed class FilteredLogRecordSource : ILogRecordSource
         _parserRescanOffset = parserRescanOffset >= dataOffset ? parserRescanOffset : fileSize;
         _parserRescanLineNumber = parserRescanLineNumber > 0 ? parserRescanLineNumber : totalLineCount + 1;
         _descriptors = new FilteredLineDescriptor[descriptors.Count];
-        _captureGroupHeaders = Array.Empty<string>();
+        _captureGroupHeaders = CopyExpectedCaptureGroupHeaders(columnHeaders);
+        _captureGroupCount = _captureGroupHeaders.Length;
 
         for (int i = 0; i < descriptors.Count; i++)
         {
@@ -378,7 +380,8 @@ public sealed class FilteredLogRecordSource : ILogRecordSource
             _totalLineCount,
             _displayParserRule,
             _parserRescanOffset,
-            _parserRescanLineNumber)
+            _parserRescanLineNumber,
+            _columnHeaders)
         {
             _observedZeroFileSize = _observedZeroFileSize,
             _topRecordOrdinal = _topRecordOrdinal,
@@ -541,6 +544,22 @@ public sealed class FilteredLogRecordSource : ILogRecordSource
         }
 
         return copy;
+    }
+
+    private static string[] CopyExpectedCaptureGroupHeaders(IReadOnlyList<string>? columnHeaders)
+    {
+        if (columnHeaders is null || columnHeaders.Count <= 2)
+        {
+            return Array.Empty<string>();
+        }
+
+        string[] captureHeaders = new string[columnHeaders.Count - 2];
+        for (int i = 0; i < captureHeaders.Length; i++)
+        {
+            captureHeaders[i] = columnHeaders[i + 2];
+        }
+
+        return captureHeaders;
     }
 
     private void SetEmptyViewport(int count)

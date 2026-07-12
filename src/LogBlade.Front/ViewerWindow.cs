@@ -88,6 +88,7 @@ internal sealed class ViewerWindow
     private bool _resourcesDisposed;
     private bool _updatingParserCombo;
     private bool _updatingSearchControls;
+    private long _knownContentFileSize;
     private long _nextOpenRequestId;
     private long _latestOpenRequestId;
     private List<DisplayParserRule> _parserRules = new();
@@ -199,6 +200,7 @@ internal sealed class ViewerWindow
     public ViewerWindow(LogContentSource contentSource)
     {
         _contentSource = contentSource;
+        _knownContentFileSize = contentSource.IsFile ? 0 : contentSource.Length;
     }
 
     public void Run()
@@ -1232,7 +1234,6 @@ internal sealed class ViewerWindow
             onHostVerticalResizeBegin: OnResultsPaneResizeBegin);
         level.ResultsPane.Create(_hwnd, hInstance);
         level.ResultsPane.SetHighlightRules(_compiledHighlightRules);
-        level.ResultsPane.SetEmptyContentText("(no matches)");
         level.ResultsPane.SetStatus(string.Empty);
         _searchLevels.Add(level);
         return level;
@@ -1291,6 +1292,7 @@ internal sealed class ViewerWindow
     private void LoadContentSource(LogContentSource contentSource)
     {
         _contentSource = contentSource;
+        _knownContentFileSize = contentSource.IsFile ? 0 : contentSource.Length;
         if (_hwnd != IntPtr.Zero)
         {
             NativeMethods.SetWindowTextW(_hwnd, ComposeWindowTitle());
@@ -1298,13 +1300,6 @@ internal sealed class ViewerWindow
 
         BeginBackgroundOpen();
     }
-
-    private string GetMainEmptyContentText()
-        => !_contentSource.IsFile &&
-            string.Equals(_contentSource.DisplayName, "Untitled", StringComparison.Ordinal) &&
-            _contentSource.Length == 0
-                ? "Open a file with Open... or paste text with Paste / Ctrl+V."
-                : "(empty file)";
 
     private void BeginBackgroundOpen()
     {
@@ -1331,7 +1326,6 @@ internal sealed class ViewerWindow
         _searchStale = false;
         ClearPausedSearchCheckpoint();
         ClearPendingLowerSearchChange();
-        _mainPane.SetEmptyContentText(GetMainEmptyContentText());
         _mainPane.SetStatus("Loading file...");
         SetActiveSearchResultStatus(string.Empty);
         InvalidateHost();
@@ -1408,6 +1402,7 @@ internal sealed class ViewerWindow
         if (result.Success && result.Reader is not null && _mainPane is not null)
         {
             _detectedEncoding = result.DetectedEncoding;
+            RememberObservedContentFileSize(result.Reader.ConfirmedFileSize);
             var projected = new ProjectedViewport(result.Reader, wrapLongLines: true);
             projected.UseCurrentSourceRecords(result.PreloadedVisibleLines);
             _mainPane.SetReader(projected, result.PreloadedVisibleLines);
@@ -2268,21 +2263,55 @@ internal sealed class ViewerWindow
         }
     }
 
-    private void SetActiveSearchEmptyContentText(string text)
+    private void ShowActiveSearchEmptyReaders(IReadOnlyList<SearchOptions> options)
     {
-        for (int i = 0; i < _activeSearchLevelCount && i < _searchLevels.Count; i++)
+        for (int i = 0; i < _searchLevels.Count; i++)
         {
-            _searchLevels[i].ResultsPane?.SetEmptyContentText(text);
+            if (i < _activeSearchLevelCount)
+            {
+                ShowSearchEmptyReader(_searchLevels[i].ResultsPane, options, i);
+            }
+            else
+            {
+                _searchLevels[i].ResultsPane?.SetStatus(string.Empty);
+            }
         }
     }
 
-    private void SetSearchEmptyContentTextFromLevel(int startLevel, string text)
+    private void ShowSearchEmptyReadersFromLevel(int startLevel, IReadOnlyList<SearchOptions> options)
     {
-        startLevel = Math.Clamp(startLevel, 0, _activeSearchLevelCount);
-        for (int i = startLevel; i < _activeSearchLevelCount && i < _searchLevels.Count; i++)
+        startLevel = Math.Clamp(startLevel, 0, _searchLevels.Count);
+        for (int i = startLevel; i < _searchLevels.Count; i++)
         {
-            _searchLevels[i].ResultsPane?.SetEmptyContentText(text);
+            if (i < _activeSearchLevelCount)
+            {
+                ShowSearchEmptyReader(_searchLevels[i].ResultsPane, options, i);
+            }
+            else
+            {
+                _searchLevels[i].ResultsPane?.SetStatus(string.Empty);
+            }
         }
+    }
+
+    private void ShowSearchEmptyReader(ViewportPaneWindow? pane, IReadOnlyList<SearchOptions> options, int stageIndex)
+    {
+        if (pane is null || _detectedEncoding is not DetectedEncodingInfo detected)
+        {
+            return;
+        }
+
+        FilteredLogRecordSource source = LogSearchBuilder.CreateEmptyReader(
+            _contentSource,
+            detected.Encoding,
+            detected.DataOffset,
+            GetKnownContentFileSize(detected.DataOffset),
+            options,
+            stageIndex,
+            GetEffectiveParserRule());
+        var reader = new FilteredProjectedViewport(source);
+        reader.ReadFromPercentage(0d, pane.VisibleDataLineCount);
+        pane.SetReader(reader, pane.VisibleDataLineCount, preserveColumnWidths: true);
     }
 
     private void MarkActiveSearchReadersObservedZero()
@@ -2294,7 +2323,7 @@ internal sealed class ViewerWindow
 
         for (int i = _activeSearchLevelCount; i < _searchLevels.Count; i++)
         {
-            _searchLevels[i].ResultsPane?.SetStatus(string.Empty);
+            _searchLevels[i].ResultsPane?.SetStatus(string.Empty, disposeReader: false, preserveColumnWidths: true);
         }
     }
 
@@ -2372,8 +2401,7 @@ internal sealed class ViewerWindow
         _appendSearchInProgress = false;
         _searchDisplayActive = true;
         _searchErrorText = string.Empty;
-        SetSearchEmptyContentTextFromLevel(_pendingLowerSearchChange.StartLevel, "(no matches)");
-        SetSearchResultStatusFromLevel(_pendingLowerSearchChange.StartLevel, "Searching...", preserveColumnWidths: true);
+        ShowSearchEmptyReadersFromLevel(_pendingLowerSearchChange.StartLevel, _pendingLowerSearchChange.Options);
         RecalculateLayout();
         ApplyLayout();
         InvalidateHost();
@@ -2405,7 +2433,6 @@ internal sealed class ViewerWindow
         _appendSearchPending = false;
         _searchDisplayActive = true;
         _searchErrorText = "Search stale";
-        SetActiveSearchEmptyContentText(string.Empty);
         _mainPane?.MarkReaderObservedZero();
         ApplySearchResultReaders(result, markObservedZero: true);
         RecalculateLayout();
@@ -2441,7 +2468,6 @@ internal sealed class ViewerWindow
         _searchInProgress = false;
         _appendSearchInProgress = false;
         _appendSearchPending = false;
-        SetActiveSearchEmptyContentText(string.Empty);
         MarkActiveSearchReadersObservedZero();
         RecalculateLayout();
         ApplyLayout();
@@ -2473,7 +2499,6 @@ internal sealed class ViewerWindow
         _searchErrorText = string.Empty;
         _searchMatchedLineCount = ClearActiveSearchReadersObservedZero();
         _searchProgressPercentage = Math.Clamp(checkpoint.ProgressPercentage, 0d, 100d);
-        SetActiveSearchEmptyContentText("(no matches)");
 
         FilteredLogRecordSource[]? currentReaders = GetActiveFilteredReaders();
         if (currentReaders is null || currentReaders.Length != checkpoint.Options.Length)
@@ -2522,8 +2547,7 @@ internal sealed class ViewerWindow
         _searchProgressPercentage = 0d;
         _searchMatchedLineCount = 0;
         _searchErrorText = string.Empty;
-        SetActiveSearchEmptyContentText("(no matches)");
-        SetActiveSearchResultStatus("Searching...", disposeReader: false, preserveColumnWidths: true);
+        ShowActiveSearchEmptyReaders(options);
         InvalidateSearchBar();
         DispatchSearch(requestId, options);
     }
@@ -2578,7 +2602,6 @@ internal sealed class ViewerWindow
                 nextReader.MarkObservedZeroFileSize();
             }
 
-            pane.SetEmptyContentText(markObservedZero ? string.Empty : "(no matches)");
             pane.SetReader(
                 nextReader,
                 result.PreloadedVisibleLines is not null && i < result.PreloadedVisibleLines.Length
@@ -2677,8 +2700,7 @@ internal sealed class ViewerWindow
         _searchInProgress = true;
         _searchDisplayActive = true;
         _searchErrorText = string.Empty;
-        SetSearchEmptyContentTextFromLevel(startLevel, "(no matches)");
-        SetSearchResultStatusFromLevel(startLevel, "Searching...", preserveColumnWidths: true);
+        ShowSearchEmptyReadersFromLevel(startLevel, options);
         DispatchChangedSearch(requestId, prefixReaders, startLevel, options);
         return true;
     }
@@ -3029,13 +3051,11 @@ internal sealed class ViewerWindow
         _searchErrorText = string.Empty;
         if (searchStartLevel > 0)
         {
-            SetSearchEmptyContentTextFromLevel(searchStartLevel, "(no matches)");
-            SetSearchResultStatusFromLevel(searchStartLevel, "Searching...", preserveColumnWidths: true);
+            ShowSearchEmptyReadersFromLevel(searchStartLevel, options);
         }
         else
         {
-            SetActiveSearchEmptyContentText("(no matches)");
-            SetActiveSearchResultStatus("Searching...", preserveColumnWidths: true);
+            ShowActiveSearchEmptyReaders(options);
         }
 
         RecalculateLayout();
@@ -3097,7 +3117,6 @@ internal sealed class ViewerWindow
         _searchProgressPercentage = 100d;
         _searchMatchedLineCount = prefixReaders[^1].MatchedLineCount;
         _searchErrorText = string.Empty;
-        SetSearchEmptyContentTextFromLevel(optionCount, "(no matches)");
         SetSearchResultStatusFromLevel(optionCount, string.Empty);
         RecalculateLayout();
         ApplyLayout();
@@ -3514,7 +3533,6 @@ internal sealed class ViewerWindow
             _mainPane?.ClearReaderObservedZero();
             _searchErrorText = string.Empty;
             _searchMatchedLineCount = ClearActiveSearchReadersObservedZero();
-            SetActiveSearchEmptyContentText("(no matches)");
             InvalidateSearchBar();
         }
 
@@ -3611,6 +3629,7 @@ internal sealed class ViewerWindow
         try
         {
             currentFileSize = _contentSource.Length;
+            RememberObservedContentFileSize(currentFileSize);
             return true;
         }
         catch (IOException)
@@ -3623,6 +3642,31 @@ internal sealed class ViewerWindow
             currentFileSize = 0;
             return false;
         }
+    }
+
+    private void RememberObservedContentFileSize(long fileSize)
+    {
+        if (fileSize > 0 || _knownContentFileSize == 0)
+        {
+            _knownContentFileSize = Math.Max(0, fileSize);
+        }
+    }
+
+    private long GetKnownContentFileSize(long dataOffset)
+    {
+        long fileSize = _knownContentFileSize;
+        if (_mainPane?.Reader is ProjectedViewport mainReader)
+        {
+            fileSize = Math.Max(fileSize, mainReader.ConfirmedFileSize);
+        }
+
+        FilteredLogRecordSource[]? currentReaders = GetActiveFilteredReaders();
+        if (currentReaders is { Length: > 0 })
+        {
+            fileSize = Math.Max(fileSize, currentReaders[0].ConfirmedFileSize);
+        }
+
+        return Math.Max(dataOffset, fileSize);
     }
 
     private static bool AreSearchOptionsValid(IReadOnlyList<SearchOptions> options)
@@ -3966,7 +4010,6 @@ internal sealed class ViewerWindow
         _searchProgressPercentage = 0d;
         _searchMatchedLineCount = 0;
         _searchErrorText = "Search stale";
-        SetActiveSearchEmptyContentText(string.Empty);
         SetActiveSearchResultStatus(string.Empty);
         RecalculateLayout();
         ApplyLayout();
@@ -4225,18 +4268,6 @@ internal sealed class ViewerWindow
             {
                 DisposeReaders(result.Readers);
                 throw;
-            }
-        }
-
-        if (result.StageMatchedLineCounts is not null)
-        {
-            int stageStartLevel = Math.Clamp(result.SearchStartLevel, 0, _activeSearchLevelCount);
-            for (int i = stageStartLevel; i < applyEndLevel && i < _searchLevels.Count; i++)
-            {
-                if (i < result.StageMatchedLineCounts.Length && result.StageMatchedLineCounts[i] == 0)
-                {
-                    _searchLevels[i].ResultsPane?.SetEmptyContentText("(no matches)");
-                }
             }
         }
 

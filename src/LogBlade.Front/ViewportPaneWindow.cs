@@ -66,13 +66,13 @@ internal sealed class ViewportPaneWindow : IDisposable
     private const int GridDividerThicknessPx = 1;
     private const int MaximumHighlightStyleCacheEntries = 2048;
     private const int InactiveSelectionColor = 0x00FAF0E8;
+    private static readonly int EmptyTrailingAreaColor = NativeMethods.RGB(200, 200, 200);
     private const string WindowClassName = "LogBladeViewportPaneWindow";
 
     private static readonly object s_registrationSync = new();
     private static bool s_registered;
     private static readonly NativeMethods.WindowProc s_wndProc = WindowProc;
     private static readonly string[] s_textOnlyGridHeaders = ["Text"];
-
     private readonly IntPtr _font;
     private readonly IntPtr _boldFont;
     private readonly IntPtr _italicFont;
@@ -88,6 +88,7 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     private IntPtr _hwnd;
     private IntPtr _inactiveSelectionBrush;
+    private IntPtr _emptyTrailingAreaBrush;
     private readonly Dictionary<int, IntPtr> _highlightBrushes = new();
     private readonly Dictionary<ViewportHighlightGroupKey, HighlightStyle?> _highlightStyleCache = new();
     private IReadOnlyList<CompiledHighlightRule> _highlightRules = Array.Empty<CompiledHighlightRule>();
@@ -100,7 +101,6 @@ internal sealed class ViewportPaneWindow : IDisposable
     private bool _usefulPaintNotified;
     private bool _hasFocus;
     private string _statusText = string.Empty;
-    private string _emptyContentText = "(empty file)";
     private IViewportReader? _reader;
     private long _nextViewportRequestId;
     private long _latestViewportRequestId;
@@ -194,6 +194,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         _lineHeight = Math.Max(1, lineHeight);
         _charWidth = Math.Max(1, charWidth);
         _inactiveSelectionBrush = NativeMethods.CreateSolidBrush(InactiveSelectionColor);
+        _emptyTrailingAreaBrush = NativeMethods.CreateSolidBrush(EmptyTrailingAreaColor);
         _onUsefulPaint = onUsefulPaint;
         _onStale = onStale;
         _onRowActivated = onRowActivated;
@@ -246,12 +247,6 @@ internal sealed class ViewportPaneWindow : IDisposable
         {
             NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
         }
-    }
-
-    public void SetEmptyContentText(string text)
-    {
-        _emptyContentText = text;
-        NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
     }
 
     public void SetHighlightRules(IReadOnlyList<CompiledHighlightRule> rules)
@@ -477,6 +472,12 @@ internal sealed class ViewportPaneWindow : IDisposable
         {
             NativeMethods.DeleteObject(_inactiveSelectionBrush);
             _inactiveSelectionBrush = IntPtr.Zero;
+        }
+
+        if (_emptyTrailingAreaBrush != IntPtr.Zero)
+        {
+            NativeMethods.DeleteObject(_emptyTrailingAreaBrush);
+            _emptyTrailingAreaBrush = IntPtr.Zero;
         }
 
         ClearHighlightBrushes();
@@ -5020,20 +5021,18 @@ internal sealed class ViewportPaneWindow : IDisposable
         int y = 0;
         int visibleNonEmptyLines = 0;
 
+        NativeMethods.GetClientRect(_hwnd, out NativeMethods.RECT clientRect);
         if (_reader is null)
         {
             if (!string.IsNullOrEmpty(_statusText))
             {
                 NativeMethods.TextOutW(hdc, x, y, _statusText, _statusText.Length);
             }
+            else
+            {
+                PaintEmptyTrailingArea(hdc, clientRect, top: 0);
+            }
 
-            return visibleNonEmptyLines;
-        }
-
-        if (!_reader.HasContent)
-        {
-            string emptyText = _emptyContentText;
-            NativeMethods.TextOutW(hdc, x, y, emptyText, emptyText.Length);
             return visibleNonEmptyLines;
         }
 
@@ -5042,7 +5041,12 @@ internal sealed class ViewportPaneWindow : IDisposable
             return PaintColumnContent(hdc, columnReader);
         }
 
-        NativeMethods.GetClientRect(_hwnd, out NativeMethods.RECT clientRect);
+        if (!_reader.HasContent)
+        {
+            PaintEmptyTrailingArea(hdc, clientRect, top: 0);
+            return visibleNonEmptyLines;
+        }
+
         IReadOnlyList<string> rows = _reader.CurrentRows;
         List<NativeMethods.RECT>? textSelectionIndicatorRects = null;
         for (int rowIndex = 0; rowIndex < rows.Count; rowIndex++)
@@ -5116,6 +5120,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         PaintTextSelectionIndicatorBlocks(hdc, textSelectionIndicatorRects);
+        PaintEmptyTrailingArea(hdc, clientRect, y);
         return visibleNonEmptyLines;
     }
 
@@ -5168,7 +5173,33 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         PaintTextSelectionIndicatorBlocks(hdc, textSelectionIndicatorRects);
+        PaintEmptyTrailingArea(hdc, clientRect, y);
         return visibleNonEmptyLines;
+    }
+
+    private void PaintEmptyTrailingArea(IntPtr hdc, NativeMethods.RECT clientRect, int top)
+    {
+        if (top >= clientRect.bottom)
+        {
+            return;
+        }
+
+        NativeMethods.RECT trailingRect = clientRect;
+        trailingRect.top = Math.Max(clientRect.top, top);
+        PaintEmptyArea(hdc, trailingRect);
+    }
+
+    private void PaintEmptyArea(IntPtr hdc, NativeMethods.RECT rect)
+    {
+        if (rect.right <= rect.left || rect.bottom <= rect.top)
+        {
+            return;
+        }
+
+        IntPtr brush = _emptyTrailingAreaBrush != IntPtr.Zero
+            ? _emptyTrailingAreaBrush
+            : NativeMethods.GetSysColorBrush(NativeMethods.COLOR_3DFACE);
+        NativeMethods.FillRect(hdc, ref rect, brush);
     }
 
     private void PaintGridRow(IntPtr hdc, NativeMethods.RECT clientRect, IReadOnlyList<string> cells, IReadOnlyList<int> widths, int y, bool isHeader, bool isRowSelected, int dataRowIndex, HighlightStyle? highlight, ref List<NativeMethods.RECT>? textSelectionIndicatorRects)
@@ -5223,6 +5254,20 @@ internal sealed class ViewportPaneWindow : IDisposable
             }
 
             startChars += widthChars;
+        }
+
+        int rowRight = firstCellRect.right + ((startChars - _xOffsetChars) * _charWidth);
+        int emptyLeft = Math.Max(scrollRect.left, rowRight);
+        if (emptyLeft < clientRect.right)
+        {
+            NativeMethods.RECT emptyRightRect = new()
+            {
+                left = emptyLeft,
+                top = y,
+                right = clientRect.right,
+                bottom = Math.Min(y + _lineHeight, clientRect.bottom)
+            };
+            PaintEmptyArea(hdc, emptyRightRect);
         }
     }
 

@@ -67,7 +67,10 @@ internal static class Program
             RunRegexOnlyNonCapturingGroupsUsesPlainRows(tempRoot);
             RunRegexOptionalCaptureGroupUsesEmptyCell(tempRoot);
             RunRegexWithoutGroupsUsesPlainRows(tempRoot);
+            RunRegexCaptureHeadersSurviveNoMatches(tempRoot);
             RunLiteralSearchUsesPlainRows(tempRoot);
+            RunSearchColumnHeadersFromOptions();
+            RunEmptySearchReaderUsesProvidedFileSize(tempRoot);
             RunLiteralInvertMatch(tempRoot);
             RunRegexInvertMatch(tempRoot);
             RunRegexCaptureGroupsInvertUsesPlainRows(tempRoot);
@@ -893,6 +896,41 @@ internal static class Program
         AssertSequence("regex no-group rows", reader.CurrentDisplayTexts, "aaabccc");
     }
 
+    private static void RunRegexCaptureHeadersSurviveNoMatches(string tempRoot)
+    {
+        string path = WriteLog(tempRoot, "regex-no-match-captures.log", "alpha\r\nbeta\r\n");
+
+        using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new SearchOptions("missing-(?<code>\\d+)", UseRegex: true, IgnoreCase: false));
+
+        reader.ReadFromPercentage(0d, 10);
+        AssertSequence("regex no-match capture headers", reader.ColumnHeaders, "#", "Text", "code");
+        AssertEqual("regex no-match capture cells", reader.CurrentCells.Count, 0);
+
+        SearchOptions[] stagedOptions =
+        {
+            new("alpha", UseRegex: false, IgnoreCase: false),
+            new("missing-(?<code>\\d+)", UseRegex: true, IgnoreCase: false)
+        };
+        FilteredLogRecordSource[] stagedReaders = LogSearchBuilder.BuildStagedFilteredReaders(path, Encoding.UTF8, dataOffset: 0, stagedOptions);
+        try
+        {
+            stagedReaders[1].ReadFromPercentage(0d, 10);
+            AssertSequence("staged no-match capture headers", stagedReaders[1].ColumnHeaders, "#", "Text", "code");
+            AssertEqual("staged no-match capture cells", stagedReaders[1].CurrentCells.Count, 0);
+        }
+        finally
+        {
+            foreach (FilteredLogRecordSource stagedReader in stagedReaders)
+            {
+                stagedReader.Dispose();
+            }
+        }
+    }
+
     private static void RunLiteralSearchUsesPlainRows(string tempRoot)
     {
         string path = WriteLog(tempRoot, "literal.log", "line.with.dot\r\nplain\r\n");
@@ -908,6 +946,56 @@ internal static class Program
         AssertSequence("literal headers", columns.ColumnHeaders, "#", "Text");
         AssertSequence("literal cells", columns.CurrentCells[0], "1", "line.with.dot");
         AssertSequence("literal rows", reader.CurrentDisplayTexts, "line.with.dot");
+    }
+
+    private static void RunSearchColumnHeadersFromOptions()
+    {
+        SearchOptions[] regexOptions =
+        {
+            new("code-(?<code>\\d+) user-(\\w+)", UseRegex: true, IgnoreCase: false)
+        };
+        AssertSequence("regex option headers", LogSearchBuilder.CreateColumnHeaders(regexOptions, 0), "#", "Text", "0", "code");
+
+        SearchOptions[] literalOptions =
+        {
+            new("code", UseRegex: false, IgnoreCase: false)
+        };
+        AssertSequence("literal option headers", LogSearchBuilder.CreateColumnHeaders(literalOptions, 0), "#", "Text");
+
+        SearchOptions[] cascadedOptions =
+        {
+            new("code-(?<code>\\d+)", UseRegex: true, IgnoreCase: false),
+            new("user", UseRegex: false, IgnoreCase: false),
+            new("(?:GET|POST)", UseRegex: true, IgnoreCase: false),
+            new("blocked-(?<reason>\\w+)", UseRegex: true, IgnoreCase: false, InvertMatch: true)
+        };
+        AssertSequence("cascade literal option headers", LogSearchBuilder.CreateColumnHeaders(cascadedOptions, 1), "#", "Text", "code");
+        AssertSequence("cascade non-capturing option headers", LogSearchBuilder.CreateColumnHeaders(cascadedOptions, 2), "#", "Text", "code");
+        AssertSequence("cascade invert option headers", LogSearchBuilder.CreateColumnHeaders(cascadedOptions, 3), "#", "Text", "code");
+    }
+
+    private static void RunEmptySearchReaderUsesProvidedFileSize(string tempRoot)
+    {
+        string missingPath = Path.Combine(tempRoot, "missing-empty-search-reader.log");
+        LogContentSource missingSource = LogContentSource.FromFile(missingPath);
+        SearchOptions[] options =
+        {
+            new("code-(?<code>\\d+)", UseRegex: true, IgnoreCase: false)
+        };
+
+        using FilteredLogRecordSource reader = LogSearchBuilder.CreateEmptyReader(
+            missingSource,
+            Encoding.UTF8,
+            dataOffset: 0,
+            fileSize: 123,
+            options: options,
+            stageIndex: 0);
+
+        AssertEqual("empty search reader provided file size", reader.ConfirmedFileSize, 123L);
+        AssertEqual("empty search reader count", reader.MatchedLineCount, 0L);
+        AssertSequence("empty search reader headers", reader.ColumnHeaders, "#", "Text", "code");
+        reader.ReadFromPercentage(0d, 10);
+        AssertEqual("empty search reader rows", reader.CurrentDisplayTexts.Count, 0);
     }
 
     private static void RunLiteralInvertMatch(string tempRoot)

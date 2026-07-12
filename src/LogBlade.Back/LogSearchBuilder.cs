@@ -45,6 +45,65 @@ public static class LogSearchBuilder
         }
     }
 
+    public static string[] CreateColumnHeaders(IReadOnlyList<SearchOptions> options, int stageIndex)
+    {
+        if (options.Count == 0 || stageIndex < 0 || stageIndex >= options.Count)
+        {
+            return ["#", "Text"];
+        }
+
+        string[] captureHeaders = Array.Empty<string>();
+        for (int i = 0; i <= stageIndex; i++)
+        {
+            SearchOptions option = options[i];
+            if (!option.UseRegex || option.InvertMatch)
+            {
+                continue;
+            }
+
+            string[] nextHeaders = CreateCaptureGroupHeaders(CreateRegex(option));
+            if (nextHeaders.Length > 0)
+            {
+                captureHeaders = nextHeaders;
+            }
+        }
+
+        string[] headers = new string[captureHeaders.Length + 2];
+        headers[0] = "#";
+        headers[1] = "Text";
+        for (int i = 0; i < captureHeaders.Length; i++)
+        {
+            headers[i + 2] = captureHeaders[i];
+        }
+
+        return headers;
+    }
+
+    public static FilteredLogRecordSource CreateEmptyReader(
+        LogContentSource contentSource,
+        Encoding encoding,
+        long dataOffset,
+        long fileSize,
+        IReadOnlyList<SearchOptions> options,
+        int stageIndex,
+        DisplayParserRule? displayParserRule = null)
+    {
+        fileSize = Math.Max(dataOffset, fileSize);
+        LogEncodingKind kind = LogFileUtilities.InferKind(encoding, dataOffset);
+        return new FilteredLogRecordSource(
+            contentSource,
+            kind,
+            encoding,
+            dataOffset,
+            fileSize,
+            Array.Empty<FilteredLineDescriptor>(),
+            totalLineCount: 0,
+            DisplayParserEvaluator.CloneRule(displayParserRule),
+            parserRescanOffset: fileSize,
+            parserRescanLineNumber: 1,
+            CreateColumnHeaders(options, stageIndex));
+    }
+
     public static FilteredLogRecordSource BuildFilteredReader(string filePath, Encoding encoding, long dataOffset, SearchOptions options, DisplayParserRule? displayParserRule = null)
         => BuildFilteredReader(filePath, encoding, dataOffset, new[] { options }, displayParserRule);
 
@@ -82,7 +141,8 @@ public static class LogSearchBuilder
             totalLineCount,
             parserRule,
             GetParserRescanOffset(recordSequence, fileSize),
-            GetParserRescanLineNumber(recordSequence, totalLineCount));
+            GetParserRescanLineNumber(recordSequence, totalLineCount),
+            CreateColumnHeaders(options, options.Count - 1));
     }
 
     public static FilteredLogRecordSource[] BuildStagedFilteredReaders(string filePath, Encoding encoding, long dataOffset, IReadOnlyList<SearchOptions> options, DisplayParserRule? displayParserRule = null)
@@ -117,7 +177,8 @@ public static class LogSearchBuilder
             Array.Empty<int>(),
             parserRule,
             GetParserRescanOffset(recordSequence, fileSize),
-            GetParserRescanLineNumber(recordSequence, totalLineCount));
+            GetParserRescanLineNumber(recordSequence, totalLineCount),
+            options);
     }
 
     public static void BuildFilteredReaderIncremental(string filePath, Encoding encoding, long dataOffset, string query, int preloadedVisibleLines, Action<SearchProgressUpdate> onProgress)
@@ -200,7 +261,8 @@ public static class LogSearchBuilder
                     totalLineCount,
                     parserRule,
                     GetParserRescanOffset(recordSequence, isFinal ? fileSize : scannedOffset),
-                    GetParserRescanLineNumber(recordSequence, totalLineCount));
+                    GetParserRescanLineNumber(recordSequence, totalLineCount),
+                    CreateColumnHeaders(options, options.Count - 1));
                 reader.ReadFromPercentage(0d, Math.Max(1, preloadedVisibleLines));
                 lastPublishedDescriptorCount = descriptors.Count;
             }
@@ -318,7 +380,8 @@ public static class LogSearchBuilder
                         totalLineCount,
                         parserRule,
                         GetParserRescanOffset(recordSequence, readerFileSize),
-                        GetParserRescanLineNumber(recordSequence, totalLineCount));
+                        GetParserRescanLineNumber(recordSequence, totalLineCount),
+                        CreateColumnHeaders(options, i));
                     if (!isPaused)
                     {
                         readers[i]!.ReadFromPercentage(0d, GetPreloadedVisibleLines(preloadedVisibleLines, i));
@@ -339,7 +402,8 @@ public static class LogSearchBuilder
                         totalLineCount,
                         parserRule,
                         GetParserRescanOffset(recordSequence, readerFileSize),
-                        GetParserRescanLineNumber(recordSequence, totalLineCount));
+                        GetParserRescanLineNumber(recordSequence, totalLineCount),
+                        CreateColumnHeaders(options, i));
                     publishedReader = true;
                 }
             }
@@ -506,7 +570,8 @@ public static class LogSearchBuilder
                         totalLineCount,
                         parserRule,
                         sourceReader.ParserRescanOffset,
-                        sourceReader.ParserRescanLineNumber);
+                        sourceReader.ParserRescanLineNumber,
+                        CreateColumnHeaders(options, i));
                     if (!isPaused)
                     {
                         readers[i]!.ReadFromPercentage(0d, GetPreloadedVisibleLines(preloadedVisibleLines, i));
@@ -647,7 +712,8 @@ public static class LogSearchBuilder
                     totalLineCount,
                     parserRule,
                     GetParserRescanOffset(recordSequence, newFileSize),
-                    GetParserRescanLineNumber(recordSequence, totalLineCount));
+                    GetParserRescanLineNumber(recordSequence, totalLineCount),
+                    CreateColumnHeaders(options, options.Count - 1));
                 reader.ReadFromPercentage(0d, Math.Max(1, preloadedVisibleLines));
                 lastPublishedDescriptorCount = descriptors.Count;
             }
@@ -709,7 +775,8 @@ public static class LogSearchBuilder
                     previousReaders[i].TotalLineCount,
                     parserRule,
                     previousReaders[i].ParserRescanOffset,
-                    previousReaders[i].ParserRescanLineNumber);
+                    previousReaders[i].ParserRescanLineNumber,
+                    CreateColumnHeaders(options, i));
                 unchangedReaders[i]!.ReadFromPercentage(0d, GetPreloadedVisibleLines(preloadedVisibleLines, i));
             }
 
@@ -821,7 +888,8 @@ public static class LogSearchBuilder
                         totalLineCount,
                         parserRule,
                         GetParserRescanOffset(recordSequence, readerFileSize),
-                        GetParserRescanLineNumber(recordSequence, totalLineCount));
+                        GetParserRescanLineNumber(recordSequence, totalLineCount),
+                        CreateColumnHeaders(options, i));
                     if (!isPaused)
                     {
                         readers[i]!.ReadFromPercentage(0d, GetPreloadedVisibleLines(preloadedVisibleLines, i));
@@ -985,7 +1053,8 @@ public static class LogSearchBuilder
                         totalLineCount,
                         parserRule,
                         GetParserRescanOffset(recordSequence, readerFileSize),
-                        GetParserRescanLineNumber(recordSequence, totalLineCount));
+                        GetParserRescanLineNumber(recordSequence, totalLineCount),
+                        CreateColumnHeaders(options, i));
                     if (!isPaused)
                     {
                         readers[i]!.ReadFromPercentage(0d, GetPreloadedVisibleLines(preloadedVisibleLines, i));
@@ -1189,7 +1258,8 @@ public static class LogSearchBuilder
         IReadOnlyList<int> preloadedVisibleLines,
         DisplayParserRule? displayParserRule,
         long parserRescanOffset,
-        long parserRescanLineNumber)
+        long parserRescanLineNumber,
+        IReadOnlyList<SearchOptions> options)
     {
         FilteredLogRecordSource[] readers = new FilteredLogRecordSource[descriptors.Length];
         for (int i = 0; i < readers.Length; i++)
@@ -1204,7 +1274,8 @@ public static class LogSearchBuilder
                 totalLineCount,
                 displayParserRule,
                 parserRescanOffset,
-                parserRescanLineNumber);
+                parserRescanLineNumber,
+                CreateColumnHeaders(options, i));
             readers[i].ReadFromPercentage(0d, GetPreloadedVisibleLines(preloadedVisibleLines, i));
         }
 
@@ -1409,6 +1480,39 @@ public static class LogSearchBuilder
         }
     }
 
+    private static string[] CreateCaptureGroupHeaders(Regex regex)
+    {
+        int[] groupNumbers = regex.GetGroupNumbers();
+        string[] groupNames = regex.GetGroupNames();
+        List<string> captureGroupHeaders = new();
+        int unnamedCaptureIndex = 0;
+
+        for (int i = 0; i < groupNumbers.Length; i++)
+        {
+            int groupNumber = groupNumbers[i];
+            if (groupNumber == 0)
+            {
+                continue;
+            }
+
+            string groupName = i < groupNames.Length ? groupNames[i] : groupNumber.ToString();
+            string header;
+            if (int.TryParse(groupName, out _))
+            {
+                header = unnamedCaptureIndex.ToString();
+                unnamedCaptureIndex++;
+            }
+            else
+            {
+                header = groupName;
+            }
+
+            captureGroupHeaders.Add(header);
+        }
+
+        return captureGroupHeaders.ToArray();
+    }
+
     private readonly struct SearchMatcherCascade
     {
         private readonly SearchOptions[] _options;
@@ -1538,10 +1642,8 @@ public static class LogSearchBuilder
         private static (int[] Numbers, string[] Headers) CreateCaptureGroupDefinitions(Regex regex)
         {
             int[] groupNumbers = regex.GetGroupNumbers();
-            string[] groupNames = regex.GetGroupNames();
             List<int> captureGroupNumbers = new();
-            List<string> captureGroupHeaders = new();
-            int unnamedCaptureIndex = 0;
+            string[] captureGroupHeaders = CreateCaptureGroupHeaders(regex);
 
             for (int i = 0; i < groupNumbers.Length; i++)
             {
@@ -1551,23 +1653,10 @@ public static class LogSearchBuilder
                     continue;
                 }
 
-                string groupName = i < groupNames.Length ? groupNames[i] : groupNumber.ToString();
-                string header;
-                if (int.TryParse(groupName, out _))
-                {
-                    header = unnamedCaptureIndex.ToString();
-                    unnamedCaptureIndex++;
-                }
-                else
-                {
-                    header = groupName;
-                }
-
                 captureGroupNumbers.Add(groupNumber);
-                captureGroupHeaders.Add(header);
             }
 
-            return (captureGroupNumbers.ToArray(), captureGroupHeaders.ToArray());
+            return (captureGroupNumbers.ToArray(), captureGroupHeaders);
         }
     }
 }
