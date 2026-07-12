@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 
 internal sealed class RuleManagerWindow
@@ -14,6 +15,10 @@ internal sealed class RuleManagerWindow
     private const int IdCloseButton = 205;
     private const int IdUpButton = 206;
     private const int IdDownButton = 207;
+    private const int IdExportButton = 208;
+    private const int IdImportButton = 209;
+    private const int ExportSchemaVersion = 1;
+    private const string ExportAppName = "LogBlade";
 
     private readonly List<DisplayParserRule> _rules;
     private readonly string _defaultRuleSample;
@@ -30,6 +35,8 @@ internal sealed class RuleManagerWindow
     private IntPtr _duplicateButton;
     private IntPtr _upButton;
     private IntPtr _downButton;
+    private IntPtr _exportButton;
+    private IntPtr _importButton;
     private IntPtr _closeButton;
     private bool _closed;
     private bool _updatingList;
@@ -226,6 +233,8 @@ internal sealed class RuleManagerWindow
         _duplicateButton = CreateButton("Duplicate", IdDuplicateButton);
         _upButton = CreateButton("Up", IdUpButton);
         _downButton = CreateButton("Down", IdDownButton);
+        _exportButton = CreateButton("Export...", IdExportButton);
+        _importButton = CreateButton("Import...", IdImportButton);
         _closeButton = CreateButton("Close", IdCloseButton);
         ReloadList(_activeRuleName);
         Layout();
@@ -281,6 +290,18 @@ internal sealed class RuleManagerWindow
         if (notification == NativeMethods.BN_CLICKED && id == IdDownButton)
         {
             MoveSelectedRule(1);
+            return;
+        }
+
+        if (notification == NativeMethods.BN_CLICKED && id == IdExportButton)
+        {
+            ExportRules();
+            return;
+        }
+
+        if (notification == NativeMethods.BN_CLICKED && id == IdImportButton)
+        {
+            ImportRules();
             return;
         }
 
@@ -525,6 +546,78 @@ internal sealed class RuleManagerWindow
         PublishActiveRulePreview();
     }
 
+    private void ExportRules()
+    {
+        if (_ruleEditorOpen)
+        {
+            return;
+        }
+
+        if (!TryShowRulesSaveDialog(out string? path) || path is null)
+        {
+            return;
+        }
+
+        try
+        {
+            DisplayParserRulesExportPackage package = new()
+            {
+                SchemaVersion = ExportSchemaVersion,
+                App = ExportAppName,
+                ParserRules = CloneRules(_rules)
+            };
+            string json = JsonSerializer.Serialize(package, LogBladeJsonSerializerContext.Default.DisplayParserRulesExportPackage);
+            File.WriteAllText(path, json, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or NotSupportedException or ArgumentException)
+        {
+            ShowError("Failed to export parser rules: " + ex.Message);
+        }
+    }
+
+    private void ImportRules()
+    {
+        if (_ruleEditorOpen)
+        {
+            return;
+        }
+
+        if (!TryShowRulesOpenDialog(out string? path) || path is null)
+        {
+            return;
+        }
+
+        DisplayParserRulesExportPackage? package;
+        try
+        {
+            string json = File.ReadAllText(path, Encoding.UTF8);
+            package = JsonSerializer.Deserialize(json, LogBladeJsonSerializerContext.Default.DisplayParserRulesExportPackage);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or NotSupportedException or ArgumentException)
+        {
+            ShowError("Failed to import parser rules: " + ex.Message);
+            return;
+        }
+
+        if (!TryValidateImportedPackage(package, out string error))
+        {
+            ShowError(error);
+            return;
+        }
+
+        List<DisplayParserRule> importedRules = CloneRules(package!.ParserRules);
+        if (!TrySaveRules(importedRules))
+        {
+            return;
+        }
+
+        _rules.Clear();
+        _rules.AddRange(importedRules);
+        _activeRuleName = _rules.Count > 0 ? _rules[0].Name : null;
+        ReloadList(_activeRuleName);
+        PublishActiveRulePreview();
+    }
+
     private void UpdateActiveRuleFromSelection()
     {
         int index = GetSelectedRuleIndex();
@@ -676,6 +769,10 @@ internal sealed class RuleManagerWindow
         y += buttonHeight + gap;
         Move(_downButton, buttonLeft, y, buttonWidth, buttonHeight);
         y += buttonHeight + gap;
+        Move(_exportButton, buttonLeft, y, buttonWidth, buttonHeight);
+        y += buttonHeight + gap;
+        Move(_importButton, buttonLeft, y, buttonWidth, buttonHeight);
+        y += buttonHeight + gap;
         Move(_removeButton, buttonLeft, y, buttonWidth, buttonHeight);
         Move(_closeButton, buttonLeft, height - margin - buttonHeight, buttonWidth, buttonHeight);
     }
@@ -731,6 +828,95 @@ internal sealed class RuleManagerWindow
         NativeMethods.MessageBoxW(_hwnd, message, Program.AppTitle, NativeMethods.MB_OK | NativeMethods.MB_ICONERROR);
     }
 
+    private bool TryShowRulesOpenDialog(out string? selectedPath)
+    {
+        selectedPath = null;
+        return TryShowRulesFileDialog(save: false, out selectedPath);
+    }
+
+    private bool TryShowRulesSaveDialog(out string? selectedPath)
+    {
+        selectedPath = null;
+        return TryShowRulesFileDialog(save: true, out selectedPath);
+    }
+
+    private bool TryShowRulesFileDialog(bool save, out string? selectedPath)
+    {
+        selectedPath = null;
+        const int fileBufferChars = 32768;
+        IntPtr filterBuffer = IntPtr.Zero;
+        IntPtr fileBuffer = IntPtr.Zero;
+        IntPtr titleBuffer = IntPtr.Zero;
+        IntPtr defaultExtensionBuffer = IntPtr.Zero;
+        try
+        {
+            filterBuffer = Marshal.StringToHGlobalUni("LogBlade parser rules\0*.logblade-parsers.json;*.json\0JSON files\0*.json\0All files\0*.*\0\0");
+            titleBuffer = Marshal.StringToHGlobalUni(save ? "Export parser rules" : "Import parser rules");
+            defaultExtensionBuffer = Marshal.StringToHGlobalUni("json");
+            fileBuffer = Marshal.AllocHGlobal(fileBufferChars * sizeof(char));
+            Marshal.Copy(new byte[fileBufferChars * sizeof(char)], 0, fileBuffer, fileBufferChars * sizeof(char));
+
+            if (save)
+            {
+                string defaultName = "logblade-parsers.json";
+                char[] defaultNameChars = defaultName.ToCharArray();
+                Marshal.Copy(defaultNameChars, 0, fileBuffer, defaultNameChars.Length);
+            }
+
+            NativeMethods.OPENFILENAMEW ofn = new()
+            {
+                lStructSize = Marshal.SizeOf<NativeMethods.OPENFILENAMEW>(),
+                hwndOwner = _hwnd,
+                lpstrFilter = filterBuffer,
+                lpstrFile = fileBuffer,
+                nMaxFile = fileBufferChars,
+                lpstrTitle = titleBuffer,
+                lpstrDefExt = defaultExtensionBuffer,
+                Flags = NativeMethods.OFN_EXPLORER | NativeMethods.OFN_PATHMUSTEXIST | NativeMethods.OFN_NOCHANGEDIR |
+                    (save ? NativeMethods.OFN_OVERWRITEPROMPT : NativeMethods.OFN_FILEMUSTEXIST)
+            };
+
+            bool success = save
+                ? NativeMethods.GetSaveFileNameW(ref ofn)
+                : NativeMethods.GetOpenFileNameW(ref ofn);
+            if (!success)
+            {
+                int dialogError = NativeMethods.CommDlgExtendedError();
+                if (dialogError != 0)
+                {
+                    ShowError("Failed to open file dialog. Error: 0x" + dialogError.ToString("X"));
+                }
+
+                return false;
+            }
+
+            selectedPath = Marshal.PtrToStringUni(fileBuffer);
+            return !string.IsNullOrEmpty(selectedPath);
+        }
+        finally
+        {
+            if (filterBuffer != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(filterBuffer);
+            }
+
+            if (fileBuffer != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(fileBuffer);
+            }
+
+            if (titleBuffer != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(titleBuffer);
+            }
+
+            if (defaultExtensionBuffer != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(defaultExtensionBuffer);
+            }
+        }
+    }
+
     private static void Move(IntPtr hwnd, int x, int y, int width, int height)
     {
         if (hwnd != IntPtr.Zero)
@@ -742,6 +928,74 @@ internal sealed class RuleManagerWindow
     private static DisplayParserRule CopyRule(DisplayParserRule source)
     {
         return source.Clone();
+    }
+
+    private static List<DisplayParserRule> CloneRules(IReadOnlyList<DisplayParserRule> rules)
+    {
+        List<DisplayParserRule> clones = new(rules.Count);
+        for (int i = 0; i < rules.Count; i++)
+        {
+            clones.Add(rules[i].Clone());
+        }
+
+        return clones;
+    }
+
+    private bool TryValidateImportedPackage(DisplayParserRulesExportPackage? package, out string error)
+    {
+        if (package is null)
+        {
+            error = "Import file is not a valid LogBlade parser package.";
+            return false;
+        }
+
+        if (package.SchemaVersion != ExportSchemaVersion || package.App != ExportAppName)
+        {
+            error = "Import file is not a supported LogBlade parser package.";
+            return false;
+        }
+
+        if (package.ParserRules is null)
+        {
+            error = "Import file does not contain parser rules.";
+            return false;
+        }
+
+        HashSet<string> names = new(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < package.ParserRules.Count; i++)
+        {
+            DisplayParserRule? rule = package.ParserRules[i];
+            if (rule is null)
+            {
+                error = $"Rule {i + 1}: rule is missing.";
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(rule.Name))
+            {
+                error = $"Rule {i + 1}: name is required.";
+                return false;
+            }
+
+            if (!names.Add(rule.Name))
+            {
+                error = $"Rule {i + 1}: duplicate parser name '{rule.Name}'.";
+                return false;
+            }
+
+            try
+            {
+                DisplayParserEvaluator.ValidateRule(rule);
+            }
+            catch (ArgumentException ex)
+            {
+                error = $"Rule {i + 1}: {ex.Message}";
+                return false;
+            }
+        }
+
+        error = string.Empty;
+        return true;
     }
 
     private string CreateDuplicateName(string name)

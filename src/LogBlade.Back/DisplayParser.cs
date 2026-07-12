@@ -27,6 +27,18 @@ public sealed class DisplayParserRule
     };
 }
 
+public sealed class DisplayParserRulesExportPackage
+{
+    [JsonPropertyName("schemaVersion")]
+    public int SchemaVersion { get; set; } = 1;
+
+    [JsonPropertyName("app")]
+    public string App { get; set; } = "LogBlade";
+
+    [JsonPropertyName("parserRules")]
+    public List<DisplayParserRule> ParserRules { get; set; } = new();
+}
+
 public sealed class DisplayParserStage
 {
     public DisplayParserMode Mode { get; set; } = DisplayParserMode.Json;
