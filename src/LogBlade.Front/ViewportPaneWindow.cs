@@ -97,6 +97,8 @@ internal sealed class ViewportPaneWindow : IDisposable
     private int _visibleLineCount = 1;
     private int _xOffsetChars;
     private bool _isVisible = true;
+    private bool _hasAppliedBounds;
+    private NativeMethods.RECT _appliedBounds;
     private bool _disposed;
     private bool _usefulPaintNotified;
     private bool _hasFocus;
@@ -240,10 +242,31 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     public void SetBounds(NativeMethods.RECT rect, bool visible)
     {
-        _isVisible = visible && GetRectWidth(rect) > 0 && GetRectHeight(rect) > 0;
-        NativeMethods.MoveWindow(_hwnd, rect.left, rect.top, GetRectWidth(rect), GetRectHeight(rect), true);
-        NativeMethods.ShowWindow(_hwnd, _isVisible ? NativeMethods.SW_SHOW : NativeMethods.SW_HIDE);
-        if (_isVisible)
+        int width = GetRectWidth(rect);
+        int height = GetRectHeight(rect);
+        bool nextVisible = visible && width > 0 && height > 0;
+        bool boundsChanged = !_hasAppliedBounds || !RectEquals(_appliedBounds, rect);
+        bool visibilityChanged = !_hasAppliedBounds || _isVisible != nextVisible;
+        if (!boundsChanged && !visibilityChanged)
+        {
+            return;
+        }
+
+        _hasAppliedBounds = true;
+        _appliedBounds = rect;
+        _isVisible = nextVisible;
+
+        if (boundsChanged)
+        {
+            NativeMethods.MoveWindow(_hwnd, rect.left, rect.top, width, height, false);
+        }
+
+        if (visibilityChanged)
+        {
+            NativeMethods.ShowWindow(_hwnd, nextVisible ? NativeMethods.SW_SHOW : NativeMethods.SW_HIDE);
+        }
+
+        if (nextVisible)
         {
             NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
         }
@@ -266,6 +289,11 @@ internal sealed class ViewportPaneWindow : IDisposable
 
     public void SetStatus(string statusText, bool disposeReader = true, bool preserveColumnWidths = false)
     {
+        if (!disposeReader && _reader is null && _statusText == statusText)
+        {
+            return;
+        }
+
         ResetColumnResizeState(clearManualWidths: !preserveColumnWidths);
         ClearSelection(invalidate: false);
         if (disposeReader)
@@ -6326,4 +6354,10 @@ internal sealed class ViewportPaneWindow : IDisposable
     private static int GetRectWidth(NativeMethods.RECT rect) => Math.Max(0, rect.right - rect.left);
 
     private static int GetRectHeight(NativeMethods.RECT rect) => Math.Max(0, rect.bottom - rect.top);
+
+    private static bool RectEquals(NativeMethods.RECT left, NativeMethods.RECT right) =>
+        left.left == right.left &&
+        left.top == right.top &&
+        left.right == right.right &&
+        left.bottom == right.bottom;
 }
