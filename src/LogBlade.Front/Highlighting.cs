@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Text.Json.Serialization;
 
 internal sealed class HighlightRule
 {
@@ -34,6 +35,18 @@ internal sealed class HighlightRule
             ForegroundColor = ForegroundColor
         };
     }
+}
+
+internal sealed class HighlightRulesExportPackage
+{
+    [JsonPropertyName("schemaVersion")]
+    public int SchemaVersion { get; set; } = 1;
+
+    [JsonPropertyName("app")]
+    public string App { get; set; } = "LogBlade";
+
+    [JsonPropertyName("highlightRules")]
+    public List<HighlightRule> HighlightRules { get; set; } = new();
 }
 
 internal readonly record struct HighlightStyle(

@@ -23,7 +23,11 @@ internal sealed class HighlightRuleManagerWindow
     private const int IdDown = 205;
     private const int IdOk = 206;
     private const int IdCancel = 207;
+    private const int IdExport = 208;
+    private const int IdImport = 209;
     private const int RuleListItemHeight = 24;
+    private const int ExportSchemaVersion = 1;
+    private const string ExportAppName = "LogBlade";
     private const string WindowClassName = "LogBladeHighlightRuleManagerWindow";
 
     private readonly List<HighlightRule> _rules;
@@ -38,6 +42,8 @@ internal sealed class HighlightRuleManagerWindow
     private IntPtr _removeButton;
     private IntPtr _upButton;
     private IntPtr _downButton;
+    private IntPtr _exportButton;
+    private IntPtr _importButton;
     private IntPtr _patternLabel;
     private IntPtr _patternEdit;
     private IntPtr _ignoreCaseCheck;
@@ -252,6 +258,8 @@ internal sealed class HighlightRuleManagerWindow
         _removeButton = CreateButton("Remove", IdRemove);
         _upButton = CreateButton("Up", IdUp);
         _downButton = CreateButton("Down", IdDown);
+        _exportButton = CreateButton("Export...", IdExport);
+        _importButton = CreateButton("Import...", IdImport);
 
         _patternLabel = CreateLabel("Pattern");
         _patternEdit = CreateEdit(IdPatternEdit);
@@ -304,6 +312,14 @@ internal sealed class HighlightRuleManagerWindow
         else if (notification == NativeMethods.BN_CLICKED && id == IdDown)
         {
             MoveSelectedRule(1);
+        }
+        else if (notification == NativeMethods.BN_CLICKED && id == IdExport)
+        {
+            ExportRules();
+        }
+        else if (notification == NativeMethods.BN_CLICKED && id == IdImport)
+        {
+            ImportRules();
         }
         else if (notification == NativeMethods.BN_CLICKED && id == IdChooseBackgroundColor)
         {
@@ -382,6 +398,62 @@ internal sealed class HighlightRuleManagerWindow
 
         (_rules[index], _rules[target]) = (_rules[target], _rules[index]);
         ReloadList(target);
+        PublishPreview();
+    }
+
+    private void ExportRules()
+    {
+        UpdateSelectedRuleFromControls();
+        if (!TryShowRulesSaveDialog(out string? path) || path is null)
+        {
+            return;
+        }
+
+        try
+        {
+            HighlightRulesExportPackage package = new()
+            {
+                SchemaVersion = ExportSchemaVersion,
+                App = ExportAppName,
+                HighlightRules = CloneRules(_rules)
+            };
+            string json = JsonSerializer.Serialize(package, LogBladeJsonSerializerContext.Default.HighlightRulesExportPackage);
+            File.WriteAllText(path, json, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or NotSupportedException or ArgumentException)
+        {
+            ShowError("Failed to export highlighting rules: " + ex.Message);
+        }
+    }
+
+    private void ImportRules()
+    {
+        if (!TryShowRulesOpenDialog(out string? path) || path is null)
+        {
+            return;
+        }
+
+        HighlightRulesExportPackage? package;
+        try
+        {
+            string json = File.ReadAllText(path, Encoding.UTF8);
+            package = JsonSerializer.Deserialize(json, LogBladeJsonSerializerContext.Default.HighlightRulesExportPackage);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or NotSupportedException or ArgumentException)
+        {
+            ShowError("Failed to import highlighting rules: " + ex.Message);
+            return;
+        }
+
+        if (!TryValidateImportedPackage(package, out string error))
+        {
+            ShowError(error);
+            return;
+        }
+
+        _rules.Clear();
+        _rules.AddRange(CloneRules(package!.HighlightRules));
+        ReloadList(_rules.Count > 0 ? 0 : -1);
         PublishPreview();
     }
 
@@ -648,7 +720,7 @@ internal sealed class HighlightRuleManagerWindow
         int footerY = height - margin - rowHeight;
         int contentBottom = footerY - gap;
         int leftWidth = Math.Clamp((width * 35) / 100, 260, 360);
-        int listButtonsHeight = (rowHeight * 2) + gap;
+        int listButtonsHeight = (rowHeight * 3) + (gap * 2);
         int listHeight = Math.Max(180, contentBottom - margin - listButtonsHeight - gap);
 
         Move(_rulesList, margin, margin, leftWidth, listHeight);
@@ -661,6 +733,9 @@ internal sealed class HighlightRuleManagerWindow
         int halfWidth = (leftWidth - gap) / 2;
         Move(_upButton, margin, secondButtonY, halfWidth, rowHeight);
         Move(_downButton, margin + halfWidth + gap, secondButtonY, leftWidth - halfWidth - gap, rowHeight);
+        int thirdButtonY = secondButtonY + rowHeight + gap;
+        Move(_exportButton, margin, thirdButtonY, halfWidth, rowHeight);
+        Move(_importButton, margin + halfWidth + gap, thirdButtonY, leftWidth - halfWidth - gap, rowHeight);
 
         int formLeft = margin + leftWidth + 24;
         int inputLeft = formLeft + labelWidth + 12;
@@ -774,6 +849,146 @@ internal sealed class HighlightRuleManagerWindow
         StringBuilder value = new(length + 1);
         NativeMethods.GetWindowTextW(hwnd, value, value.Capacity);
         return value.ToString();
+    }
+
+    private bool TryShowRulesOpenDialog(out string? selectedPath)
+    {
+        selectedPath = null;
+        return TryShowRulesFileDialog(save: false, out selectedPath);
+    }
+
+    private bool TryShowRulesSaveDialog(out string? selectedPath)
+    {
+        selectedPath = null;
+        return TryShowRulesFileDialog(save: true, out selectedPath);
+    }
+
+    private bool TryShowRulesFileDialog(bool save, out string? selectedPath)
+    {
+        selectedPath = null;
+        const int fileBufferChars = 32768;
+        IntPtr filterBuffer = IntPtr.Zero;
+        IntPtr fileBuffer = IntPtr.Zero;
+        IntPtr titleBuffer = IntPtr.Zero;
+        IntPtr defaultExtensionBuffer = IntPtr.Zero;
+        try
+        {
+            filterBuffer = Marshal.StringToHGlobalUni("LogBlade highlighting rules\0*.logblade-highlighting.json;*.json\0JSON files\0*.json\0All files\0*.*\0\0");
+            titleBuffer = Marshal.StringToHGlobalUni(save ? "Export highlighting rules" : "Import highlighting rules");
+            defaultExtensionBuffer = Marshal.StringToHGlobalUni("json");
+            fileBuffer = Marshal.AllocHGlobal(fileBufferChars * sizeof(char));
+            Marshal.Copy(new byte[fileBufferChars * sizeof(char)], 0, fileBuffer, fileBufferChars * sizeof(char));
+
+            if (save)
+            {
+                string defaultName = "logblade-highlighting.json";
+                char[] defaultNameChars = defaultName.ToCharArray();
+                Marshal.Copy(defaultNameChars, 0, fileBuffer, defaultNameChars.Length);
+            }
+
+            NativeMethods.OPENFILENAMEW ofn = new()
+            {
+                lStructSize = Marshal.SizeOf<NativeMethods.OPENFILENAMEW>(),
+                hwndOwner = _hwnd,
+                lpstrFilter = filterBuffer,
+                lpstrFile = fileBuffer,
+                nMaxFile = fileBufferChars,
+                lpstrTitle = titleBuffer,
+                lpstrDefExt = defaultExtensionBuffer,
+                Flags = NativeMethods.OFN_EXPLORER | NativeMethods.OFN_PATHMUSTEXIST | NativeMethods.OFN_NOCHANGEDIR |
+                    (save ? NativeMethods.OFN_OVERWRITEPROMPT : NativeMethods.OFN_FILEMUSTEXIST)
+            };
+
+            bool success = save
+                ? NativeMethods.GetSaveFileNameW(ref ofn)
+                : NativeMethods.GetOpenFileNameW(ref ofn);
+            if (!success)
+            {
+                int dialogError = NativeMethods.CommDlgExtendedError();
+                if (dialogError != 0)
+                {
+                    ShowError("Failed to open file dialog. Error: 0x" + dialogError.ToString("X"));
+                }
+
+                return false;
+            }
+
+            selectedPath = Marshal.PtrToStringUni(fileBuffer);
+            return !string.IsNullOrEmpty(selectedPath);
+        }
+        finally
+        {
+            if (filterBuffer != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(filterBuffer);
+            }
+
+            if (fileBuffer != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(fileBuffer);
+            }
+
+            if (titleBuffer != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(titleBuffer);
+            }
+
+            if (defaultExtensionBuffer != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(defaultExtensionBuffer);
+            }
+        }
+    }
+
+    private static bool TryValidateImportedPackage(HighlightRulesExportPackage? package, out string error)
+    {
+        if (package is null)
+        {
+            error = "Import file is not a valid LogBlade highlighting package.";
+            return false;
+        }
+
+        if (package.SchemaVersion != ExportSchemaVersion || package.App != ExportAppName)
+        {
+            error = "Import file is not a supported LogBlade highlighting package.";
+            return false;
+        }
+
+        if (package.HighlightRules is null)
+        {
+            error = "Import file does not contain highlighting rules.";
+            return false;
+        }
+
+        for (int i = 0; i < package.HighlightRules.Count; i++)
+        {
+            HighlightRule? rule = package.HighlightRules[i];
+            if (rule is null)
+            {
+                error = $"Rule {i + 1}: rule is missing.";
+                return false;
+            }
+
+            if (!HighlightRuleCompiler.TryCompile(rule, out _, out string ruleError))
+            {
+                error = $"Rule {i + 1}: {ruleError}";
+                return false;
+            }
+        }
+
+        error = string.Empty;
+        return true;
+    }
+
+    private static List<HighlightRule> CloneRules(IReadOnlyList<HighlightRule> rules)
+    {
+        List<HighlightRule> clones = new(rules.Count);
+        for (int i = 0; i < rules.Count; i++)
+        {
+            clones.Add(rules[i].Clone());
+        }
+
+        return clones;
     }
 
     private static void Move(IntPtr hwnd, int x, int y, int width, int height) => NativeMethods.MoveWindow(hwnd, x, y, width, height, true);

@@ -186,6 +186,7 @@ internal static class NativeMethods
     public const int OFN_PATHMUSTEXIST = 0x00000800;
     public const int OFN_EXPLORER = 0x00080000;
     public const int OFN_NOCHANGEDIR = 0x00000008;
+    public const int OFN_OVERWRITEPROMPT = 0x00000002;
     public const uint GMEM_MOVEABLE = 0x0002;
     public static readonly IntPtr IDC_ARROW = new(32512);
     public static readonly IntPtr IDC_SIZENS = new(32645);
@@ -430,6 +431,10 @@ internal static class NativeMethods
     [DllImport("comdlg32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool GetOpenFileNameW(ref OPENFILENAMEW lpofn);
+
+    [DllImport("comdlg32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetSaveFileNameW(ref OPENFILENAMEW lpofn);
 
     [DllImport("comdlg32.dll")]
     public static extern int CommDlgExtendedError();
