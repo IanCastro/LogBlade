@@ -556,8 +556,7 @@ internal sealed class ViewerWindow
         CreateSearchLevel(hInstance);
         CreateSearchResizeGrip(hInstance);
 
-        RecalculateLayout();
-        ApplyLayout();
+        UpdateLayout();
     }
 
     private void CreateParserControls(IntPtr hInstance)
@@ -1512,8 +1511,6 @@ internal sealed class ViewerWindow
         _mainPane?.QueueTailRefreshIfAtEnd();
         QueueAppendSearchIfNeeded();
         QueueSearchReloadAfterSameSizeChange();
-        RecalculateLayout();
-        ApplyLayout();
     }
 
     private void OnSize(int sizeType)
@@ -1529,8 +1526,7 @@ internal sealed class ViewerWindow
             AuxiliaryWindowRegistry.SetMainWindowMinimized(minimized: false);
         }
 
-        RecalculateLayout();
-        ApplyLayout();
+        UpdateLayout();
     }
 
     private void SaveWindowState()
@@ -1711,8 +1707,7 @@ internal sealed class ViewerWindow
         _customSearchAreaRatio = clientHeight > 0
             ? Math.Clamp(searchAreaHeight / (double)clientHeight, 0d, 1d)
             : GetDefaultSearchAreaRatio(GetActiveSearchResultCount());
-        RecalculateLayout();
-        ApplyLayout(LayoutRedrawMode.Immediate);
+        UpdateLayout(LayoutRedrawMode.Immediate);
     }
 
     private void ResizeSearchResults(int y)
@@ -1736,8 +1731,7 @@ internal sealed class ViewerWindow
             _resizingSearchResultIndex,
             _searchResultResizeStartRatio + deltaRatio,
             _searchResultResizeStartRatios);
-        RecalculateLayout();
-        ApplyLayout(LayoutRedrawMode.Immediate);
+        UpdateLayout(LayoutRedrawMode.Immediate);
     }
 
     private void OnLButtonUp()
@@ -2438,8 +2432,7 @@ internal sealed class ViewerWindow
         _searchDisplayActive = true;
         _searchErrorText = string.Empty;
         ShowSearchEmptyReadersFromLevel(_pendingLowerSearchChange.StartLevel, _pendingLowerSearchChange.Options);
-        RecalculateLayout();
-        ApplyLayout();
+        UpdateLayout();
     }
 
     private PausedSearchCheckpoint CreateSearchCheckpoint(SearchWorkerResult result)
@@ -2470,8 +2463,7 @@ internal sealed class ViewerWindow
         _searchErrorText = "Search stale";
         _mainPane?.MarkReaderObservedZero();
         ApplySearchResultReaders(result, markObservedZero: true);
-        RecalculateLayout();
-        ApplyLayout();
+        UpdateLayout();
     }
 
     private void HandleObservedZeroFileSize()
@@ -2503,8 +2495,7 @@ internal sealed class ViewerWindow
         _appendSearchInProgress = false;
         _appendSearchPending = false;
         MarkActiveSearchReadersObservedZero();
-        RecalculateLayout();
-        ApplyLayout();
+        UpdateLayout();
     }
 
     private bool TryResumePausedSearch(long currentFileSize)
@@ -2551,8 +2542,7 @@ internal sealed class ViewerWindow
                 _searchLevels[i].ResultsPane?.QueueReloadAfterFileChange();
             }
 
-            RecalculateLayout();
-            ApplyLayout();
+            UpdateLayout();
             return true;
         }
 
@@ -3041,8 +3031,7 @@ internal sealed class ViewerWindow
             _searchMatchedLineCount = 0;
             _searchErrorText = string.Empty;
             SetActiveSearchResultStatus(string.Empty);
-            RecalculateLayout();
-            ApplyLayout();
+            UpdateLayout();
             return;
         }
 
@@ -3089,8 +3078,7 @@ internal sealed class ViewerWindow
             ShowActiveSearchEmptyReaders(options);
         }
 
-        RecalculateLayout();
-        ApplyLayout();
+        UpdateLayout();
         if (dispatchImmediately)
         {
             DispatchPendingSearch();
@@ -3148,8 +3136,7 @@ internal sealed class ViewerWindow
         _searchMatchedLineCount = prefixReaders[^1].MatchedLineCount;
         _searchErrorText = string.Empty;
         SetSearchResultStatusFromLevel(optionCount, string.Empty);
-        RecalculateLayout();
-        ApplyLayout();
+        UpdateLayout();
         return true;
     }
 
@@ -3170,8 +3157,7 @@ internal sealed class ViewerWindow
                 _searchErrorText = "Regex error";
                 int affectedStartLevel = searchStartLevel > 0 ? Math.Max(searchStartLevel, i) : 0;
                 SetSearchResultStatusFromLevel(affectedStartLevel, string.Empty, disposeReader: false, preserveColumnWidths: true);
-                RecalculateLayout();
-                ApplyLayout();
+                UpdateLayout();
                 AppLog.Instance.Error(
                     "search.failed",
                     "failed",
@@ -4039,8 +4025,7 @@ internal sealed class ViewerWindow
         _searchMatchedLineCount = 0;
         _searchErrorText = "Search stale";
         SetActiveSearchResultStatus(string.Empty);
-        RecalculateLayout();
-        ApplyLayout();
+        UpdateLayout();
     }
 
     private static bool IsFilteredLineStaleMessage(string? message)
@@ -4205,8 +4190,7 @@ internal sealed class ViewerWindow
             {
                 QueueAppendSearchIfNeeded();
                 QueueSearchReloadAfterSameSizeChange();
-                RecalculateLayout();
-                ApplyLayout();
+                UpdateLayout();
             }
 
             return;
@@ -4323,8 +4307,7 @@ internal sealed class ViewerWindow
 
             if (TryDispatchPendingLowerSearchChange(result))
             {
-                RecalculateLayout();
-                ApplyLayout();
+                UpdateLayout();
                 return;
             }
 
@@ -4586,6 +4569,12 @@ internal sealed class ViewerWindow
         return heights;
     }
 
+    private void UpdateLayout(LayoutRedrawMode redrawMode = LayoutRedrawMode.Deferred)
+    {
+        RecalculateLayout();
+        ApplyLayout(redrawMode);
+    }
+
     private void RecalculateLayout()
     {
         NativeMethods.GetClientRect(_hwnd, out NativeMethods.RECT clientRect);
@@ -4756,7 +4745,7 @@ internal sealed class ViewerWindow
         _layout = new WindowLayout(clientRect, topBarRect, openButtonRect, pasteButtonRect, parserComboRect, highlightingButtonRect, viewerRect, searchAreaRect, searchLevelLayouts, progressRect);
     }
 
-    private void ApplyLayout(LayoutRedrawMode redrawMode = LayoutRedrawMode.Deferred)
+    private void ApplyLayout(LayoutRedrawMode redrawMode)
     {
         if (_openButton != IntPtr.Zero)
         {
