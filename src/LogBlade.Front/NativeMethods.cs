@@ -52,6 +52,10 @@ internal static class NativeMethods
     public const uint SWP_NOACTIVATE = 0x0010;
     public const uint SWP_SHOWWINDOW = 0x0040;
     public const uint SWP_HIDEWINDOW = 0x0080;
+    public const uint RDW_INVALIDATE = 0x0001;
+    public const uint RDW_UPDATENOW = 0x0100;
+    public const uint RDW_FRAME = 0x0400;
+    public const uint RDW_ALLCHILDREN = 0x0080;
     public const int GWLP_WNDPROC = -4;
     public const int GWLP_USERDATA = -21;
     public const int WM_CREATE = 0x0001;
@@ -534,6 +538,9 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     public static extern bool InvalidateRect(IntPtr hWnd, [In] ref RECT lpRect, bool bErase);
+
+    [DllImport("user32.dll")]
+    public static extern bool RedrawWindow(IntPtr hWnd, IntPtr lprcUpdate, IntPtr hrgnUpdate, uint flags);
 
     [DllImport("user32.dll")]
     public static extern IntPtr BeginPaint(IntPtr hWnd, out PAINTSTRUCT lpPaint);

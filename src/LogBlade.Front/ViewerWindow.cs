@@ -45,6 +45,12 @@ internal sealed class SearchWorkerResult
 
 internal sealed class ViewerWindow
 {
+    private enum LayoutRedrawMode
+    {
+        Deferred,
+        Immediate
+    }
+
     private const int TopBarHeight = 34;
     private const int TopBarPadding = 4;
     private const int OpenButtonWidth = 72;
@@ -1508,7 +1514,6 @@ internal sealed class ViewerWindow
         QueueSearchReloadAfterSameSizeChange();
         RecalculateLayout();
         ApplyLayout();
-        InvalidateHost();
     }
 
     private void OnSize(int sizeType)
@@ -1526,7 +1531,6 @@ internal sealed class ViewerWindow
 
         RecalculateLayout();
         ApplyLayout();
-        InvalidateHost();
     }
 
     private void SaveWindowState()
@@ -1708,8 +1712,7 @@ internal sealed class ViewerWindow
             ? Math.Clamp(searchAreaHeight / (double)clientHeight, 0d, 1d)
             : GetDefaultSearchAreaRatio(GetActiveSearchResultCount());
         RecalculateLayout();
-        ApplyLayout();
-        InvalidateHost();
+        ApplyLayout(LayoutRedrawMode.Immediate);
     }
 
     private void ResizeSearchResults(int y)
@@ -1734,8 +1737,7 @@ internal sealed class ViewerWindow
             _searchResultResizeStartRatio + deltaRatio,
             _searchResultResizeStartRatios);
         RecalculateLayout();
-        ApplyLayout();
-        InvalidateHost();
+        ApplyLayout(LayoutRedrawMode.Immediate);
     }
 
     private void OnLButtonUp()
@@ -2438,7 +2440,6 @@ internal sealed class ViewerWindow
         ShowSearchEmptyReadersFromLevel(_pendingLowerSearchChange.StartLevel, _pendingLowerSearchChange.Options);
         RecalculateLayout();
         ApplyLayout();
-        InvalidateHost();
     }
 
     private PausedSearchCheckpoint CreateSearchCheckpoint(SearchWorkerResult result)
@@ -2471,7 +2472,6 @@ internal sealed class ViewerWindow
         ApplySearchResultReaders(result, markObservedZero: true);
         RecalculateLayout();
         ApplyLayout();
-        InvalidateSearchBar();
     }
 
     private void HandleObservedZeroFileSize()
@@ -2505,7 +2505,6 @@ internal sealed class ViewerWindow
         MarkActiveSearchReadersObservedZero();
         RecalculateLayout();
         ApplyLayout();
-        InvalidateSearchBar();
     }
 
     private bool TryResumePausedSearch(long currentFileSize)
@@ -2554,7 +2553,6 @@ internal sealed class ViewerWindow
 
             RecalculateLayout();
             ApplyLayout();
-            InvalidateSearchBar();
             return true;
         }
 
@@ -3045,7 +3043,6 @@ internal sealed class ViewerWindow
             SetActiveSearchResultStatus(string.Empty);
             RecalculateLayout();
             ApplyLayout();
-            InvalidateHost();
             return;
         }
 
@@ -3094,7 +3091,6 @@ internal sealed class ViewerWindow
 
         RecalculateLayout();
         ApplyLayout();
-        InvalidateHost();
         if (dispatchImmediately)
         {
             DispatchPendingSearch();
@@ -3154,7 +3150,6 @@ internal sealed class ViewerWindow
         SetSearchResultStatusFromLevel(optionCount, string.Empty);
         RecalculateLayout();
         ApplyLayout();
-        InvalidateHost();
         return true;
     }
 
@@ -3177,7 +3172,6 @@ internal sealed class ViewerWindow
                 SetSearchResultStatusFromLevel(affectedStartLevel, string.Empty, disposeReader: false, preserveColumnWidths: true);
                 RecalculateLayout();
                 ApplyLayout();
-                InvalidateHost();
                 AppLog.Instance.Error(
                     "search.failed",
                     "failed",
@@ -4047,7 +4041,6 @@ internal sealed class ViewerWindow
         SetActiveSearchResultStatus(string.Empty);
         RecalculateLayout();
         ApplyLayout();
-        InvalidateSearchBar();
     }
 
     private static bool IsFilteredLineStaleMessage(string? message)
@@ -4214,7 +4207,6 @@ internal sealed class ViewerWindow
                 QueueSearchReloadAfterSameSizeChange();
                 RecalculateLayout();
                 ApplyLayout();
-                InvalidateHost();
             }
 
             return;
@@ -4333,7 +4325,6 @@ internal sealed class ViewerWindow
             {
                 RecalculateLayout();
                 ApplyLayout();
-                InvalidateSearchBar();
                 return;
             }
 
@@ -4765,7 +4756,7 @@ internal sealed class ViewerWindow
         _layout = new WindowLayout(clientRect, topBarRect, openButtonRect, pasteButtonRect, parserComboRect, highlightingButtonRect, viewerRect, searchAreaRect, searchLevelLayouts, progressRect);
     }
 
-    private void ApplyLayout()
+    private void ApplyLayout(LayoutRedrawMode redrawMode = LayoutRedrawMode.Deferred)
     {
         if (_openButton != IntPtr.Zero)
         {
@@ -4775,7 +4766,7 @@ internal sealed class ViewerWindow
                 _layout.OpenButtonRect.top,
                 GetRectWidth(_layout.OpenButtonRect),
                 GetRectHeight(_layout.OpenButtonRect),
-                true);
+                false);
             NativeMethods.ShowWindow(_openButton, GetRectWidth(_layout.OpenButtonRect) > 0 ? NativeMethods.SW_SHOW : NativeMethods.SW_HIDE);
         }
 
@@ -4787,7 +4778,7 @@ internal sealed class ViewerWindow
                 _layout.PasteButtonRect.top,
                 GetRectWidth(_layout.PasteButtonRect),
                 GetRectHeight(_layout.PasteButtonRect),
-                true);
+                false);
             NativeMethods.ShowWindow(_pasteButton, GetRectWidth(_layout.PasteButtonRect) > 0 ? NativeMethods.SW_SHOW : NativeMethods.SW_HIDE);
         }
 
@@ -4799,7 +4790,7 @@ internal sealed class ViewerWindow
                 _layout.ParserComboRect.top,
                 GetRectWidth(_layout.ParserComboRect),
                 GetRectHeight(_layout.ParserComboRect),
-                true);
+                false);
             NativeMethods.ShowWindow(_parserCombo, GetRectWidth(_layout.ParserComboRect) > 0 ? NativeMethods.SW_SHOW : NativeMethods.SW_HIDE);
         }
 
@@ -4811,7 +4802,7 @@ internal sealed class ViewerWindow
                 _layout.HighlightingButtonRect.top,
                 GetRectWidth(_layout.HighlightingButtonRect),
                 GetRectHeight(_layout.HighlightingButtonRect),
-                true);
+                false);
             NativeMethods.ShowWindow(_highlightingButton, GetRectWidth(_layout.HighlightingButtonRect) > 0 ? NativeMethods.SW_SHOW : NativeMethods.SW_HIDE);
         }
 
@@ -4827,28 +4818,28 @@ internal sealed class ViewerWindow
                 levelLayout.SearchEditRect.top,
                 GetRectWidth(levelLayout.SearchEditRect),
                 GetRectHeight(levelLayout.SearchEditRect),
-                true);
+                false);
             NativeMethods.MoveWindow(
                 level.RegexCheckbox,
                 levelLayout.SearchRegexToggleRect.left,
                 levelLayout.SearchRegexToggleRect.top,
                 GetRectWidth(levelLayout.SearchRegexToggleRect),
                 GetRectHeight(levelLayout.SearchRegexToggleRect),
-                true);
+                false);
             NativeMethods.MoveWindow(
                 level.IgnoreCaseCheckbox,
                 levelLayout.SearchIgnoreCaseToggleRect.left,
                 levelLayout.SearchIgnoreCaseToggleRect.top,
                 GetRectWidth(levelLayout.SearchIgnoreCaseToggleRect),
                 GetRectHeight(levelLayout.SearchIgnoreCaseToggleRect),
-                true);
+                false);
             NativeMethods.MoveWindow(
                 level.InvertMatchCheckbox,
                 levelLayout.SearchInvertMatchToggleRect.left,
                 levelLayout.SearchInvertMatchToggleRect.top,
                 GetRectWidth(levelLayout.SearchInvertMatchToggleRect),
                 GetRectHeight(levelLayout.SearchInvertMatchToggleRect),
-                true);
+                false);
             NativeMethods.ShowWindow(level.SearchEdit, NativeMethods.SW_SHOW);
             NativeMethods.ShowWindow(level.RegexCheckbox, NativeMethods.SW_SHOW);
             NativeMethods.ShowWindow(level.IgnoreCaseCheckbox, NativeMethods.SW_SHOW);
@@ -4858,6 +4849,7 @@ internal sealed class ViewerWindow
         }
 
         ApplySearchResizeGripLayout();
+        RedrawHostAfterLayout(redrawMode);
     }
 
     private void ApplySearchResizeGripLayout()
@@ -5019,6 +5011,26 @@ internal sealed class ViewerWindow
         {
             NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
         }
+    }
+
+    private void RedrawHostAfterLayout(LayoutRedrawMode redrawMode)
+    {
+        if (_hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        uint flags = NativeMethods.RDW_INVALIDATE | NativeMethods.RDW_FRAME | NativeMethods.RDW_ALLCHILDREN;
+        if (redrawMode == LayoutRedrawMode.Immediate)
+        {
+            flags |= NativeMethods.RDW_UPDATENOW;
+        }
+
+        NativeMethods.RedrawWindow(
+            _hwnd,
+            IntPtr.Zero,
+            IntPtr.Zero,
+            flags);
     }
 
     private void InvalidateSearchBar()

@@ -265,11 +265,6 @@ internal sealed class ViewportPaneWindow : IDisposable
         {
             NativeMethods.ShowWindow(_hwnd, nextVisible ? NativeMethods.SW_SHOW : NativeMethods.SW_HIDE);
         }
-
-        if (nextVisible)
-        {
-            NativeMethods.InvalidateRect(_hwnd, IntPtr.Zero, false);
-        }
     }
 
     public void SetHighlightRules(IReadOnlyList<CompiledHighlightRule> rules)
