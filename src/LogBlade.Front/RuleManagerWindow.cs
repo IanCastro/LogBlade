@@ -960,15 +960,15 @@ internal sealed class RuleManagerWindow
         IntPtr defaultExtensionBuffer = IntPtr.Zero;
         try
         {
-            filterBuffer = Marshal.StringToHGlobalUni("LogBlade parser rules\0*.logblade-parsers.json;*.json\0JSON files\0*.json\0All files\0*.*\0\0");
+            filterBuffer = Marshal.StringToHGlobalUni("LogBlade parser rules (*.lbp)\0*.lbp\0All files\0*.*\0\0");
             titleBuffer = Marshal.StringToHGlobalUni(save ? "Export parser rules" : "Import parser rules");
-            defaultExtensionBuffer = Marshal.StringToHGlobalUni("json");
+            defaultExtensionBuffer = Marshal.StringToHGlobalUni("lbp");
             fileBuffer = Marshal.AllocHGlobal(fileBufferChars * sizeof(char));
             Marshal.Copy(new byte[fileBufferChars * sizeof(char)], 0, fileBuffer, fileBufferChars * sizeof(char));
 
             if (save)
             {
-                string defaultName = "logblade-parsers.json";
+                string defaultName = "logblade-parsers.lbp";
                 char[] defaultNameChars = defaultName.ToCharArray();
                 Marshal.Copy(defaultNameChars, 0, fileBuffer, defaultNameChars.Length);
             }

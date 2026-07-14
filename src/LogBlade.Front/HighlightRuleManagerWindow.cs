@@ -873,15 +873,15 @@ internal sealed class HighlightRuleManagerWindow
         IntPtr defaultExtensionBuffer = IntPtr.Zero;
         try
         {
-            filterBuffer = Marshal.StringToHGlobalUni("LogBlade highlighting rules\0*.logblade-highlighting.json;*.json\0JSON files\0*.json\0All files\0*.*\0\0");
+            filterBuffer = Marshal.StringToHGlobalUni("LogBlade highlighting rules (*.lbh)\0*.lbh\0All files\0*.*\0\0");
             titleBuffer = Marshal.StringToHGlobalUni(save ? "Export highlighting rules" : "Import highlighting rules");
-            defaultExtensionBuffer = Marshal.StringToHGlobalUni("json");
+            defaultExtensionBuffer = Marshal.StringToHGlobalUni("lbh");
             fileBuffer = Marshal.AllocHGlobal(fileBufferChars * sizeof(char));
             Marshal.Copy(new byte[fileBufferChars * sizeof(char)], 0, fileBuffer, fileBufferChars * sizeof(char));
 
             if (save)
             {
-                string defaultName = "logblade-highlighting.json";
+                string defaultName = "logblade-highlighting.lbh";
                 char[] defaultNameChars = defaultName.ToCharArray();
                 Marshal.Copy(defaultNameChars, 0, fileBuffer, defaultNameChars.Length);
             }
