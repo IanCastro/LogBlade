@@ -1,0 +1,97 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - v*
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: windows-2022
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Validate tag
+        shell: pwsh
+        run: |
+          $tag = '${{ github.ref_name }}'
+          $pattern = '^v(?<Version>(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)$'
+          if ($tag -notmatch $pattern) {
+            throw "Tag must be a semantic version such as v1.2.3 or v1.2.3-beta.1: $tag"
+          }
+
+          $version = $Matches.Version
+          "LOGBLADE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "LOGBLADE_PRERELEASE=$($version.Contains('-').ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Run back-end smoke tests
+        shell: pwsh
+        run: .\test-back.ps1
+
+      - name: Run front-end smoke tests
+        shell: pwsh
+        run: .\test-front.ps1
+
+      - name: Build release assets
+        shell: pwsh
+        run: .\release.ps1 -Version $env:LOGBLADE_VERSION -RequireNativeAot
+
+      - name: Verify release assets and metadata
+        shell: pwsh
+        run: |
+          $zip = "artifacts\release\LogBlade-$env:LOGBLADE_VERSION-win-x64.zip"
+          $checksums = 'artifacts\release\SHA256SUMS.txt'
+          if (-not (Test-Path -LiteralPath $zip) -or -not (Test-Path -LiteralPath $checksums)) {
+            throw 'Release assets were not produced.'
+          }
+
+          $versionInfo = (Get-Item -LiteralPath 'artifacts\publish\LogBlade.exe').VersionInfo
+          if ($versionInfo.ProductName -ne 'LogBlade' -or $versionInfo.ProductVersion -ne $env:LOGBLADE_VERSION) {
+            throw "Unexpected executable metadata: $($versionInfo.ProductName) $($versionInfo.ProductVersion)"
+          }
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ github.ref_name }}'
+          $zip = "artifacts\release\LogBlade-$env:LOGBLADE_VERSION-win-x64.zip"
+          $checksums = 'artifacts\release\SHA256SUMS.txt'
+          $notes = "release-notes\$tag.md"
+          $arguments = @(
+            'release', 'create', $tag,
+            $zip, $checksums,
+            '--verify-tag',
+            '--title', "LogBlade $env:LOGBLADE_VERSION"
+          )
+
+          if ($env:LOGBLADE_PRERELEASE -eq 'true') {
+            $arguments += '--prerelease'
+          }
+
+          if (Test-Path -LiteralPath $notes) {
+            $arguments += @('--notes-file', $notes)
+          } else {
+            $arguments += '--generate-notes'
+          }
+
+          & gh @arguments
+          if ($LASTEXITCODE -ne 0) {
+            throw "gh release create failed with exit code $LASTEXITCODE"
+          }

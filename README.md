@@ -1,67 +1,108 @@
-# LogBlade Win32
+<p align="center">
+  <img src="src/LogBlade.Front/Assets/LogBlade.png" alt="LogBlade icon" width="96" height="96">
+</p>
 
-LogBlade e um visualizador de logs Win32 direto em C#.
+<h1 align="center">LogBlade</h1>
 
-## O que ele faz
+<p align="center">
+  A fast, portable Windows log viewer built directly on Win32.<br>
+  Um visualizador de logs rápido e portátil para Windows, construído diretamente sobre Win32.
+</p>
 
-- Abre um arquivo real pela linha de comando: `LogBlade.exe <path>`.
-- Cria a janela primeiro, mostra `Loading file...` e monta a primeira viewport em background.
-- Usa scroll offset-based: thumb grande por offset aproximado e navegacao fina por linha descoberta sob demanda.
-- Mantem somente a viewport visivel no caminho ativo; nao faz indice global por linha no startup.
-- Usa Win32 + GDI para janela, pintura, scrollbar, mouse wheel e teclado.
+<p align="center">
+  <a href="https://github.com/IanCastro/LogBlade/releases">Download</a> ·
+  <a href="https://github.com/IanCastro/LogBlade/issues">Report an issue</a> ·
+  <a href="#português">Português</a>
+</p>
 
-## Build normal
+![LogBlade displaying a structured log file](docs/images/logblade-main.png)
 
-Use este comando para iteracao rapida:
+## English
+
+LogBlade opens large text logs without building a global line index before showing the first viewport. The application is a native Windows desktop executable with no web view, installer, telemetry, or required .NET installation.
+
+### Highlights
+
+- Progressive, viewport-first loading for large files.
+- Multi-stage text or regular-expression filtering.
+- Configurable display parsers for structured log records.
+- Custom highlighting rules with foreground, background, bold, and italic styles.
+- Live updates when an open file grows.
+- Open a file from the UI or command line, or paste text from the clipboard.
+- Import and export parser and highlighting configurations.
+- Portable NativeAOT executable for Windows x64.
+
+### Install and run
+
+1. Open the [Releases page](https://github.com/IanCastro/LogBlade/releases).
+2. Download `LogBlade-<version>-win-x64.zip` and optionally verify it with `SHA256SUMS.txt`.
+3. Extract the ZIP to a folder of your choice.
+4. Run `LogBlade.exe`, then choose **Open...**, or pass a file on the command line:
 
 ```powershell
-.\build.ps1
+.\LogBlade.exe C:\logs\application.log
 ```
 
-Artefato gerado:
+LogBlade supports Windows 10 and Windows 11 on x64 processors. Release builds are self-contained and do not require a separate .NET runtime.
 
-`artifacts\build\LogBlade.exe`
+> [!WARNING]
+> The `0.1.0` beta is not digitally signed. Windows SmartScreen may display an “unrecognized app” warning. Only run a binary downloaded from this repository and verify its SHA-256 checksum before bypassing the warning.
 
-O launcher oficial do bake-off usa este artefato de build normal.
+### Supported text encodings
 
-## Build de distribuicao
+- UTF-8 with BOM
+- UTF-16 LE with BOM
+- UTF-16 BE with BOM
+- Windows-1252 when no BOM is present
 
-Use este comando so quando precisar validar o caminho distribuivel:
+Application logs are stored under `%LOCALAPPDATA%\LogBlade\logs`, with `%TEMP%\LogBlade\logs` as a fallback. LogBlade processes files locally and does not send telemetry.
+
+### Build from source
+
+Requirements: Windows x64 and the .NET 8 SDK with the NativeAOT build prerequisites.
 
 ```powershell
-.\package.ps1
+.\test-back.ps1
+.\test-front.ps1
+.\package.ps1 -Version 0.1.0-beta.1 -RequireNativeAot
+.\release.ps1 -Version 0.1.0-beta.1 -RequireNativeAot
 ```
 
-Saida esperada:
+The final ZIP and checksum file are written to `artifacts\release`.
 
-`artifacts\publish\LogBlade.exe`
+## Português
 
-O script tenta NativeAOT quando possivel e cai para publish self-contained quando o ambiente nao consegue fechar o pipeline AOT. Essa validacao e um gate arquitetural; nao precisa rodar em toda iteracao.
+O LogBlade abre logs de texto grandes sem precisar criar um índice global de linhas antes de mostrar a primeira tela. O aplicativo é um executável desktop nativo para Windows, sem web view, instalador, telemetria ou instalação separada do .NET.
 
-## Run
+### Principais recursos
+
+- Carregamento progressivo que prioriza a área visível em arquivos grandes.
+- Filtros de texto ou expressão regular em múltiplas etapas.
+- Parsers configuráveis para exibir registros estruturados.
+- Regras de destaque com cores, negrito e itálico.
+- Atualização ao vivo quando o arquivo aberto cresce.
+- Abertura pela interface ou linha de comando e leitura de texto da área de transferência.
+- Importação e exportação de configurações de parser e destaque.
+- Executável NativeAOT portátil para Windows x64.
+
+### Instalação e uso
+
+1. Abra a [página de Releases](https://github.com/IanCastro/LogBlade/releases).
+2. Baixe `LogBlade-<versão>-win-x64.zip` e, opcionalmente, confira o arquivo `SHA256SUMS.txt`.
+3. Extraia o ZIP para qualquer pasta.
+4. Execute `LogBlade.exe` e selecione **Open...**, ou passe o arquivo pela linha de comando:
 
 ```powershell
-.\run.ps1 .\artifacts\sample.log
+.\LogBlade.exe C:\logs\aplicacao.log
 ```
 
-O `run.ps1` prefere o artefato do build normal e tambem aceita o publish de distribuicao quando ele ja existir.
+O LogBlade suporta Windows 10 e Windows 11 em processadores x64. As releases são autocontidas e não exigem uma instalação separada do .NET.
 
-## Encoding rules
+> [!WARNING]
+> A beta `0.1.0` ainda não possui assinatura digital. O Windows SmartScreen pode mostrar um aviso de “aplicativo não reconhecido”. Execute somente o binário baixado deste repositório e confira o SHA-256 antes de ignorar o aviso.
 
-- UTF-8 com BOM
-- UTF-16 LE com BOM
-- UTF-16 BE com BOM
-- Sem BOM, cai direto em Windows-1252
+Os logs do próprio aplicativo ficam em `%LOCALAPPDATA%\LogBlade\logs`, com fallback para `%TEMP%\LogBlade\logs`. Todo o processamento ocorre localmente e nenhuma telemetria é enviada.
 
-## Contratos de comportamento
+## License
 
-Os contratos canonicos de parser e search estao em [docs/BEHAVIOR.md](docs/BEHAVIOR.md).
-
-## Notas
-
-- Sem WPF, WinForms, Avalonia, MAUI ou WebView.
-- O viewer desenha direto com GDI via Win32 P/Invoke.
-- `Windows-1252` usa a implementacao local de [Windows1252Encoding.cs](src/LogBlade.Back/Windows1252Encoding.cs), sem depender de provider global.
-- Cada execucao grava um log UTF-8 em `%LOCALAPPDATA%\LogBlade\logs`, com fallback para `%TEMP%\LogBlade\logs`.
-- Retencao de logs e best-effort e mantem os 20 mais recentes.
-- Falhas de startup e runtime sao fail-fast, visiveis e registradas antes do encerramento quando o log persistente esta disponivel.
+LogBlade is available under the [MIT License](LICENSE).

@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-and-package:
+    runs-on: windows-2022
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Run back-end smoke tests
+        shell: pwsh
+        run: .\test-back.ps1
+
+      - name: Run front-end smoke tests
+        shell: pwsh
+        run: .\test-front.ps1
+
+      - name: Validate NativeAOT package
+        shell: pwsh
+        run: .\package.ps1 -Version "0.1.0-ci.${env:GITHUB_RUN_NUMBER}" -RequireNativeAot
+
+      - name: Verify single-file output
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -LiteralPath 'artifacts\publish' -File)
+          if ($files.Count -ne 1 -or $files[0].Name -ne 'LogBlade.exe') {
+            throw "Expected only LogBlade.exe, found: $($files.Name -join ', ')"
+          }
