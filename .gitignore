@@ -4,5 +4,6 @@ artifacts/build/
 artifacts/parser-poc/
 artifacts/publish/
 artifacts/publish-aot/
+artifacts/release/
 artifacts/*.log
 .local/
