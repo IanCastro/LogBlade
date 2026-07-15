@@ -33,6 +33,7 @@ internal static class Program
             Run("word drag snapping", RunWordDragSnapping);
             Run("non-word double click", RunNonWordDoubleClickSelection);
             Run("display text normalization", RunDisplayTextNormalization);
+            Run("output export", () => RunOutputExport(tempRoot));
             Run("window state store", () => RunWindowStateStore(tempRoot));
             Console.WriteLine("Front smoke tests passed.");
             return 0;
@@ -59,6 +60,86 @@ internal static class Program
     {
         Console.WriteLine("Running " + name + "...");
         action();
+    }
+
+    private static void RunOutputExport(string tempRoot)
+    {
+        string parsedSourcePath = WriteLog(
+            tempRoot,
+            "output-export-source.log",
+            "{\"Value\":\"first\"}\r\n{\"Value\":\"second\"}\r\n");
+        DisplayParserRule parser = JsonParser("{Value}\nparsed");
+        string parsedOutputPath = Path.Combine(tempRoot, "output-export-parsed.log");
+        File.WriteAllText(parsedOutputPath, "old content", Encoding.UTF8);
+        using (var source = new LogRecordSource(parsedSourcePath, Encoding.UTF8, 0, parser))
+        {
+            LogOutputExporter.SaveParsedLog(source, parsedOutputPath);
+        }
+
+        AssertUtf8Bom("parsed export BOM", parsedOutputPath);
+        AssertEqual(
+            "parsed export content",
+            File.ReadAllText(parsedOutputPath, Encoding.UTF8),
+            "first\nparsed\r\nsecond\nparsed");
+
+        string longOriginalLine = new('x', ProjectedViewport.VisibleSegmentChars + 25);
+        string originalSourcePath = WriteLog(tempRoot, "output-export-original.log", longOriginalLine + "\nsecond");
+        string originalOutputPath = Path.Combine(tempRoot, "output-export-original-result.log");
+        using (var source = new LogRecordSource(originalSourcePath, Encoding.UTF8, 0))
+        {
+            LogOutputExporter.SaveParsedLog(source, originalOutputPath);
+        }
+
+        AssertEqual(
+            "original export normalizes record separators",
+            File.ReadAllText(originalOutputPath, Encoding.UTF8),
+            longOriginalLine + "\r\nsecond");
+
+        string searchSourcePath = WriteLog(
+            tempRoot,
+            "output-export-search.log",
+            "INFO code=10\r\nERROR\tcode=42\r\n");
+        string searchOutputPath = Path.Combine(tempRoot, "output-export-search.tsv");
+        using (FilteredLogRecordSource source = LogSearchBuilder.BuildFilteredReader(
+            searchSourcePath,
+            Encoding.UTF8,
+            0,
+            new SearchOptions(@"ERROR\tcode=(?<code>\d+)", UseRegex: true, IgnoreCase: false)))
+        {
+            LogOutputExporter.SaveSearchResults(source, searchOutputPath);
+        }
+
+        AssertUtf8Bom("search export BOM", searchOutputPath);
+        AssertEqual(
+            "search export content",
+            File.ReadAllText(searchOutputPath, Encoding.UTF8),
+            "#\tText\tcode\r\n2\tERROR code=42\t42");
+
+        string emptyOutputPath = Path.Combine(tempRoot, "output-export-empty.tsv");
+        using (FilteredLogRecordSource source = LogSearchBuilder.BuildFilteredReader(
+            searchSourcePath,
+            Encoding.UTF8,
+            0,
+            new SearchOptions("missing", UseRegex: false, IgnoreCase: false)))
+        {
+            LogOutputExporter.SaveSearchResults(source, emptyOutputPath);
+        }
+
+        AssertEqual(
+            "empty search export keeps headers",
+            File.ReadAllText(emptyOutputPath, Encoding.UTF8),
+            "#\tText");
+        AssertEqual(
+            "output export leaves no temporary files",
+            Directory.GetFiles(tempRoot, ".*.tmp").Length,
+            0);
+    }
+
+    private static void AssertUtf8Bom(string name, string path)
+    {
+        byte[] content = File.ReadAllBytes(path);
+        bool hasBom = content.Length >= 3 && content[0] == 0xEF && content[1] == 0xBB && content[2] == 0xBF;
+        AssertEqual(name, hasBom, true);
     }
 
     private static void RunCombinedParserProjection(string tempRoot)

@@ -295,6 +295,11 @@ internal sealed class ViewerWindow
         int getMessageResult;
         while ((getMessageResult = NativeMethods.GetMessageW(out msg, IntPtr.Zero, 0, 0)) > 0)
         {
+            if (TryHandleGlobalShortcut(msg))
+            {
+                continue;
+            }
+
             NativeMethods.TranslateMessage(ref msg);
             NativeMethods.DispatchMessageW(ref msg);
         }
@@ -845,6 +850,189 @@ internal sealed class ViewerWindow
 
         return false;
     }
+
+    private bool TryHandleGlobalShortcut(NativeMethods.MSG message)
+    {
+        if (message.message != NativeMethods.WM_KEYDOWN ||
+            message.wParam.ToInt32() != NativeMethods.VK_S ||
+            !IsControlKeyDown())
+        {
+            return false;
+        }
+
+        SaveCurrentOutput();
+        return true;
+    }
+
+    private void SaveCurrentOutput()
+    {
+        if (_detectedEncoding is null || _mainPane?.Reader is not ProjectedViewport mainViewport)
+        {
+            ShowSaveError("Wait for the file to finish loading before saving.");
+            return;
+        }
+
+        bool saveSearch = HasActiveSearch;
+        ILogRecordSource source;
+        string defaultExtension;
+        string defaultName;
+        string dialogTitle;
+        string filter;
+        if (saveSearch)
+        {
+            if (IsSearchSaveBlocked())
+            {
+                ShowSaveError("Wait for the search to finish before saving its results.");
+                return;
+            }
+
+            int resultIndex = GetActiveSearchResultCount() - 1;
+            if (resultIndex < 0 ||
+                _searchLevels[resultIndex].ResultsPane?.Reader is not ProjectedViewport { Source: FilteredLogRecordSource filteredSource })
+            {
+                ShowSaveError("Search results are not ready to be saved.");
+                return;
+            }
+
+            source = filteredSource;
+            defaultExtension = "tsv";
+            defaultName = GetOutputBaseName() + "-search-results.tsv";
+            dialogTitle = "Save search results";
+            filter = "Tab-separated values (*.tsv)\0*.tsv\0All files\0*.*\0\0";
+        }
+        else
+        {
+            source = mainViewport.Source;
+            defaultExtension = "log";
+            defaultName = GetOutputBaseName() + "-parsed.log";
+            dialogTitle = "Save parsed log";
+            filter = "Log files (*.log)\0*.log\0All files\0*.*\0\0";
+        }
+
+        if (!TryShowSaveOutputDialog(filter, dialogTitle, defaultExtension, defaultName, out string? outputPath) ||
+            outputPath is null)
+        {
+            return;
+        }
+
+        try
+        {
+            using ILogRecordSource snapshot = source.CloneForWorker();
+            if (saveSearch)
+            {
+                LogOutputExporter.SaveSearchResults(snapshot, outputPath);
+            }
+            else
+            {
+                LogOutputExporter.SaveParsedLog(snapshot, outputPath);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            ShowSaveError("Failed to save output: " + ex.Message);
+        }
+    }
+
+    private bool IsSearchSaveBlocked() =>
+        _searchInProgress ||
+        _appendSearchPending ||
+        _appendSearchInProgress ||
+        _waitingForPausedSearchRequestId != 0 ||
+        _searchStale ||
+        string.Equals(_searchErrorText, "Search stale", StringComparison.Ordinal);
+
+    private string GetOutputBaseName()
+    {
+        string value = _contentSource.FilePath is string path
+            ? Path.GetFileNameWithoutExtension(path)
+            : _contentSource.DisplayName;
+        char[] invalid = Path.GetInvalidFileNameChars();
+        var sanitized = new StringBuilder(value.Length);
+        for (int i = 0; i < value.Length; i++)
+        {
+            sanitized.Append(Array.IndexOf(invalid, value[i]) >= 0 ? '_' : value[i]);
+        }
+
+        string result = sanitized.ToString().Trim().TrimEnd('.');
+        return result.Length > 0 ? result : "logblade";
+    }
+
+    private bool TryShowSaveOutputDialog(
+        string filter,
+        string title,
+        string defaultExtension,
+        string defaultName,
+        out string? selectedPath)
+    {
+        selectedPath = null;
+        const int fileBufferChars = 32768;
+        IntPtr filterBuffer = IntPtr.Zero;
+        IntPtr fileBuffer = IntPtr.Zero;
+        IntPtr titleBuffer = IntPtr.Zero;
+        IntPtr defaultExtensionBuffer = IntPtr.Zero;
+        try
+        {
+            filterBuffer = Marshal.StringToHGlobalUni(filter);
+            titleBuffer = Marshal.StringToHGlobalUni(title);
+            defaultExtensionBuffer = Marshal.StringToHGlobalUni(defaultExtension);
+            fileBuffer = Marshal.AllocHGlobal(fileBufferChars * sizeof(char));
+            Marshal.Copy(new byte[fileBufferChars * sizeof(char)], 0, fileBuffer, fileBufferChars * sizeof(char));
+            char[] defaultNameChars = defaultName.ToCharArray();
+            Marshal.Copy(defaultNameChars, 0, fileBuffer, defaultNameChars.Length);
+
+            NativeMethods.OPENFILENAMEW ofn = new()
+            {
+                lStructSize = Marshal.SizeOf<NativeMethods.OPENFILENAMEW>(),
+                hwndOwner = _hwnd,
+                lpstrFilter = filterBuffer,
+                lpstrFile = fileBuffer,
+                nMaxFile = fileBufferChars,
+                lpstrTitle = titleBuffer,
+                lpstrDefExt = defaultExtensionBuffer,
+                Flags = NativeMethods.OFN_EXPLORER | NativeMethods.OFN_PATHMUSTEXIST |
+                    NativeMethods.OFN_NOCHANGEDIR | NativeMethods.OFN_OVERWRITEPROMPT
+            };
+
+            if (!NativeMethods.GetSaveFileNameW(ref ofn))
+            {
+                int dialogError = NativeMethods.CommDlgExtendedError();
+                if (dialogError != 0)
+                {
+                    ShowSaveError("Failed to open save dialog. Error: 0x" + dialogError.ToString("X"));
+                }
+
+                return false;
+            }
+
+            selectedPath = Marshal.PtrToStringUni(fileBuffer);
+            return !string.IsNullOrEmpty(selectedPath);
+        }
+        finally
+        {
+            if (filterBuffer != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(filterBuffer);
+            }
+
+            if (fileBuffer != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(fileBuffer);
+            }
+
+            if (titleBuffer != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(titleBuffer);
+            }
+
+            if (defaultExtensionBuffer != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(defaultExtensionBuffer);
+            }
+        }
+    }
+
+    private void ShowSaveError(string message) =>
+        NativeMethods.MessageBoxW(_hwnd, message, Program.AppTitle, NativeMethods.MB_OK | NativeMethods.MB_ICONERROR);
 
     private void OpenFileInCurrentWindow()
     {

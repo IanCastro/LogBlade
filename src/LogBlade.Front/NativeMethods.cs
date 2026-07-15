@@ -175,6 +175,7 @@ internal static class NativeMethods
     public const int VK_A = 0x41;
     public const int VK_C = 0x43;
     public const int VK_O = 0x4F;
+    public const int VK_S = 0x53;
     public const int VK_V = 0x56;
     public const int VK_CONTROL = 0x11;
     public const int VK_SHIFT = 0x10;

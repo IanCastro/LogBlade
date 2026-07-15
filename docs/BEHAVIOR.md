@@ -62,6 +62,12 @@ Alterar um nivel inferior, continuar uma busca, processar append ou retomar um c
 - Ao copiar varias linhas ou resultados, cada item selecionado continua separado por uma quebra de linha do clipboard.
 - Tabs continuam sendo convertidos em um espaco na copia.
 
+## Exportacao com Ctrl+S
+
+- Com search ativo, `Ctrl+S` salva o ultimo nivel como TSV com cabecalho e todas as colunas (`#`, `Text` e capturas).
+- Sem search ativo, `Ctrl+S` salva todos os registros exibidos pelo parser. Newlines do parser sao preservados e segmentos visuais de 4096 caracteres nao criam quebras no arquivo.
+- Sem parser, a exportacao usa o texto original decodificado. As saidas sao gravadas em UTF-8 com BOM e registros sao separados por CRLF.
+
 ## Manutencao
 
 Qualquer mudanca nesses contratos deve atualizar este documento e os smoke tests correspondentes no mesmo trabalho. Em especial, os testes devem continuar cobrindo saida multiline, linhas maiores que 4096 caracteres, Regex e capturas por linha, `Invert match`, cascata, alteracao de nivel inferior e append.
