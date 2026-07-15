@@ -338,6 +338,9 @@ public sealed class FilteredLogRecordSource : ILogRecordSource
     public IEnumerable<LogViewportRecord> EnumerateRecords(LogRecordKey? start, LogRecordKey? end)
     {
         ThrowIfDisposed();
+        using Stream stream = LogFileUtilities.OpenSourceStream(_contentSource);
+        byte[] scanBuffer = new byte[SearchRealLineScanner.RequiredBufferBytes];
+        DisplayParserRecordSequence sequence = new(_displayParserRule);
         string? cachedLogicalText = null;
         long cachedStart = -1;
         long cachedEnd = -1;
@@ -359,7 +362,7 @@ public sealed class FilteredLogRecordSource : ILogRecordSource
                 cachedStart == descriptor.StartOffset &&
                 cachedEnd == descriptor.EndOffset
                 ? cachedLogicalText
-                : ReadDescriptorText(descriptor);
+                : ReadDescriptorText(stream, descriptor, sequence, scanBuffer);
             cachedLogicalText = logicalText;
             cachedStart = descriptor.StartOffset;
             cachedEnd = descriptor.EndOffset;
@@ -522,6 +525,21 @@ public sealed class FilteredLogRecordSource : ILogRecordSource
             descriptor.EndOffset,
             descriptor.LineNumber,
             _displayParserRule);
+
+    private string ReadDescriptorText(
+        Stream stream,
+        FilteredLineDescriptor descriptor,
+        DisplayParserRecordSequence sequence,
+        byte[] scanBuffer) =>
+        DisplayParserRecordEvaluator.ReadRecordText(
+            stream,
+            _encoding,
+            _kind,
+            descriptor.StartOffset,
+            descriptor.EndOffset,
+            descriptor.LineNumber,
+            sequence,
+            scanBuffer);
 
     private static LogRecordKey ToRecordKey(FilteredLineDescriptor descriptor) =>
         new(descriptor.StartOffset, descriptor.EndOffset, descriptor.ExplicitRowIndex);

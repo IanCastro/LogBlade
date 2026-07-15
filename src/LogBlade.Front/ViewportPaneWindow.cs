@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 
 internal enum ViewportRequestKind
@@ -4671,18 +4672,23 @@ internal sealed class ViewportPaneWindow : IDisposable
             return;
         }
 
-        List<string> selectedRows = new(selected.Count);
-        foreach (ViewportSelectedRow row in selected)
-        {
-            selectedRows.Add(CreateClipboardRow(row));
-        }
-
-        if (selectedRows.Count == 0)
+        if (selected.Count == 0)
         {
             return;
         }
 
-        SetClipboardText(string.Join("\r\n", selectedRows));
+        StringBuilder clipboard = new();
+        for (int i = 0; i < selected.Count; i++)
+        {
+            if (i > 0)
+            {
+                clipboard.Append("\r\n");
+            }
+
+            AppendClipboardRow(clipboard, selected[i]);
+        }
+
+        SetClipboardText(clipboard.ToString());
     }
 
     private bool TryCopyTextSelectionToClipboard()
@@ -4782,92 +4788,62 @@ internal sealed class ViewportPaneWindow : IDisposable
             return;
         }
 
-        List<string[]> selectedCells = new(selected.Count);
+        bool[] includedColumns = new bool[selectedColumns.Count];
+        List<int> includedRows = new(selected.Count);
         for (int rowIndex = 0; rowIndex < selected.Count; rowIndex++)
         {
             ViewportSelectedRow row = selected[rowIndex];
-            string[] cells = new string[selectedColumns.Count];
+            bool rowHasValue = false;
             for (int i = 0; i < selectedColumns.Count; i++)
             {
-                int column = selectedColumns[i];
-                string value = string.Empty;
-                if (IsGridCellSelectedForClipboard(row.Key, column))
+                string value = GetClipboardCellValue(row, selectedColumns[i]);
+                if (value.Length > 0)
                 {
-                    int copyColumn = column - 1;
-                    if (row.Cells is not null && copyColumn >= 0 && copyColumn < row.Cells.Count)
-                    {
-                        value = row.Cells[copyColumn];
-                    }
-                    else if (column == 1)
-                    {
-                        value = row.Text;
-                    }
-                }
-
-                cells[i] = NormalizeClipboardCell(value);
-            }
-
-            selectedCells.Add(cells);
-        }
-
-        string? clipboardText = BuildTrimmedTsv(selectedCells);
-        if (clipboardText is null)
-        {
-            return;
-        }
-
-        SetClipboardText(clipboardText);
-    }
-
-    private static string? BuildTrimmedTsv(IReadOnlyList<string[]> rows)
-    {
-        List<int> rowIndexes = new();
-        List<int> columnIndexes = new();
-        for (int rowIndex = 0; rowIndex < rows.Count; rowIndex++)
-        {
-            string[] row = rows[rowIndex];
-            bool rowHasValue = false;
-            for (int columnIndex = 0; columnIndex < row.Length; columnIndex++)
-            {
-                if (row[columnIndex].Length == 0)
-                {
-                    continue;
-                }
-
-                rowHasValue = true;
-                if (!columnIndexes.Contains(columnIndex))
-                {
-                    columnIndexes.Add(columnIndex);
+                    rowHasValue = true;
+                    includedColumns[i] = true;
                 }
             }
 
             if (rowHasValue)
             {
-                rowIndexes.Add(rowIndex);
+                includedRows.Add(rowIndex);
             }
         }
 
-        if (rowIndexes.Count == 0 || columnIndexes.Count == 0)
+        if (includedRows.Count == 0)
         {
-            return null;
+            return;
         }
 
-        columnIndexes.Sort();
-        List<string> lines = new(rowIndexes.Count);
-        for (int row = 0; row < rowIndexes.Count; row++)
+        StringBuilder clipboard = new();
+        for (int row = 0; row < includedRows.Count; row++)
         {
-            string[] source = rows[rowIndexes[row]];
-            string[] cells = new string[columnIndexes.Count];
-            for (int column = 0; column < columnIndexes.Count; column++)
+            if (row > 0)
             {
-                int columnIndex = columnIndexes[column];
-                cells[column] = columnIndex < source.Length ? source[columnIndex] : string.Empty;
+                clipboard.Append("\r\n");
             }
 
-            lines.Add(string.Join("\t", cells));
+            ViewportSelectedRow selectedRow = selected[includedRows[row]];
+            bool firstColumn = true;
+            for (int column = 0; column < selectedColumns.Count; column++)
+            {
+                if (!includedColumns[column])
+                {
+                    continue;
+                }
+
+                if (!firstColumn)
+                {
+                    clipboard.Append('\t');
+                }
+
+                clipboard.Append(NormalizeClipboardCell(
+                    GetClipboardCellValue(selectedRow, selectedColumns[column])));
+                firstColumn = false;
+            }
         }
 
-        return string.Join("\r\n", lines);
+        SetClipboardText(clipboard.ToString());
     }
 
     private bool IsGridCellSelectedForClipboard(ViewportRowSelectionKey rowKey, int columnIndex)
@@ -4880,20 +4856,39 @@ internal sealed class ViewportPaneWindow : IDisposable
         return IsGridCellSelected(new GridCellKey(rowKey, columnIndex));
     }
 
-    private string CreateClipboardRow(ViewportSelectedRow row)
+    private string GetClipboardCellValue(ViewportSelectedRow row, int columnIndex)
+    {
+        if (!IsGridCellSelectedForClipboard(row.Key, columnIndex))
+        {
+            return string.Empty;
+        }
+
+        int copyColumn = columnIndex - 1;
+        if (row.Cells is not null && copyColumn >= 0 && copyColumn < row.Cells.Count)
+        {
+            return row.Cells[copyColumn];
+        }
+
+        return columnIndex == 1 ? row.Text : string.Empty;
+    }
+
+    private void AppendClipboardRow(StringBuilder target, ViewportSelectedRow row)
     {
         if (_reader is not IColumnViewportReader || row.Cells is null || row.Cells.Count == 0)
         {
-            return NormalizeClipboardCell(row.Text);
+            target.Append(NormalizeClipboardCell(row.Text));
+            return;
         }
 
-        string[] cells = new string[row.Cells.Count];
         for (int i = 0; i < row.Cells.Count; i++)
         {
-            cells[i] = NormalizeClipboardCell(row.Cells[i]);
-        }
+            if (i > 0)
+            {
+                target.Append('\t');
+            }
 
-        return string.Join("\t", cells);
+            target.Append(NormalizeClipboardCell(row.Cells[i]));
+        }
     }
 
     private static string NormalizeClipboardCell(string value) =>

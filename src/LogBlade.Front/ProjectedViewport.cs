@@ -399,14 +399,14 @@ internal class ProjectedViewport :
             excluded.Add(ToRecordKey(key));
         }
 
-        HashSet<LogRecordKey> emitted = new();
         List<ViewportSelectedRow> selected = new();
         if (selectAll)
         {
-            AppendSelectedRange(null, null, excluded, emitted, selected);
+            AppendSelectedRange(null, null, excluded, emitted: null, target: selected);
         }
         else
         {
+            HashSet<LogRecordKey> emitted = new();
             for (int i = 0; i < ranges.Count; i++)
             {
                 AppendSelectedRange(
@@ -418,7 +418,11 @@ internal class ProjectedViewport :
             }
         }
 
-        selected.Sort((left, right) => left.Key.CompareTo(right.Key));
+        if (!selectAll && ranges.Count > 1)
+        {
+            selected.Sort((left, right) => left.Key.CompareTo(right.Key));
+        }
+
         return selected;
     }
 
@@ -646,12 +650,12 @@ internal class ProjectedViewport :
         LogRecordKey? start,
         LogRecordKey? end,
         HashSet<LogRecordKey> excluded,
-        HashSet<LogRecordKey> emitted,
+        HashSet<LogRecordKey>? emitted,
         List<ViewportSelectedRow> target)
     {
         foreach (LogViewportRecord record in _source.EnumerateRecords(start, end))
         {
-            if (excluded.Contains(record.Key) || !emitted.Add(record.Key))
+            if (excluded.Contains(record.Key) || (emitted is not null && !emitted.Add(record.Key)))
             {
                 continue;
             }

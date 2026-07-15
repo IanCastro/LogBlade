@@ -8,6 +8,7 @@ using System.Threading;
 internal static class SearchRealLineScanner
 {
     private const int BlockBytes = 1024 * 1024;
+    internal const int RequiredBufferBytes = BlockBytes + 1;
 
     public static IEnumerable<RealLineData> Enumerate(string filePath, Encoding encoding, LogEncodingKind kind, long dataOffset, long fileSize)
         => Enumerate(LogContentSource.FromFile(filePath), encoding, kind, dataOffset, fileSize, CancellationToken.None);
@@ -28,12 +29,38 @@ internal static class SearchRealLineScanner
     {
         cancellationToken.ThrowIfCancellationRequested();
         using Stream fs = LogFileUtilities.OpenSourceStream(source);
+        byte[] buffer = new byte[RequiredBufferBytes];
+        foreach (RealLineData line in Enumerate(fs, encoding, kind, dataOffset, fileSize, buffer, cancellationToken, firstLineNumber))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            yield return line;
+        }
+    }
+
+    internal static IEnumerable<RealLineData> Enumerate(
+        Stream fs,
+        Encoding encoding,
+        LogEncodingKind kind,
+        long dataOffset,
+        long fileSize,
+        byte[] buffer,
+        CancellationToken cancellationToken,
+        long firstLineNumber)
+    {
+        ArgumentNullException.ThrowIfNull(fs);
+        ArgumentNullException.ThrowIfNull(buffer);
+        if (buffer.Length < RequiredBufferBytes)
+        {
+            throw new ArgumentException($"Scanner buffer must contain at least {RequiredBufferBytes} bytes.", nameof(buffer));
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
         fs.Position = dataOffset;
         IEnumerable<RealLineData> lines = kind switch
         {
-            LogEncodingKind.Utf16Le => EnumerateUtf16(fs, encoding, dataOffset, fileSize, littleEndian: true, cancellationToken: cancellationToken, firstLineNumber: firstLineNumber),
-            LogEncodingKind.Utf16Be => EnumerateUtf16(fs, encoding, dataOffset, fileSize, littleEndian: false, cancellationToken: cancellationToken, firstLineNumber: firstLineNumber),
-            LogEncodingKind.Utf8 or LogEncodingKind.Windows1252 => EnumerateSingleByte(fs, encoding, dataOffset, fileSize, cancellationToken, firstLineNumber),
+            LogEncodingKind.Utf16Le => EnumerateUtf16(fs, encoding, dataOffset, fileSize, buffer, littleEndian: true, cancellationToken: cancellationToken, firstLineNumber: firstLineNumber),
+            LogEncodingKind.Utf16Be => EnumerateUtf16(fs, encoding, dataOffset, fileSize, buffer, littleEndian: false, cancellationToken: cancellationToken, firstLineNumber: firstLineNumber),
+            LogEncodingKind.Utf8 or LogEncodingKind.Windows1252 => EnumerateSingleByte(fs, encoding, dataOffset, fileSize, buffer, cancellationToken, firstLineNumber),
             _ => Array.Empty<RealLineData>()
         };
 
@@ -44,9 +71,8 @@ internal static class SearchRealLineScanner
         }
     }
 
-    private static IEnumerable<RealLineData> EnumerateSingleByte(Stream fs, Encoding encoding, long dataOffset, long fileSize, CancellationToken cancellationToken, long firstLineNumber)
+    private static IEnumerable<RealLineData> EnumerateSingleByte(Stream fs, Encoding encoding, long dataOffset, long fileSize, byte[] buffer, CancellationToken cancellationToken, long firstLineNumber)
     {
-        byte[] buffer = new byte[BlockBytes];
         ArrayBufferWriter<byte>? pendingLine = null;
         long lineStart = dataOffset;
         long lineNumber = Math.Max(1, firstLineNumber);
@@ -56,7 +82,7 @@ internal static class SearchRealLineScanner
         {
             cancellationToken.ThrowIfCancellationRequested();
             long bufferStart = fs.Position;
-            int read = fs.Read(buffer, 0, (int)Math.Min(buffer.Length, fileSize - fs.Position));
+            int read = fs.Read(buffer, 0, (int)Math.Min(BlockBytes, fileSize - fs.Position));
             if (read <= 0)
             {
                 break;
@@ -131,9 +157,8 @@ internal static class SearchRealLineScanner
         }
     }
 
-    private static IEnumerable<RealLineData> EnumerateUtf16(Stream fs, Encoding encoding, long dataOffset, long fileSize, bool littleEndian, CancellationToken cancellationToken, long firstLineNumber)
+    private static IEnumerable<RealLineData> EnumerateUtf16(Stream fs, Encoding encoding, long dataOffset, long fileSize, byte[] buffer, bool littleEndian, CancellationToken cancellationToken, long firstLineNumber)
     {
-        byte[] buffer = new byte[BlockBytes + 1];
         ArrayBufferWriter<byte>? pendingLine = null;
         long lineStart = dataOffset;
         long lineNumber = Math.Max(1, firstLineNumber);

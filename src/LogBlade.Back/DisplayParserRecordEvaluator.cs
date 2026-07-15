@@ -44,6 +44,9 @@ internal sealed class DisplayParserRecordSequence
         IEnumerable<RealLineData> source,
         CancellationToken cancellationToken = default)
     {
+        LastLineNumberSeen = 0;
+        IncompleteRecordStartOffset = -1;
+        IncompleteRecordLineNumber = 0;
         if (_rule is null || _jsonStageIndex < 0)
         {
             foreach (RealLineData line in source)
@@ -342,19 +345,38 @@ internal static class DisplayParserRecordEvaluator
         long lineNumber,
         DisplayParserRule? rule)
     {
-        using (Stream fs = LogFileUtilities.OpenSourceStream(source))
-        {
-            FilteredLineUtilities.ValidateLineRange(fs, encoding, startOffset, endOffset);
-        }
+        using Stream fs = LogFileUtilities.OpenSourceStream(source);
+        byte[] buffer = new byte[SearchRealLineScanner.RequiredBufferBytes];
+        return ReadRecordText(
+            fs,
+            encoding,
+            kind,
+            startOffset,
+            endOffset,
+            lineNumber,
+            new DisplayParserRecordSequence(rule),
+            buffer);
+    }
 
-        DisplayParserRecordSequence sequence = new(rule);
+    internal static string ReadRecordText(
+        Stream stream,
+        Encoding encoding,
+        LogEncodingKind kind,
+        long startOffset,
+        long endOffset,
+        long lineNumber,
+        DisplayParserRecordSequence sequence,
+        byte[] scanBuffer)
+    {
+        FilteredLineUtilities.ValidateLineRange(stream, encoding, startOffset, endOffset);
         foreach (DisplayParserRecord record in sequence.Enumerate(
             SearchRealLineScanner.Enumerate(
-                source,
+                stream,
                 encoding,
                 kind,
                 startOffset,
                 endOffset,
+                scanBuffer,
                 CancellationToken.None,
                 Math.Max(1, lineNumber))))
         {
