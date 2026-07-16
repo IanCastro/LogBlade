@@ -10,7 +10,8 @@ public readonly record struct FilteredLineDescriptor(
     long EndOffset,
     FilteredCaptureGroups? CaptureGroups = null,
     long LineNumber = 0,
-    int ExplicitRowIndex = 0);
+    int ExplicitRowIndex = 0,
+    int ParserOutputLevel = -1);
 
 public sealed class FilteredLineStaleException : IOException
 {

@@ -7,6 +7,7 @@ internal static class NativeMethods
     public const int CS_VREDRAW = 0x0001;
     public const int CS_DBLCLKS = 0x0008;
     public const int WS_CHILD = 0x40000000;
+    public const int WS_POPUP = unchecked((int)0x80000000);
     public const int WS_VISIBLE = 0x10000000;
     public const int WS_TABSTOP = 0x00010000;
     public const int WS_BORDER = 0x00800000;
@@ -17,6 +18,7 @@ internal static class NativeMethods
     public const int WS_HSCROLL = 0x00100000;
     public const int WS_VSCROLL = 0x00200000;
     public const int WS_EX_TRANSPARENT = 0x00000020;
+    public const int WS_EX_TOPMOST = 0x00000008;
     public const int ES_AUTOHSCROLL = 0x0080;
     public const int ES_AUTOVSCROLL = 0x0040;
     public const int ES_MULTILINE = 0x0004;
@@ -26,6 +28,7 @@ internal static class NativeMethods
     public const int BS_AUTOCHECKBOX = 0x00000003;
     public const int BS_AUTORADIOBUTTON = 0x00000009;
     public const int BS_PUSHBUTTON = 0x00000000;
+    public const int BS_PUSHLIKE = 0x00001000;
     public const int CBS_DROPDOWNLIST = 0x0003;
     public const int CBS_OWNERDRAWFIXED = 0x0010;
     public const int CBS_HASSTRINGS = 0x0200;
@@ -102,6 +105,7 @@ internal static class NativeMethods
     public const int LB_ERR = -1;
     public const int EM_SETSEL = 0x00B1;
     public const int WM_APP = 0x8000;
+    public const int WM_USER = 0x0400;
     public const int WM_APP_BEGIN_OPEN = WM_APP + 1;
     public const int WM_APP_OPEN_COMPLETE = WM_APP + 2;
     public const int WM_APP_VIEWPORT_COMPLETE = WM_APP + 3;
@@ -162,6 +166,15 @@ internal static class NativeMethods
     public const int BN_CLICKED = 0;
     public const int BST_UNCHECKED = 0;
     public const int BST_CHECKED = 1;
+    public const int TTS_ALWAYSTIP = 0x01;
+    public const int TTS_NOPREFIX = 0x02;
+    public const uint TTF_IDISHWND = 0x0001;
+    public const uint TTF_SUBCLASS = 0x0010;
+    public const uint TTM_ADDTOOLW = WM_USER + 50;
+    public const uint TTM_DELTOOLW = WM_USER + 51;
+    public const uint TTM_UPDATETIPTEXTW = WM_USER + 57;
+    public const uint ICC_WIN95_CLASSES = 0x000000FF;
+    public const string TOOLTIPS_CLASS = "tooltips_class32";
     public const int ODS_SELECTED = 0x0001;
     public const int ODS_FOCUS = 0x0010;
     public const int VK_LEFT = 0x25;
@@ -408,6 +421,27 @@ internal static class NativeMethods
         public nuint itemData;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct INITCOMMONCONTROLSEX
+    {
+        public uint dwSize;
+        public uint dwICC;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct TOOLINFOW
+    {
+        public uint cbSize;
+        public uint uFlags;
+        public IntPtr hwnd;
+        public nuint uId;
+        public RECT rect;
+        public IntPtr hinst;
+        public IntPtr lpszText;
+        public IntPtr lParam;
+        public IntPtr lpReserved;
+    }
+
     [UnmanagedFunctionPointer(CallingConvention.Winapi)]
     public delegate IntPtr WindowProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
 
@@ -428,6 +462,10 @@ internal static class NativeMethods
         IntPtr hMenu,
         IntPtr hInstance,
         IntPtr lpParam);
+
+    [DllImport("comctl32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool InitCommonControlsEx(ref INITCOMMONCONTROLSEX picce);
 
     [DllImport("comdlg32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

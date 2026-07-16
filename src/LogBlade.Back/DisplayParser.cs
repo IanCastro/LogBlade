@@ -10,7 +10,8 @@ public enum DisplayParserMode
 {
     Regex,
     Json,
-    RegexReplace
+    RegexReplace,
+    Filter
 }
 
 public sealed class DisplayParserRule
@@ -44,12 +45,21 @@ public sealed class DisplayParserStage
     public DisplayParserMode Mode { get; set; } = DisplayParserMode.Json;
     public string Rule { get; set; } = string.Empty;
     public string Template { get; set; } = string.Empty;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool UseRegex { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool IgnoreCase { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool InvertMatch { get; set; }
 
     public DisplayParserStage Clone() => new()
     {
         Mode = Mode,
         Rule = Rule,
-        Template = Template
+        Template = Template,
+        UseRegex = UseRegex,
+        IgnoreCase = IgnoreCase,
+        InvertMatch = InvertMatch
     };
 }
 
@@ -71,6 +81,77 @@ public static class DisplayParserEvaluator
         }
 
         return -1;
+    }
+
+    public static int GetFilterCount(DisplayParserRule? rule)
+    {
+        if (rule?.Stages is null)
+        {
+            return 0;
+        }
+
+        int count = 0;
+        for (int i = 0; i < rule.Stages.Count; i++)
+        {
+            if (rule.Stages[i].Mode == DisplayParserMode.Filter)
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    public static SearchOptions[] GetFilterOptions(DisplayParserRule? rule)
+    {
+        int count = GetFilterCount(rule);
+        if (count == 0)
+        {
+            return Array.Empty<SearchOptions>();
+        }
+
+        SearchOptions[] options = new SearchOptions[count];
+        int target = 0;
+        for (int i = 0; i < rule!.Stages.Count; i++)
+        {
+            DisplayParserStage stage = rule.Stages[i];
+            if (stage.Mode != DisplayParserMode.Filter)
+            {
+                continue;
+            }
+
+            options[target++] = new SearchOptions(stage.Rule, stage.UseRegex, stage.IgnoreCase, stage.InvertMatch);
+        }
+
+        return options;
+    }
+
+    public static DisplayParserRule? CreateRuleBeforeFirstFilter(DisplayParserRule? rule)
+    {
+        if (rule is null)
+        {
+            return null;
+        }
+
+        if (rule.Stages is null || rule.Stages.Count == 0)
+        {
+            return rule.Clone();
+        }
+
+        int firstFilterIndex = rule.Stages.FindIndex(stage => stage.Mode == DisplayParserMode.Filter);
+        if (firstFilterIndex < 0)
+        {
+            return rule.Clone();
+        }
+
+        if (firstFilterIndex == 0)
+        {
+            return null;
+        }
+
+        DisplayParserRule prefix = rule.Clone();
+        prefix.Stages.RemoveRange(firstFilterIndex, prefix.Stages.Count - firstFilterIndex);
+        return prefix;
     }
 
     internal static bool TryEvaluateStageRange(
@@ -97,6 +178,36 @@ public static class DisplayParserEvaluator
 
         parsed = current;
         return true;
+    }
+
+    internal static string EvaluateStageRangeOrOriginal(
+        DisplayParserRule rule,
+        int startIndex,
+        int endIndexExclusive,
+        string input)
+    {
+        int start = Math.Clamp(startIndex, 0, rule.Stages.Count);
+        int end = Math.Clamp(endIndexExclusive, start, rule.Stages.Count);
+        string current = input;
+        string lastValid = input;
+        for (int i = start; i < end; i++)
+        {
+            DisplayParserStage stage = rule.Stages[i];
+            if (stage.Mode == DisplayParserMode.Filter)
+            {
+                continue;
+            }
+
+            if (!TryEvaluateStage(stage, current, out string next))
+            {
+                return lastValid;
+            }
+
+            current = next;
+            lastValid = current;
+        }
+
+        return lastValid;
     }
 
     public static string GenerateJsonTemplateFromSample(string sample)
@@ -210,6 +321,21 @@ public static class DisplayParserEvaluator
 
     public static void ValidateStage(DisplayParserStage stage)
     {
+        if (stage.Mode == DisplayParserMode.Filter)
+        {
+            if (string.IsNullOrEmpty(stage.Rule))
+            {
+                throw new ArgumentException("Pattern is required.", nameof(stage));
+            }
+
+            LogSearchBuilder.ValidateOptions(new SearchOptions(
+                stage.Rule,
+                stage.UseRegex,
+                stage.IgnoreCase,
+                stage.InvertMatch));
+            return;
+        }
+
         if (stage.Mode is DisplayParserMode.Regex or DisplayParserMode.RegexReplace)
         {
             if (string.IsNullOrEmpty(stage.Rule))
@@ -247,6 +373,11 @@ public static class DisplayParserEvaluator
             return input;
         }
 
+        if (GetFilterCount(rule) > 0)
+        {
+            return EvaluateLinesOrOriginal(rule, input);
+        }
+
         return TryEvaluate(rule, input, out string parsed)
             ? parsed
             : input;
@@ -268,9 +399,34 @@ public static class DisplayParserEvaluator
         }
 
         List<string> output = new();
-        foreach (DisplayParserRecord record in DisplayParserRecordEvaluator.Enumerate(source, rule))
+        if (GetFilterCount(rule) > 0)
         {
-            output.Add(record.Text);
+            DisplayParserFilterPipelineSequence sequence = new(rule);
+            foreach (DisplayParserPipelineRecord record in sequence.Enumerate(source))
+            {
+                foreach (DisplayParserPipelineRow row in record.FinalRows)
+                {
+                    output.Add(row.Text);
+                }
+            }
+        }
+        else
+        {
+            foreach (DisplayParserRecord record in DisplayParserRecordEvaluator.Enumerate(source, rule))
+            {
+                output.Add(record.Text);
+            }
+        }
+
+        return string.Join(Environment.NewLine, output);
+    }
+
+    public static string EvaluateExplicitLinesIndependently(DisplayParserRule rule, string input)
+    {
+        List<string> output = new();
+        foreach (ExplicitRowData row in FilteredLineUtilities.EnumerateExplicitRows(input))
+        {
+            output.Add(EvaluateStageRangeOrOriginal(rule, 0, rule.Stages.Count, row.Text));
         }
 
         return string.Join(Environment.NewLine, output);
@@ -310,6 +466,7 @@ public static class DisplayParserEvaluator
                 DisplayParserMode.Regex => EvaluateRegex(stage.Rule, stage.Template, input),
                 DisplayParserMode.Json => EvaluateJson(stage.Rule, input),
                 DisplayParserMode.RegexReplace => EvaluateRegexReplace(stage.Rule, stage.Template, input),
+                DisplayParserMode.Filter => input,
                 _ => input
             };
             return true;

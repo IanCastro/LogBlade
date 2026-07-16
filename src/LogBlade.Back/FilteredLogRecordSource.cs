@@ -340,7 +340,12 @@ public sealed class FilteredLogRecordSource : ILogRecordSource
         ThrowIfDisposed();
         using Stream stream = LogFileUtilities.OpenSourceStream(_contentSource);
         byte[] scanBuffer = new byte[SearchRealLineScanner.RequiredBufferBytes];
-        DisplayParserRecordSequence sequence = new(_displayParserRule);
+        DisplayParserRecordSequence? sequence = DisplayParserEvaluator.GetFilterCount(_displayParserRule) == 0
+            ? new DisplayParserRecordSequence(_displayParserRule)
+            : null;
+        DisplayParserFilterPipelineSequence? filterSequence = sequence is null && _displayParserRule is not null
+            ? new DisplayParserFilterPipelineSequence(_displayParserRule)
+            : null;
         string? cachedLogicalText = null;
         long cachedStart = -1;
         long cachedEnd = -1;
@@ -362,7 +367,7 @@ public sealed class FilteredLogRecordSource : ILogRecordSource
                 cachedStart == descriptor.StartOffset &&
                 cachedEnd == descriptor.EndOffset
                 ? cachedLogicalText
-                : ReadDescriptorText(stream, descriptor, sequence, scanBuffer);
+                : ReadDescriptorText(stream, descriptor, sequence, filterSequence, scanBuffer);
             cachedLogicalText = logicalText;
             cachedStart = descriptor.StartOffset;
             cachedEnd = descriptor.EndOffset;
@@ -524,22 +529,40 @@ public sealed class FilteredLogRecordSource : ILogRecordSource
             descriptor.StartOffset,
             descriptor.EndOffset,
             descriptor.LineNumber,
-            _displayParserRule);
+            _displayParserRule,
+            descriptor.ParserOutputLevel);
 
     private string ReadDescriptorText(
         Stream stream,
         FilteredLineDescriptor descriptor,
-        DisplayParserRecordSequence sequence,
-        byte[] scanBuffer) =>
-        DisplayParserRecordEvaluator.ReadRecordText(
+        DisplayParserRecordSequence? sequence,
+        DisplayParserFilterPipelineSequence? filterSequence,
+        byte[] scanBuffer)
+    {
+        if (descriptor.ParserOutputLevel >= 0 && filterSequence is not null)
+        {
+            return DisplayParserRecordEvaluator.ReadPipelineRecordText(
+                stream,
+                _encoding,
+                _kind,
+                descriptor.StartOffset,
+                descriptor.EndOffset,
+                descriptor.LineNumber,
+                filterSequence,
+                descriptor.ParserOutputLevel,
+                scanBuffer);
+        }
+
+        return DisplayParserRecordEvaluator.ReadRecordText(
             stream,
             _encoding,
             _kind,
             descriptor.StartOffset,
             descriptor.EndOffset,
             descriptor.LineNumber,
-            sequence,
+            sequence ?? new DisplayParserRecordSequence(_displayParserRule),
             scanBuffer);
+    }
 
     private static LogRecordKey ToRecordKey(FilteredLineDescriptor descriptor) =>
         new(descriptor.StartOffset, descriptor.EndOffset, descriptor.ExplicitRowIndex);

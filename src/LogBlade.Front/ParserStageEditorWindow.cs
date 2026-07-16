@@ -8,6 +8,7 @@ internal sealed class ParserStageEditorWindow
     private const int IdRegexMode = 101;
     private const int IdJsonMode = 102;
     private const int IdRegexReplaceMode = 103;
+    private const int IdFilterMode = 109;
     private const int IdRuleEdit = 104;
     private const int IdTemplateEdit = 105;
     private const int IdPreviewEdit = 106;
@@ -17,6 +18,9 @@ internal sealed class ParserStageEditorWindow
     private const int IdCancelButton = 202;
     private const int IdAddNewStageButton = 203;
     private const int IdUndoStageButton = 204;
+    private const int IdFilterRegex = 110;
+    private const int IdFilterIgnoreCase = 111;
+    private const int IdFilterInvertMatch = 112;
 
     private readonly DisplayParserStage? _initialStage;
     private readonly IReadOnlyList<DisplayParserRule>? _existingRules;
@@ -39,10 +43,14 @@ internal sealed class ParserStageEditorWindow
     private IntPtr _regexRadio;
     private IntPtr _jsonRadio;
     private IntPtr _regexReplaceRadio;
+    private IntPtr _filterRadio;
     private IntPtr _ruleLabel;
     private IntPtr _ruleEdit;
     private IntPtr _templateLabel;
     private IntPtr _templateEdit;
+    private IntPtr _filterRegexCheckbox;
+    private IntPtr _filterIgnoreCaseCheckbox;
+    private IntPtr _filterInvertMatchCheckbox;
     private IntPtr _beforeLabel;
     private IntPtr _beforeEdit;
     private IntPtr _previewLabel;
@@ -169,7 +177,12 @@ internal sealed class ParserStageEditorWindow
         _createRuleMode = existingRules is not null;
         if (initialStage is not null)
         {
-            _drafts[initialStage.Mode] = new ParserStageDraft(initialStage.Rule, initialStage.Template);
+            _drafts[initialStage.Mode] = new ParserStageDraft(
+                initialStage.Rule,
+                initialStage.Template,
+                initialStage.UseRegex,
+                initialStage.IgnoreCase,
+                initialStage.InvertMatch);
         }
     }
 
@@ -346,10 +359,14 @@ internal sealed class ParserStageEditorWindow
         _regexRadio = CreateRadio("Regex", IdRegexMode);
         _regexReplaceRadio = CreateRadio("Regex Replace", IdRegexReplaceMode);
         _jsonRadio = CreateRadio("JSON", IdJsonMode);
+        _filterRadio = CreateRadio("Filter", IdFilterMode);
         _ruleLabel = CreateLabel("Regra");
         _ruleEdit = CreateEdit(IdRuleEdit, multiline: true, readOnly: false);
         _templateLabel = CreateLabel("Display");
         _templateEdit = CreateEdit(IdTemplateEdit, multiline: true, readOnly: false);
+        _filterRegexCheckbox = CreateCheckbox("Regex", IdFilterRegex);
+        _filterIgnoreCaseCheckbox = CreateCheckbox("Ignore case", IdFilterIgnoreCase);
+        _filterInvertMatchCheckbox = CreateCheckbox("Invert match", IdFilterInvertMatch);
         _beforeLabel = CreateLabel("Before");
         _beforeEdit = CreateEdit(IdBeforeEdit, multiline: true, readOnly: !CanEditStageInput);
         _previewLabel = CreateLabel("Preview");
@@ -371,6 +388,7 @@ internal sealed class ParserStageEditorWindow
         SetButtonChecked(_regexRadio, _mode == DisplayParserMode.Regex);
         SetButtonChecked(_regexReplaceRadio, _mode == DisplayParserMode.RegexReplace);
         SetButtonChecked(_jsonRadio, _mode == DisplayParserMode.Json);
+        SetButtonChecked(_filterRadio, _mode == DisplayParserMode.Filter);
         LoadModeDraft(_mode);
 
         UpdateModeUi();
@@ -383,12 +401,13 @@ internal sealed class ParserStageEditorWindow
         int id = NativeMethods.LowWord(wParam);
         int notification = NativeMethods.HighWord(wParam);
 
-        if (notification == NativeMethods.BN_CLICKED && id is IdRegexMode or IdJsonMode or IdRegexReplaceMode)
+        if (notification == NativeMethods.BN_CLICKED && id is IdRegexMode or IdJsonMode or IdRegexReplaceMode or IdFilterMode)
         {
             DisplayParserMode nextMode = id switch
             {
                 IdRegexMode => DisplayParserMode.Regex,
                 IdRegexReplaceMode => DisplayParserMode.RegexReplace,
+                IdFilterMode => DisplayParserMode.Filter,
                 _ => DisplayParserMode.Json
             };
             if (nextMode == _mode)
@@ -401,8 +420,17 @@ internal sealed class ParserStageEditorWindow
             SetButtonChecked(_regexRadio, _mode == DisplayParserMode.Regex);
             SetButtonChecked(_regexReplaceRadio, _mode == DisplayParserMode.RegexReplace);
             SetButtonChecked(_jsonRadio, _mode == DisplayParserMode.Json);
+            SetButtonChecked(_filterRadio, _mode == DisplayParserMode.Filter);
             LoadModeDraft(_mode);
             UpdateModeUi();
+            UpdatePreview();
+            return;
+        }
+
+        if (!_updatingModeControls &&
+            notification == NativeMethods.BN_CLICKED &&
+            id is IdFilterRegex or IdFilterIgnoreCase or IdFilterInvertMatch)
+        {
             UpdatePreview();
             return;
         }
@@ -557,6 +585,7 @@ internal sealed class ParserStageEditorWindow
         int inputWidth = Math.Max(300, width - inputLeft - margin);
         int y = margin;
         bool hasTemplate = _mode is DisplayParserMode.Regex or DisplayParserMode.RegexReplace;
+        bool isFilter = _mode == DisplayParserMode.Filter;
         int ruleHeight = hasTemplate ? 72 : 90;
         int templateHeight = 56;
 
@@ -571,6 +600,7 @@ internal sealed class ParserStageEditorWindow
         Move(_regexRadio, inputLeft, y, 76, rowHeight);
         Move(_regexReplaceRadio, inputLeft + 84, y, 126, rowHeight);
         Move(_jsonRadio, inputLeft + 218, y, 88, rowHeight);
+        Move(_filterRadio, inputLeft + 306, y, 80, rowHeight);
 
         y += rowHeight + gap;
         Move(_ruleLabel, margin, y + 4, labelWidth, rowHeight);
@@ -587,6 +617,21 @@ internal sealed class ParserStageEditorWindow
         {
             Move(_templateLabel, 0, 0, 0, 0);
             Move(_templateEdit, 0, 0, 0, 0);
+        }
+
+
+        if (isFilter)
+        {
+            Move(_filterRegexCheckbox, inputLeft, y, 76, rowHeight);
+            Move(_filterIgnoreCaseCheckbox, inputLeft + 84, y, 112, rowHeight);
+            Move(_filterInvertMatchCheckbox, inputLeft + 204, y, 116, rowHeight);
+            y += rowHeight + gap;
+        }
+        else
+        {
+            Move(_filterRegexCheckbox, 0, 0, 0, 0);
+            Move(_filterIgnoreCaseCheckbox, 0, 0, 0, 0);
+            Move(_filterInvertMatchCheckbox, 0, 0, 0, 0);
         }
 
         int availablePreviewHeight = Math.Max(144, height - y - (gap * 2) - rowHeight - margin);
@@ -626,7 +671,10 @@ internal sealed class ParserStageEditorWindow
     {
         _drafts[_mode] = new ParserStageDraft(
             GetWindowText(_ruleEdit),
-            GetWindowText(_templateEdit));
+            GetWindowText(_templateEdit),
+            IsButtonChecked(_filterRegexCheckbox),
+            IsButtonChecked(_filterIgnoreCaseCheckbox),
+            IsButtonChecked(_filterInvertMatchCheckbox));
     }
 
     private void LoadModeDraft(DisplayParserMode mode)
@@ -642,6 +690,9 @@ internal sealed class ParserStageEditorWindow
         {
             NativeMethods.SetWindowTextW(_ruleEdit, draft.Rule);
             NativeMethods.SetWindowTextW(_templateEdit, draft.Template);
+            SetButtonChecked(_filterRegexCheckbox, draft.UseRegex);
+            SetButtonChecked(_filterIgnoreCaseCheckbox, draft.IgnoreCase);
+            SetButtonChecked(_filterInvertMatchCheckbox, draft.InvertMatch);
         }
         finally
         {
@@ -652,11 +703,17 @@ internal sealed class ParserStageEditorWindow
     private void LoadStageIntoControls(DisplayParserStage stage)
     {
         _drafts.Clear();
-        _drafts[stage.Mode] = new ParserStageDraft(stage.Rule, stage.Template);
+        _drafts[stage.Mode] = new ParserStageDraft(
+            stage.Rule,
+            stage.Template,
+            stage.UseRegex,
+            stage.IgnoreCase,
+            stage.InvertMatch);
         _mode = stage.Mode;
         SetButtonChecked(_regexRadio, _mode == DisplayParserMode.Regex);
         SetButtonChecked(_regexReplaceRadio, _mode == DisplayParserMode.RegexReplace);
         SetButtonChecked(_jsonRadio, _mode == DisplayParserMode.Json);
+        SetButtonChecked(_filterRadio, _mode == DisplayParserMode.Filter);
         LoadModeDraft(_mode);
         UpdateModeUi();
     }
@@ -683,12 +740,17 @@ internal sealed class ParserStageEditorWindow
     {
         if (mode == DisplayParserMode.Regex)
         {
-            return new ParserStageDraft("(.*)", "{0}");
+            return new ParserStageDraft("(.*)", "{0}", false, false, false);
         }
 
         if (mode == DisplayParserMode.RegexReplace)
         {
-            return new ParserStageDraft(@"\u0001", "|");
+            return new ParserStageDraft(@"\u0001", "|", false, false, false);
+        }
+
+        if (mode == DisplayParserMode.Filter)
+        {
+            return new ParserStageDraft(string.Empty, string.Empty, true, false, false);
         }
 
         string generatedTemplate = DisplayParserEvaluator.GenerateJsonTemplateFromSample(GetStageInput());
@@ -696,16 +758,28 @@ internal sealed class ParserStageEditorWindow
             generatedTemplate.Length == 0
                 ? "key1 - {key1}, key2 - {key2}"
                 : generatedTemplate,
-            string.Empty);
+            string.Empty,
+            false,
+            false,
+            false);
     }
 
     private void UpdateModeUi()
     {
         bool hasTemplate = _mode is DisplayParserMode.Regex or DisplayParserMode.RegexReplace;
-        NativeMethods.SetWindowTextW(_ruleLabel, _mode == DisplayParserMode.Json ? "Template" : "Regex");
+        bool isFilter = _mode == DisplayParserMode.Filter;
+        NativeMethods.SetWindowTextW(_ruleLabel, _mode switch
+        {
+            DisplayParserMode.Json => "Template",
+            DisplayParserMode.Filter => "Pattern",
+            _ => "Regex"
+        });
         NativeMethods.SetWindowTextW(_templateLabel, _mode == DisplayParserMode.RegexReplace ? "Replacement" : "Display");
         NativeMethods.ShowWindow(_templateLabel, hasTemplate ? NativeMethods.SW_SHOW : NativeMethods.SW_HIDE);
         NativeMethods.ShowWindow(_templateEdit, hasTemplate ? NativeMethods.SW_SHOW : NativeMethods.SW_HIDE);
+        NativeMethods.ShowWindow(_filterRegexCheckbox, isFilter ? NativeMethods.SW_SHOW : NativeMethods.SW_HIDE);
+        NativeMethods.ShowWindow(_filterIgnoreCaseCheckbox, isFilter ? NativeMethods.SW_SHOW : NativeMethods.SW_HIDE);
+        NativeMethods.ShowWindow(_filterInvertMatchCheckbox, isFilter ? NativeMethods.SW_SHOW : NativeMethods.SW_HIDE);
         Layout();
     }
 
@@ -737,7 +811,7 @@ internal sealed class ParserStageEditorWindow
                 return;
             }
 
-            string output = EvaluateLines(input, new DisplayParserRule { Stages = new List<DisplayParserStage> { stage } });
+            string output = EvaluateStagePreview(input, stage, HasPreviousFilter);
             NativeMethods.SetWindowTextW(_previewEdit, output);
             PublishValidPreview(stage);
         }
@@ -756,7 +830,10 @@ internal sealed class ParserStageEditorWindow
         {
             Mode = _mode,
             Rule = rawRule,
-            Template = _mode is DisplayParserMode.Regex or DisplayParserMode.RegexReplace ? rawTemplate : string.Empty
+            Template = _mode is DisplayParserMode.Regex or DisplayParserMode.RegexReplace ? rawTemplate : string.Empty,
+            UseRegex = _mode == DisplayParserMode.Filter && IsButtonChecked(_filterRegexCheckbox),
+            IgnoreCase = _mode == DisplayParserMode.Filter && IsButtonChecked(_filterIgnoreCaseCheckbox),
+            InvertMatch = _mode == DisplayParserMode.Filter && IsButtonChecked(_filterInvertMatchCheckbox)
         };
     }
 
@@ -863,6 +940,36 @@ internal sealed class ParserStageEditorWindow
         return DisplayParserEvaluator.EvaluateLinesOrOriginal(rule, text);
     }
 
+    internal static string EvaluateStagePreview(
+        string input,
+        DisplayParserStage stage,
+        bool hasPreviousFilter)
+    {
+        var previewRule = new DisplayParserRule
+        {
+            Stages = new List<DisplayParserStage> { stage.Clone() }
+        };
+        return hasPreviousFilter && stage.Mode != DisplayParserMode.Filter
+            ? DisplayParserEvaluator.EvaluateExplicitLinesIndependently(previewRule, input)
+            : EvaluateLines(input, previewRule);
+    }
+
+    private bool HasPreviousFilter
+    {
+        get
+        {
+            for (int i = 0; i < _previousStages.Count; i++)
+            {
+                if (_previousStages[i].Mode == DisplayParserMode.Filter)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+    }
+
     private string GetStageInput() =>
         CanEditStageInput
             ? GetEditableStageInput()
@@ -966,6 +1073,25 @@ internal sealed class ParserStageEditorWindow
         return hwnd;
     }
 
+    private IntPtr CreateCheckbox(string text, int id)
+    {
+        IntPtr hwnd = NativeMethods.CreateWindowExW(
+            0,
+            "BUTTON",
+            text,
+            NativeMethods.WS_CHILD | NativeMethods.WS_VISIBLE | NativeMethods.WS_TABSTOP | NativeMethods.BS_AUTOCHECKBOX,
+            0,
+            0,
+            10,
+            10,
+            _hwnd,
+            new IntPtr(id),
+            NativeMethods.GetModuleHandleW(null),
+            IntPtr.Zero);
+        SetControlFont(hwnd);
+        return hwnd;
+    }
+
     private IntPtr CreateEdit(int id, bool multiline, bool readOnly)
     {
         int style = NativeMethods.WS_CHILD | NativeMethods.WS_VISIBLE | NativeMethods.WS_TABSTOP | NativeMethods.WS_BORDER;
@@ -1020,6 +1146,9 @@ internal sealed class ParserStageEditorWindow
             IntPtr.Zero);
     }
 
+    private static bool IsButtonChecked(IntPtr hwnd) =>
+        NativeMethods.SendMessageW(hwnd, NativeMethods.BM_GETCHECK, IntPtr.Zero, IntPtr.Zero).ToInt32() == NativeMethods.BST_CHECKED;
+
     private static string GetWindowText(IntPtr hwnd)
     {
         int length = NativeMethods.GetWindowTextLengthW(hwnd);
@@ -1033,5 +1162,10 @@ internal sealed class ParserStageEditorWindow
         return builder.ToString();
     }
 
-    private readonly record struct ParserStageDraft(string Rule, string Template);
+    private readonly record struct ParserStageDraft(
+        string Rule,
+        string Template,
+        bool UseRegex,
+        bool IgnoreCase,
+        bool InvertMatch);
 }

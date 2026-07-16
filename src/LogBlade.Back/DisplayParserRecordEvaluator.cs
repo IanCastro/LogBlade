@@ -343,10 +343,25 @@ internal static class DisplayParserRecordEvaluator
         long startOffset,
         long endOffset,
         long lineNumber,
-        DisplayParserRule? rule)
+        DisplayParserRule? rule,
+        int parserOutputLevel = -1)
     {
         using Stream fs = LogFileUtilities.OpenSourceStream(source);
         byte[] buffer = new byte[SearchRealLineScanner.RequiredBufferBytes];
+        if (parserOutputLevel >= 0 && DisplayParserEvaluator.GetFilterCount(rule) > 0)
+        {
+            return ReadPipelineRecordText(
+                fs,
+                encoding,
+                kind,
+                startOffset,
+                endOffset,
+                lineNumber,
+                new DisplayParserFilterPipelineSequence(rule!),
+                parserOutputLevel,
+                buffer);
+        }
+
         return ReadRecordText(
             fs,
             encoding,
@@ -389,6 +404,58 @@ internal static class DisplayParserRecordEvaluator
             {
                 return record.Text;
             }
+        }
+
+        return string.Empty;
+    }
+
+    internal static string ReadPipelineRecordText(
+        Stream stream,
+        Encoding encoding,
+        LogEncodingKind kind,
+        long startOffset,
+        long endOffset,
+        long lineNumber,
+        DisplayParserFilterPipelineSequence sequence,
+        int parserOutputLevel,
+        byte[] scanBuffer)
+    {
+        FilteredLineUtilities.ValidateLineRange(stream, encoding, startOffset, endOffset);
+        foreach (DisplayParserPipelineRecord record in sequence.Enumerate(
+            SearchRealLineScanner.Enumerate(
+                stream,
+                encoding,
+                kind,
+                startOffset,
+                endOffset,
+                scanBuffer,
+                CancellationToken.None,
+                Math.Max(1, lineNumber))))
+        {
+            DisplayParserRecord source = record.SourceRecord;
+            if (source.StartOffset != startOffset)
+            {
+                continue;
+            }
+
+            if (parserOutputLevel < 0 || parserOutputLevel >= record.FilterOutputs.Length)
+            {
+                return string.Empty;
+            }
+
+            IReadOnlyList<DisplayParserPipelineRow> rows = record.FilterOutputs[parserOutputLevel];
+            StringBuilder text = new();
+            for (int i = 0; i < rows.Count; i++)
+            {
+                if (i > 0)
+                {
+                    text.Append('\n');
+                }
+
+                text.Append(rows[i].Text);
+            }
+
+            return text.ToString();
         }
 
         return string.Empty;

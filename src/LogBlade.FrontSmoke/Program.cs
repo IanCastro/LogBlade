@@ -33,6 +33,8 @@ internal static class Program
             Run("word drag snapping", RunWordDragSnapping);
             Run("non-word double click", RunNonWordDoubleClickSelection);
             Run("display text normalization", RunDisplayTextNormalization);
+            Run("cascaded filter stage preview", RunCascadedFilterStagePreview);
+            Run("parser stage visibility", RunParserStageVisibility);
             Run("output export", () => RunOutputExport(tempRoot));
             Run("window state store", () => RunWindowStateStore(tempRoot));
             Console.WriteLine("Front smoke tests passed.");
@@ -60,6 +62,100 @@ internal static class Program
     {
         Console.WriteLine("Running " + name + "...");
         action();
+    }
+
+    private static void RunCascadedFilterStagePreview()
+    {
+        const string sample =
+            "2126-04-21T13:00:00.000Z OUT 8=FIX.4.4|35=A|148=old|\r\n" +
+            "2026-04-21T13:00:01.000Z IN 8=FIX.4.4|35=A|\r\n" +
+            "2026-04-21T13:00:02.000Z OUT 8=FIX.4.4|35=0|369=0|\r\n" +
+            "2026-04-21T13:00:02.000Z IN FIX4.4|8=FIX.4.4|35=B|148=Cross asset volumes remain elevated after macro releases|10=146|";
+        var previousRule = new DisplayParserRule
+        {
+            Stages = new List<DisplayParserStage>
+            {
+                new()
+                {
+                    Mode = DisplayParserMode.Filter,
+                    Rule = "21T13:00:02.000Z ",
+                    UseRegex = true
+                },
+                new()
+                {
+                    Mode = DisplayParserMode.RegexReplace,
+                    Rule = @"\|",
+                    Template = "\r\n"
+                }
+            }
+        };
+        string secondFilterInput = DisplayParserEvaluator.EvaluateLinesOrOriginal(previousRule, sample);
+        var secondFilter = new DisplayParserStage
+        {
+            Mode = DisplayParserMode.Filter,
+            Rule = "148",
+            UseRegex = true
+        };
+
+        string filtered = ParserStageEditorWindow.EvaluateStagePreview(
+            secondFilterInput,
+            secondFilter,
+            hasPreviousFilter: true);
+        AssertEqual(
+            "cascaded filter preview",
+            filtered,
+            "148=Cross asset volumes remain elevated after macro releases");
+
+        var replacement = new DisplayParserStage
+        {
+            Mode = DisplayParserMode.RegexReplace,
+            Rule = "=",
+            Template = "|"
+        };
+        string replaced = ParserStageEditorWindow.EvaluateStagePreview(
+            filtered,
+            replacement,
+            hasPreviousFilter: true);
+        AssertEqual(
+            "stage after cascaded filter preview",
+            replaced,
+            "148|Cross asset volumes remain elevated after macro releases");
+    }
+
+    private static void RunParserStageVisibility()
+    {
+        AssertEqual(
+            "main pane visible without filters",
+            ViewerWindow.ShouldShowMainPaneForParserInputs(0, firstParserInputVisible: false),
+            true);
+        AssertEqual(
+            "main pane hidden when first input is hidden",
+            ViewerWindow.ShouldShowMainPaneForParserInputs(3, firstParserInputVisible: false),
+            false);
+        AssertEqual(
+            "main pane visible when first input is shown",
+            ViewerWindow.ShouldShowMainPaneForParserInputs(3, firstParserInputVisible: true),
+            true);
+        AssertEqual(
+            "first filter result is controlled by second input",
+            ViewerWindow.GetParserInputIndexForSearchResult(0, 3),
+            1);
+        AssertEqual(
+            "second filter result is controlled by third input",
+            ViewerWindow.GetParserInputIndexForSearchResult(1, 3),
+            2);
+        AssertEqual(
+            "last filter result is always visible",
+            ViewerWindow.GetParserInputIndexForSearchResult(2, 3),
+            -1);
+        AssertEqual(
+            "single filter result is always visible",
+            ViewerWindow.GetParserInputIndexForSearchResult(0, 1),
+            -1);
+        AssertEqual(
+            "manual search result is always visible",
+            ViewerWindow.GetParserInputIndexForSearchResult(3, 3),
+            -1);
     }
 
     private static void RunOutputExport(string tempRoot)

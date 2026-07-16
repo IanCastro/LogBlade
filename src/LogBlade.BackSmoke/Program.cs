@@ -51,6 +51,20 @@ internal static class Program
             RunDisplayParserRegexReplaceThenJsonTemplate();
             RunDisplayParserRegexReplaceInvalidRegexValidation();
             RunDisplayParserRegexReplaceInvalidReplacementEscapeValidation();
+            RunDisplayParserFilterEvaluatesExplicitLines();
+            RunDisplayParserFilterOptions();
+            RunDisplayParserCreatesMainRuleBeforeFirstFilter();
+            RunParserFiltersProduceSegmentedSearchLevels(tempRoot);
+            RunParserFilterPreservesRegexCaptures(tempRoot);
+            RunParserFilterEmptyReaderPreservesCaptureHeaders(tempRoot);
+            RunParserFilterAllowsMultilineJsonBeforeFilter(tempRoot);
+            RunParserFilterDoesNotCombineJsonAfterFilter(tempRoot);
+            RunParserFilterPreviewDoesNotCombineExplicitLines();
+            RunManualSearchRunsAfterParserFilters(tempRoot);
+            RunChangedManualSearchAfterParserFilter(tempRoot);
+            RunAppendSearchPreservesParserFilterLevels(tempRoot);
+            RunPausedParserFilterSearchResumesFromCheckpoint(tempRoot);
+            RunParserFilterAppendAfterObservedZeroUsesConfirmedSize(tempRoot);
             RunMemoryContentSource();
             RunSearchUsesDisplayParserLiteral(tempRoot);
             RunSearchUsesDisplayParserRegexCaptures(tempRoot);
@@ -2423,7 +2437,12 @@ internal static class Program
         return readers;
     }
 
-    private static FilteredLogRecordSource[] ResumeStagedReaders(IReadOnlyList<FilteredLogRecordSource> paused, IReadOnlyList<SearchOptions> options, long processedOffset, long newFileSize)
+    private static FilteredLogRecordSource[] ResumeStagedReaders(
+        IReadOnlyList<FilteredLogRecordSource> paused,
+        IReadOnlyList<SearchOptions> options,
+        long processedOffset,
+        long newFileSize,
+        DisplayParserRule? displayParserRule = null)
     {
         FilteredLogRecordSource?[] latest = new FilteredLogRecordSource?[paused.Count];
         LogSearchBuilder.ResumeStagedFilteredReadersIncremental(
@@ -2444,7 +2463,8 @@ internal static class Program
                     }
                 }
             },
-            CancellationToken.None);
+            CancellationToken.None,
+            displayParserRule);
 
         FilteredLogRecordSource[] readers = new FilteredLogRecordSource[latest.Length];
         for (int i = 0; i < latest.Length; i++)
@@ -3092,6 +3112,13 @@ internal static class Program
         return values;
     }
 
+    private static string WriteFile(string tempRoot, string fileName, string content)
+    {
+        string path = Path.Combine(tempRoot, fileName);
+        File.WriteAllText(path, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        return path;
+    }
+
     private static void DisposeReaders(IReadOnlyList<FilteredLogRecordSource> readers)
     {
         foreach (FilteredLogRecordSource reader in readers)
@@ -3156,6 +3183,516 @@ internal static class Program
             Rule = pattern,
             Template = replacement
         };
+    }
+
+    private static DisplayParserStage FilterStage(
+        string pattern,
+        bool useRegex = false,
+        bool ignoreCase = false,
+        bool invertMatch = false)
+    {
+        return new DisplayParserStage
+        {
+            Mode = DisplayParserMode.Filter,
+            Rule = pattern,
+            UseRegex = useRegex,
+            IgnoreCase = ignoreCase,
+            InvertMatch = invertMatch
+        };
+    }
+
+    private static void RunDisplayParserFilterEvaluatesExplicitLines()
+    {
+        DisplayParserRule parser = ParserRule(
+            RegexStage("(.*)", "{0}\nextra"),
+            FilterStage("extra"),
+            RegexReplaceStage("extra", "selected"));
+
+        AssertEqual(
+            "display parser filter explicit rows",
+            DisplayParserEvaluator.EvaluateLinesOrOriginal(parser, "source"),
+            "selected");
+    }
+
+    private static void RunDisplayParserFilterOptions()
+    {
+        DisplayParserRule ignoreCase = ParserRule(
+            FilterStage("error", ignoreCase: true));
+        AssertEqual(
+            "display parser filter literal ignore case",
+            DisplayParserEvaluator.EvaluateLinesOrOriginal(ignoreCase, "ERROR\ninfo"),
+            "ERROR");
+
+        DisplayParserRule invertedRegex = ParserRule(
+            FilterStage("^info$", useRegex: true, ignoreCase: true, invertMatch: true));
+        AssertEqual(
+            "display parser filter inverted regex",
+            DisplayParserEvaluator.EvaluateLinesOrOriginal(invertedRegex, "INFO\nerror"),
+            "error");
+    }
+
+    private static void RunDisplayParserCreatesMainRuleBeforeFirstFilter()
+    {
+        DisplayParserRule parser = ParserRule(
+            RegexReplaceStage("raw", "parsed"),
+            FilterStage("keep"),
+            RegexReplaceStage("parsed", "final"));
+        DisplayParserRule? mainRule = DisplayParserEvaluator.CreateRuleBeforeFirstFilter(parser);
+
+        AssertEqual("main parser prefix exists", mainRule is not null, true);
+        AssertEqual("main parser prefix stage count", mainRule!.Stages.Count, 1);
+        AssertEqual(
+            "main parser prefix output",
+            DisplayParserEvaluator.EvaluateOrOriginal(mainRule, "keep raw"),
+            "keep parsed");
+
+        DisplayParserRule firstStageFilter = ParserRule(FilterStage("keep"));
+        AssertEqual(
+            "main parser is raw when filter is first",
+            DisplayParserEvaluator.CreateRuleBeforeFirstFilter(firstStageFilter),
+            null);
+
+        DisplayParserRule withoutFilter = ParserRule(RegexReplaceStage("raw", "parsed"));
+        DisplayParserRule? fullRule = DisplayParserEvaluator.CreateRuleBeforeFirstFilter(withoutFilter);
+        AssertEqual("main parser keeps full rule without filters", fullRule!.Stages.Count, 1);
+        AssertEqual("main parser clones full rule", ReferenceEquals(fullRule, withoutFilter), false);
+    }
+
+    private static void RunParserFiltersProduceSegmentedSearchLevels(string tempRoot)
+    {
+        string path = WriteFile(
+            tempRoot,
+            "parser-filter-segments.log",
+            "keep raw first\r\nkeep raw second\r\ndrop raw second\r\n");
+        DisplayParserRule parser = ParserRule(
+            FilterStage("keep"),
+            RegexReplaceStage("raw", "mid"),
+            FilterStage("second"),
+            RegexReplaceStage("mid", "final"));
+
+        FilteredLogRecordSource[] readers = LogSearchBuilder.BuildStagedFilteredReaders(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            Array.Empty<SearchOptions>(),
+            parser);
+        try
+        {
+            AssertEqual("parser filter reader count", readers.Length, 2);
+            AssertEqual("parser first filter count", readers[0].MatchedLineCount, 2L);
+            AssertEqual("parser second filter count", readers[1].MatchedLineCount, 1L);
+            readers[0].ReadFromPercentage(0d, 10);
+            readers[1].ReadFromPercentage(0d, 10);
+            AssertSequence(
+                "parser first filter segment output",
+                readers[0].CurrentDisplayTexts,
+                "keep mid first",
+                "keep mid second");
+            AssertSequence(
+                "parser second filter segment output",
+                readers[1].CurrentDisplayTexts,
+                "keep final second");
+        }
+        finally
+        {
+            DisposeReaders(readers);
+        }
+    }
+
+    private static void RunParserFilterPreservesRegexCaptures(string tempRoot)
+    {
+        string path = WriteFile(tempRoot, "parser-filter-captures.log", "keep raw\r\n");
+        DisplayParserRule parser = ParserRule(
+            FilterStage(@"keep (?<kind>raw)", useRegex: true),
+            RegexStage("(.*)", "{0}\n{0}-copy"));
+
+        FilteredLogRecordSource[] readers = LogSearchBuilder.BuildStagedFilteredReaders(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            Array.Empty<SearchOptions>(),
+            parser);
+        try
+        {
+            readers[0].ReadFromPercentage(0d, 10);
+            AssertSequence("parser filter capture headers", readers[0].ColumnHeaders, "#", "Text", "kind");
+            AssertEqual("parser filter split output count", readers[0].CurrentCells.Count, 2);
+            AssertSequence("parser filter first repeated capture", readers[0].CurrentCells[0], "1", "keep raw", "raw");
+            AssertSequence("parser filter second repeated capture", readers[0].CurrentCells[1], "1", "keep raw-copy", "raw");
+        }
+        finally
+        {
+            DisposeReaders(readers);
+        }
+    }
+
+    private static void RunParserFilterEmptyReaderPreservesCaptureHeaders(string tempRoot)
+    {
+        string path = WriteFile(tempRoot, "parser-filter-empty-captures.log", "plain\r\n");
+        DisplayParserRule parser = ParserRule(
+            FilterStage(@"keep (?<kind>\w+)", useRegex: true));
+        using FilteredLogRecordSource empty = LogSearchBuilder.CreateEmptyReader(
+            LogContentSource.FromFile(path),
+            Encoding.UTF8,
+            dataOffset: 0,
+            fileSize: new FileInfo(path).Length,
+            options: Array.Empty<SearchOptions>(),
+            stageIndex: 0,
+            displayParserRule: parser);
+
+        AssertSequence("parser filter empty capture headers", empty.ColumnHeaders, "#", "Text", "kind");
+        FilteredLogRecordSource? refreshed = null;
+        try
+        {
+            LogSearchBuilder.BuildAppendedFilteredReaderIncremental(
+                empty,
+                Array.Empty<SearchOptions>(),
+                empty.ConfirmedFileSize,
+                preloadedVisibleLines: 10,
+                update => refreshed = update.Reader,
+                CancellationToken.None,
+                parser);
+            AssertSequence(
+                "parser filter unchanged capture headers",
+                refreshed?.ColumnHeaders ?? Array.Empty<string>(),
+                "#",
+                "Text",
+                "kind");
+        }
+        finally
+        {
+            refreshed?.Dispose();
+        }
+    }
+
+    private static void RunParserFilterAllowsMultilineJsonBeforeFilter(string tempRoot)
+    {
+        string path = WriteFile(
+            tempRoot,
+            "parser-filter-json-before.log",
+            "a[0]: {\"Level\":\"Err\r\na[1]: or\",\"Message\":\"failed\"}\r\n");
+        DisplayParserRule parser = ParserRule(
+            RegexStage(": (?<json>.*)", "{json}"),
+            JsonStage("{Level} {Message}"),
+            FilterStage("Error"));
+
+        FilteredLogRecordSource[] readers = LogSearchBuilder.BuildStagedFilteredReaders(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            Array.Empty<SearchOptions>(),
+            parser);
+        try
+        {
+            readers[0].ReadFromPercentage(0d, 10);
+            AssertSequence("parser filter json before", readers[0].CurrentDisplayTexts, "Error failed");
+        }
+        finally
+        {
+            DisposeReaders(readers);
+        }
+    }
+
+    private static void RunParserFilterDoesNotCombineJsonAfterFilter(string tempRoot)
+    {
+        string path = WriteFile(
+            tempRoot,
+            "parser-filter-json-after.log",
+            "{\"Level\":\"Err\r\nor\"}\r\n");
+        DisplayParserRule parser = ParserRule(
+            FilterStage(".*", useRegex: true),
+            JsonStage("{Level}"));
+
+        FilteredLogRecordSource[] readers = LogSearchBuilder.BuildStagedFilteredReaders(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            Array.Empty<SearchOptions>(),
+            parser);
+        try
+        {
+            readers[0].ReadFromPercentage(0d, 10);
+            AssertSequence(
+                "parser filter json after remains physical",
+                readers[0].CurrentDisplayTexts,
+                "{\"Level\":\"Err",
+                "or\"}");
+        }
+        finally
+        {
+            DisposeReaders(readers);
+        }
+    }
+
+    private static void RunParserFilterPreviewDoesNotCombineExplicitLines()
+    {
+        DisplayParserRule jsonStage = ParserRule(JsonStage("{Level}"));
+        string preview = DisplayParserEvaluator.EvaluateExplicitLinesIndependently(
+            jsonStage,
+            "{\"Level\":\"Err\r\nor\"}");
+
+        AssertEqual(
+            "parser filter preview keeps explicit lines independent",
+            preview,
+            "{\"Level\":\"Err" + Environment.NewLine + "or\"}");
+    }
+
+    private static void RunManualSearchRunsAfterParserFilters(string tempRoot)
+    {
+        string path = WriteFile(
+            tempRoot,
+            "parser-filter-manual.log",
+            "keep raw first\r\nkeep raw second\r\n");
+        DisplayParserRule parser = ParserRule(
+            FilterStage("keep"),
+            RegexReplaceStage("raw", "parsed"));
+
+        FilteredLogRecordSource[] readers = LogSearchBuilder.BuildStagedFilteredReaders(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            new[] { new SearchOptions("second", UseRegex: false, IgnoreCase: false) },
+            parser);
+        try
+        {
+            AssertEqual("parser filter plus manual reader count", readers.Length, 2);
+            readers[1].ReadFromPercentage(0d, 10);
+            AssertSequence("manual search after parser filter", readers[1].CurrentDisplayTexts, "keep parsed second");
+        }
+        finally
+        {
+            DisposeReaders(readers);
+        }
+    }
+
+    private static void RunChangedManualSearchAfterParserFilter(string tempRoot)
+    {
+        string path = WriteFile(
+            tempRoot,
+            "parser-filter-changed-manual.log",
+            "keep first\r\nkeep second\r\ndrop second\r\n");
+        DisplayParserRule parser = ParserRule(FilterStage("keep"));
+        SearchOptions[] initialOptions =
+        {
+            new("first", UseRegex: false, IgnoreCase: false)
+        };
+        SearchOptions[] changedOptions =
+        {
+            new("second", UseRegex: false, IgnoreCase: false)
+        };
+
+        FilteredLogRecordSource[] initialReaders = LogSearchBuilder.BuildStagedFilteredReaders(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            initialOptions,
+            parser);
+        try
+        {
+            StagedSearchProgressUpdate finalUpdate = default;
+            LogSearchBuilder.BuildChangedStagedFilteredReadersIncremental(
+                initialReaders,
+                changedStageIndex: 1,
+                changedOptions,
+                new[] { 10, 10 },
+                update => finalUpdate = update,
+                CancellationToken.None,
+                parser);
+
+            AssertEqual("parser filter changed prefix reader unchanged", finalUpdate.Readers[0] is null, true);
+            AssertEqual("parser filter changed prefix count", finalUpdate.MatchedLineCounts[0], 2L);
+            AssertEqual("parser filter changed manual count", finalUpdate.MatchedLineCounts[1], 1L);
+            using FilteredLogRecordSource changedReader = finalUpdate.Readers[1]
+                ?? throw new InvalidOperationException("Changed parser-filter reader missing.");
+            finalUpdate.Readers[1] = null;
+            changedReader.ReadFromPercentage(0d, 10);
+            AssertSequence("parser filter changed manual rows", changedReader.CurrentDisplayTexts, "keep second");
+            DisposeNullableReaders(finalUpdate.Readers);
+        }
+        finally
+        {
+            DisposeReaders(initialReaders);
+        }
+    }
+
+    private static void RunAppendSearchPreservesParserFilterLevels(string tempRoot)
+    {
+        string path = WriteFile(tempRoot, "parser-filter-append.log", "keep raw first\r\n");
+        DisplayParserRule parser = ParserRule(
+            FilterStage("keep"),
+            RegexReplaceStage("raw", "parsed"),
+            FilterStage("second"));
+        SearchOptions[] manualOptions =
+        {
+            new("parsed", UseRegex: false, IgnoreCase: false)
+        };
+
+        FilteredLogRecordSource[] initial = LogSearchBuilder.BuildStagedFilteredReaders(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            manualOptions,
+            parser);
+        try
+        {
+            File.AppendAllText(
+                path,
+                "keep raw second\r\ndrop raw second\r\n",
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            FilteredLogRecordSource[] appended = BuildAppendedStagedReaders(initial, manualOptions, parser);
+            try
+            {
+                AssertEqual("parser filter append reader count", appended.Length, 3);
+                for (int i = 0; i < appended.Length; i++)
+                {
+                    appended[i].ReadFromPercentage(0d, 10);
+                }
+
+                AssertSequence(
+                    "parser filter append first level",
+                    appended[0].CurrentDisplayTexts,
+                    "keep parsed first",
+                    "keep parsed second");
+                AssertSequence("parser filter append second level", appended[1].CurrentDisplayTexts, "keep parsed second");
+                AssertSequence("parser filter append manual level", appended[2].CurrentDisplayTexts, "keep parsed second");
+            }
+            finally
+            {
+                DisposeReaders(appended);
+            }
+        }
+        finally
+        {
+            DisposeReaders(initial);
+        }
+    }
+
+    private static void RunPausedParserFilterSearchResumesFromCheckpoint(string tempRoot)
+    {
+        string path = WriteFile(
+            tempRoot,
+            "parser-filter-resume.log",
+            "keep first\r\nkeep second\r\nkeep third\r\n");
+        DisplayParserRule parser = ParserRule(FilterStage("keep"));
+        SearchOptions[] manualOptions =
+        {
+            new("keep", UseRegex: false, IgnoreCase: false)
+        };
+        using CancellationTokenSource cancellation = new();
+        List<StagedSearchProgressUpdate> updates = new();
+
+        AssertThrows<OperationCanceledException>(
+            "parser filter paused search cancellation",
+            () => LogSearchBuilder.BuildStagedFilteredReadersIncremental(
+                path,
+                Encoding.UTF8,
+                dataOffset: 0,
+                manualOptions,
+                new[] { 10, 10 },
+                update =>
+                {
+                    updates.Add(update);
+                    if (!update.IsPaused && !update.IsFinal && update.MatchedLineCounts[^1] > 0)
+                    {
+                        cancellation.Cancel();
+                    }
+                },
+                cancellation.Token,
+                parser));
+
+        StagedSearchProgressUpdate paused = FindPausedUpdate(updates);
+        AssertEqual("parser filter paused reader count", paused.Readers.Length, 2);
+        AssertEqual("parser filter paused processed positive", paused.ProcessedOffset > 0, true);
+        FilteredLogRecordSource[] pausedReaders = new FilteredLogRecordSource[paused.Readers.Length];
+        for (int i = 0; i < pausedReaders.Length; i++)
+        {
+            pausedReaders[i] = paused.Readers[i]
+                ?? throw new InvalidOperationException("Paused parser-filter reader missing.");
+            paused.Readers[i] = null;
+        }
+
+        try
+        {
+            FilteredLogRecordSource[] resumed = ResumeStagedReaders(
+                pausedReaders,
+                manualOptions,
+                paused.ProcessedOffset,
+                paused.TargetFileSize,
+                parser);
+            try
+            {
+                resumed[0].ReadFromPercentage(0d, 10);
+                resumed[1].ReadFromPercentage(0d, 10);
+                AssertSequence(
+                    "parser filter resumed fixed level",
+                    resumed[0].CurrentDisplayTexts,
+                    "keep first",
+                    "keep second",
+                    "keep third");
+                AssertSequence(
+                    "parser filter resumed manual level",
+                    resumed[1].CurrentDisplayTexts,
+                    "keep first",
+                    "keep second",
+                    "keep third");
+            }
+            finally
+            {
+                DisposeReaders(resumed);
+            }
+        }
+        finally
+        {
+            DisposeReaders(pausedReaders);
+            DisposeNullableReaders(paused.Readers);
+        }
+    }
+
+    private static void RunParserFilterAppendAfterObservedZeroUsesConfirmedSize(string tempRoot)
+    {
+        const string original = "keep first\r\n";
+        string path = WriteFile(tempRoot, "parser-filter-zero-append.log", original);
+        DisplayParserRule parser = ParserRule(FilterStage("keep"));
+        FilteredLogRecordSource[] initial = LogSearchBuilder.BuildStagedFilteredReaders(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            Array.Empty<SearchOptions>(),
+            parser);
+        try
+        {
+            long confirmedSize = initial[0].ConfirmedFileSize;
+            initial[0].MarkObservedZeroFileSize();
+            File.WriteAllText(path, string.Empty, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            AssertEqual("parser filter zero visual file size", initial[0].FileSize, 0L);
+            AssertEqual("parser filter zero confirmed size", initial[0].ConfirmedFileSize, confirmedSize);
+
+            File.WriteAllText(
+                path,
+                original + "keep second\r\n",
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            FilteredLogRecordSource[] appended = BuildAppendedStagedReaders(
+                initial,
+                Array.Empty<SearchOptions>(),
+                parser);
+            try
+            {
+                appended[0].ReadFromPercentage(0d, 10);
+                AssertSequence(
+                    "parser filter append after zero",
+                    appended[0].CurrentDisplayTexts,
+                    "keep first",
+                    "keep second");
+            }
+            finally
+            {
+                DisposeReaders(appended);
+            }
+        }
+        finally
+        {
+            DisposeReaders(initial);
+        }
     }
 
     private static void RunMemoryContentSource()

@@ -23,6 +23,7 @@ internal sealed class RuleManagerWindow
     private readonly List<DisplayParserRule> _rules;
     private readonly string _defaultRuleSample;
     private readonly Action<DisplayParserRule?>? _onPreviewChanged;
+    private readonly Action? _onActiveRuleSelectionChanged;
     private string? _activeRuleName;
     private IntPtr _hwnd;
     private IntPtr _owner;
@@ -60,12 +61,14 @@ internal sealed class RuleManagerWindow
         IReadOnlyList<DisplayParserRule> rules,
         string? activeRuleName,
         string defaultRuleSample,
-        Action<DisplayParserRule?>? onPreviewChanged)
+        Action<DisplayParserRule?>? onPreviewChanged,
+        Action? onActiveRuleSelectionChanged = null)
     {
         _rules = new List<DisplayParserRule>(rules);
         _activeRuleName = activeRuleName;
         _defaultRuleSample = defaultRuleSample;
         _onPreviewChanged = onPreviewChanged;
+        _onActiveRuleSelectionChanged = onActiveRuleSelectionChanged;
     }
 
     public string? ShowModal(IntPtr owner)
@@ -731,7 +734,13 @@ internal sealed class RuleManagerWindow
     private void UpdateActiveRuleFromSelection()
     {
         int index = GetSelectedRuleIndex();
-        _activeRuleName = index >= 0 ? _rules[index].Name : null;
+        string? nextActiveRuleName = index >= 0 ? _rules[index].Name : null;
+        if (!string.Equals(_activeRuleName, nextActiveRuleName, StringComparison.OrdinalIgnoreCase))
+        {
+            _onActiveRuleSelectionChanged?.Invoke();
+        }
+
+        _activeRuleName = nextActiveRuleName;
         PublishActiveRulePreview();
     }
 

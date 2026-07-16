@@ -79,6 +79,21 @@ public static class LogSearchBuilder
         return headers;
     }
 
+    public static SearchOptions[] CreateEffectiveSearchOptions(
+        IReadOnlyList<SearchOptions> manualOptions,
+        DisplayParserRule? displayParserRule)
+    {
+        SearchOptions[] filterOptions = DisplayParserEvaluator.GetFilterOptions(displayParserRule);
+        SearchOptions[] effective = new SearchOptions[filterOptions.Length + manualOptions.Count];
+        Array.Copy(filterOptions, effective, filterOptions.Length);
+        for (int i = 0; i < manualOptions.Count; i++)
+        {
+            effective[filterOptions.Length + i] = manualOptions[i];
+        }
+
+        return effective;
+    }
+
     public static FilteredLogRecordSource CreateEmptyReader(
         LogContentSource contentSource,
         Encoding encoding,
@@ -89,6 +104,7 @@ public static class LogSearchBuilder
         DisplayParserRule? displayParserRule = null)
     {
         fileSize = Math.Max(dataOffset, fileSize);
+        SearchOptions[] effectiveOptions = CreateEffectiveSearchOptions(options, displayParserRule);
         LogEncodingKind kind = LogFileUtilities.InferKind(encoding, dataOffset);
         return new FilteredLogRecordSource(
             contentSource,
@@ -101,7 +117,7 @@ public static class LogSearchBuilder
             DisplayParserEvaluator.CloneRule(displayParserRule),
             parserRescanOffset: fileSize,
             parserRescanLineNumber: 1,
-            CreateColumnHeaders(options, stageIndex));
+            CreateColumnHeaders(effectiveOptions, stageIndex));
     }
 
     public static FilteredLogRecordSource BuildFilteredReader(string filePath, Encoding encoding, long dataOffset, SearchOptions options, DisplayParserRule? displayParserRule = null)
@@ -117,19 +133,28 @@ public static class LogSearchBuilder
     {
         long fileSize = contentSource.Length;
         LogEncodingKind kind = LogFileUtilities.InferKind(encoding, dataOffset);
-        List<FilteredLineDescriptor> descriptors = new();
+        SearchOptions[] effectiveOptions = CreateEffectiveSearchOptions(options, displayParserRule);
+        if (effectiveOptions.Length == 0)
+        {
+            throw new ArgumentException("At least one search or parser Filter is required.", nameof(options));
+        }
+
+        List<FilteredLineDescriptor>[] descriptors = CreateDescriptorLists(effectiveOptions.Length);
         SearchMatcherCascade matcher = SearchMatcherCascade.Create(options);
         DisplayParserRule? parserRule = DisplayParserEvaluator.CloneRule(displayParserRule);
+        int parserFilterCount = DisplayParserEvaluator.GetFilterCount(parserRule);
         long totalLineCount = 0;
 
-        DisplayParserRecordSequence recordSequence = new(parserRule);
-        foreach (DisplayParserRecord record in recordSequence.Enumerate(
+        ParserSearchRecordSequence recordSequence = new(parserRule);
+        foreach (ParserSearchRecord record in recordSequence.Enumerate(
             SearchRealLineScanner.Enumerate(contentSource, encoding, kind, dataOffset, fileSize)))
         {
-            totalLineCount = record.LastLineNumber;
-            AddDescriptorIfIncluded(descriptors, record, matcher);
+            totalLineCount = record.SourceRecord.LastLineNumber;
+            AddDescriptorsByStage(descriptors, record, matcher, parserFilterCount);
         }
         totalLineCount = Math.Max(totalLineCount, recordSequence.LastLineNumberSeen);
+
+        List<FilteredLineDescriptor> finalDescriptors = descriptors[^1];
 
         return new FilteredLogRecordSource(
             contentSource,
@@ -137,12 +162,12 @@ public static class LogSearchBuilder
             encoding,
             dataOffset,
             fileSize,
-            descriptors,
+            finalDescriptors,
             totalLineCount,
             parserRule,
             GetParserRescanOffset(recordSequence, fileSize),
             GetParserRescanLineNumber(recordSequence, totalLineCount),
-            CreateColumnHeaders(options, options.Count - 1));
+            CreateColumnHeaders(effectiveOptions, effectiveOptions.Length - 1));
     }
 
     public static FilteredLogRecordSource[] BuildStagedFilteredReaders(string filePath, Encoding encoding, long dataOffset, IReadOnlyList<SearchOptions> options, DisplayParserRule? displayParserRule = null)
@@ -152,17 +177,19 @@ public static class LogSearchBuilder
     {
         long fileSize = contentSource.Length;
         LogEncodingKind kind = LogFileUtilities.InferKind(encoding, dataOffset);
-        List<FilteredLineDescriptor>[] descriptors = CreateDescriptorLists(options.Count);
+        SearchOptions[] effectiveOptions = CreateEffectiveSearchOptions(options, displayParserRule);
+        List<FilteredLineDescriptor>[] descriptors = CreateDescriptorLists(effectiveOptions.Length);
         SearchMatcherCascade matcher = SearchMatcherCascade.Create(options);
         DisplayParserRule? parserRule = DisplayParserEvaluator.CloneRule(displayParserRule);
+        int parserFilterCount = DisplayParserEvaluator.GetFilterCount(parserRule);
         long totalLineCount = 0;
 
-        DisplayParserRecordSequence recordSequence = new(parserRule);
-        foreach (DisplayParserRecord record in recordSequence.Enumerate(
+        ParserSearchRecordSequence recordSequence = new(parserRule);
+        foreach (ParserSearchRecord record in recordSequence.Enumerate(
             SearchRealLineScanner.Enumerate(contentSource, encoding, kind, dataOffset, fileSize)))
         {
-            totalLineCount = record.LastLineNumber;
-            AddDescriptorsByStage(descriptors, record, matcher);
+            totalLineCount = record.SourceRecord.LastLineNumber;
+            AddDescriptorsByStage(descriptors, record, matcher, parserFilterCount);
         }
         totalLineCount = Math.Max(totalLineCount, recordSequence.LastLineNumberSeen);
 
@@ -178,7 +205,7 @@ public static class LogSearchBuilder
             parserRule,
             GetParserRescanOffset(recordSequence, fileSize),
             GetParserRescanLineNumber(recordSequence, totalLineCount),
-            options);
+            effectiveOptions);
     }
 
     public static void BuildFilteredReaderIncremental(string filePath, Encoding encoding, long dataOffset, string query, int preloadedVisibleLines, Action<SearchProgressUpdate> onProgress)
@@ -204,25 +231,33 @@ public static class LogSearchBuilder
         cancellationToken.ThrowIfCancellationRequested();
         long fileSize = contentSource.Length;
         LogEncodingKind kind = LogFileUtilities.InferKind(encoding, dataOffset);
-        List<FilteredLineDescriptor> descriptors = new();
+        SearchOptions[] effectiveOptions = CreateEffectiveSearchOptions(options, displayParserRule);
+        if (effectiveOptions.Length == 0)
+        {
+            throw new ArgumentException("At least one search or parser Filter is required.", nameof(options));
+        }
+
+        List<FilteredLineDescriptor>[] descriptorStages = CreateDescriptorLists(effectiveOptions.Length);
+        List<FilteredLineDescriptor> descriptors = descriptorStages[^1];
         long lastPublishedTick = Environment.TickCount64;
         int lastPublishedDescriptorCount = -1;
         bool partialPublished = false;
         Stopwatch stopwatch = Stopwatch.StartNew();
         SearchMatcherCascade matcher = SearchMatcherCascade.Create(options);
         DisplayParserRule? parserRule = DisplayParserEvaluator.CloneRule(displayParserRule);
+        int parserFilterCount = DisplayParserEvaluator.GetFilterCount(parserRule);
 
         long scannedOffset = dataOffset;
         long totalLineCount = 0;
-        DisplayParserRecordSequence recordSequence = new(parserRule);
-        foreach (DisplayParserRecord record in recordSequence.Enumerate(
+        ParserSearchRecordSequence recordSequence = new(parserRule);
+        foreach (ParserSearchRecord record in recordSequence.Enumerate(
             SearchRealLineScanner.Enumerate(contentSource, encoding, kind, dataOffset, fileSize, cancellationToken),
             cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            scannedOffset = record.NextOffset;
-            totalLineCount = record.LastLineNumber;
-            AddDescriptorIfIncluded(descriptors, record, matcher);
+            scannedOffset = record.SourceRecord.NextOffset;
+            totalLineCount = record.SourceRecord.LastLineNumber;
+            AddDescriptorsByStage(descriptorStages, record, matcher, parserFilterCount);
 
             long now = Environment.TickCount64;
             bool firstPartialWithMatches = !partialPublished && descriptors.Count > 0;
@@ -262,7 +297,7 @@ public static class LogSearchBuilder
                     parserRule,
                     GetParserRescanOffset(recordSequence, isFinal ? fileSize : scannedOffset),
                     GetParserRescanLineNumber(recordSequence, totalLineCount),
-                    CreateColumnHeaders(options, options.Count - 1));
+                    CreateColumnHeaders(effectiveOptions, effectiveOptions.Length - 1));
                 reader.ReadFromPercentage(0d, Math.Max(1, preloadedVisibleLines));
                 lastPublishedDescriptorCount = descriptors.Count;
             }
@@ -305,28 +340,30 @@ public static class LogSearchBuilder
     {
         long fileSize = contentSource.Length;
         LogEncodingKind kind = LogFileUtilities.InferKind(encoding, dataOffset);
-        List<FilteredLineDescriptor>[] descriptors = CreateDescriptorLists(options.Count);
+        SearchOptions[] effectiveOptions = CreateEffectiveSearchOptions(options, displayParserRule);
+        List<FilteredLineDescriptor>[] descriptors = CreateDescriptorLists(effectiveOptions.Length);
         long lastPublishedTick = Environment.TickCount64;
-        int[] lastPublishedDescriptorCounts = CreateFilledArray(options.Count, -1);
+        int[] lastPublishedDescriptorCounts = CreateFilledArray(effectiveOptions.Length, -1);
         bool partialPublished = false;
         Stopwatch stopwatch = Stopwatch.StartNew();
         SearchMatcherCascade matcher = SearchMatcherCascade.Create(options);
         DisplayParserRule? parserRule = DisplayParserEvaluator.CloneRule(displayParserRule);
+        int parserFilterCount = DisplayParserEvaluator.GetFilterCount(parserRule);
 
         long scannedOffset = dataOffset;
         long totalLineCount = 0;
-        DisplayParserRecordSequence recordSequence = new(parserRule);
+        ParserSearchRecordSequence recordSequence = new(parserRule);
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            foreach (DisplayParserRecord record in recordSequence.Enumerate(
+            foreach (ParserSearchRecord record in recordSequence.Enumerate(
                 SearchRealLineScanner.Enumerate(contentSource, encoding, kind, dataOffset, fileSize, cancellationToken),
                 cancellationToken))
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                scannedOffset = record.NextOffset;
-                totalLineCount = record.LastLineNumber;
-                AddDescriptorsByStage(descriptors, record, matcher);
+                scannedOffset = record.SourceRecord.NextOffset;
+                totalLineCount = record.SourceRecord.LastLineNumber;
+                AddDescriptorsByStage(descriptors, record, matcher, parserFilterCount);
 
                 long now = Environment.TickCount64;
                 bool firstPartialWithMatches = !partialPublished && HasAnyDescriptors(descriptors);
@@ -381,7 +418,7 @@ public static class LogSearchBuilder
                         parserRule,
                         GetParserRescanOffset(recordSequence, readerFileSize),
                         GetParserRescanLineNumber(recordSequence, totalLineCount),
-                        CreateColumnHeaders(options, i));
+                        CreateColumnHeaders(effectiveOptions, i));
                     if (!isPaused)
                     {
                         readers[i]!.ReadFromPercentage(0d, GetPreloadedVisibleLines(preloadedVisibleLines, i));
@@ -403,7 +440,7 @@ public static class LogSearchBuilder
                         parserRule,
                         GetParserRescanOffset(recordSequence, readerFileSize),
                         GetParserRescanLineNumber(recordSequence, totalLineCount),
-                        CreateColumnHeaders(options, i));
+                        CreateColumnHeaders(effectiveOptions, i));
                     publishedReader = true;
                 }
             }
@@ -437,7 +474,9 @@ public static class LogSearchBuilder
         CancellationToken cancellationToken,
         DisplayParserRule? displayParserRule = null)
     {
-        if (options.Count == 0)
+        SearchOptions[] effectiveOptions = CreateEffectiveSearchOptions(options, displayParserRule);
+        int parserFilterCount = DisplayParserEvaluator.GetFilterCount(displayParserRule);
+        if (effectiveOptions.Length == 0)
         {
             onProgress(new StagedSearchProgressUpdate(
                 100d,
@@ -452,7 +491,7 @@ public static class LogSearchBuilder
             return;
         }
 
-        if (changedStageIndex <= 0 || changedStageIndex >= options.Count)
+        if (changedStageIndex < parserFilterCount || changedStageIndex <= 0 || changedStageIndex >= effectiveOptions.Length)
         {
             throw new ArgumentOutOfRangeException(nameof(changedStageIndex));
         }
@@ -470,12 +509,19 @@ public static class LogSearchBuilder
         long fileSize = sourceReader.ConfirmedFileSize;
         long totalLineCount = sourceReader.TotalLineCount;
         FilteredLineDescriptor[] sourceDescriptors = sourceReader.CopyDescriptors();
-        List<FilteredLineDescriptor>[] descriptors = CreateDescriptorLists(options.Count);
-        SearchMatcherCascade matcher = SearchMatcherCascade.Create(options);
+        List<FilteredLineDescriptor>[] descriptors = CreateDescriptorLists(effectiveOptions.Length);
+        int changedManualIndex = changedStageIndex - parserFilterCount;
+        SearchOptions[] changedManualOptions = new SearchOptions[options.Count - changedManualIndex];
+        for (int i = 0; i < changedManualOptions.Length; i++)
+        {
+            changedManualOptions[i] = options[changedManualIndex + i];
+        }
+
+        SearchMatcherCascade matcher = SearchMatcherCascade.Create(changedManualOptions);
         DisplayParserRule? parserRule = DisplayParserEvaluator.CloneRule(displayParserRule);
-        long[] previousMatchedCounts = CopyExistingMatchedLineCounts(previousReaders, changedStageIndex, options.Count);
+        long[] previousMatchedCounts = CopyExistingMatchedLineCounts(previousReaders, changedStageIndex, effectiveOptions.Length);
         long lastPublishedTick = Environment.TickCount64;
-        int[] lastPublishedDescriptorCounts = CreateFilledArray(options.Count, -1);
+        int[] lastPublishedDescriptorCounts = CreateFilledArray(effectiveOptions.Length, -1);
         Stopwatch stopwatch = Stopwatch.StartNew();
         int processedDescriptorCount = 0;
         long processedOffset = dataOffset;
@@ -506,7 +552,8 @@ public static class LogSearchBuilder
                         sourceDescriptor.StartOffset,
                         sourceDescriptor.EndOffset,
                         sourceDescriptor.LineNumber,
-                        parserRule);
+                        parserRule,
+                        sourceDescriptor.ParserOutputLevel);
                     cachedDescriptor = sourceDescriptor;
                     cachedRecordText = recordText;
                 }
@@ -554,8 +601,8 @@ public static class LogSearchBuilder
                 progress = 100d;
             }
 
-            FilteredLogRecordSource?[] readers = new FilteredLogRecordSource?[options.Count];
-            for (int i = changedStageIndex; i < options.Count; i++)
+            FilteredLogRecordSource?[] readers = new FilteredLogRecordSource?[effectiveOptions.Length];
+            for (int i = changedStageIndex; i < effectiveOptions.Length; i++)
             {
                 bool shouldBuildReader = isFinal || isPaused || descriptors[i].Count != lastPublishedDescriptorCounts[i];
                 if (shouldBuildReader)
@@ -571,7 +618,7 @@ public static class LogSearchBuilder
                         parserRule,
                         sourceReader.ParserRescanOffset,
                         sourceReader.ParserRescanLineNumber,
-                        CreateColumnHeaders(options, i));
+                        CreateColumnHeaders(effectiveOptions, i));
                     if (!isPaused)
                     {
                         readers[i]!.ReadFromPercentage(0d, GetPreloadedVisibleLines(preloadedVisibleLines, i));
@@ -623,6 +670,8 @@ public static class LogSearchBuilder
         LogContentSource contentSource = previousReader.ContentSource;
         long oldFileSize = previousReader.ConfirmedFileSize;
         DisplayParserRule? parserRule = DisplayParserEvaluator.CloneRule(displayParserRule);
+        SearchOptions[] effectiveOptions = CreateEffectiveSearchOptions(options, parserRule);
+        int parserFilterCount = DisplayParserEvaluator.GetFilterCount(parserRule);
         if (newFileSize <= oldFileSize)
         {
             FilteredLogRecordSource unchanged = new(
@@ -635,7 +684,8 @@ public static class LogSearchBuilder
                 previousReader.TotalLineCount,
                 parserRule,
                 previousReader.ParserRescanOffset,
-                previousReader.ParserRescanLineNumber);
+                previousReader.ParserRescanLineNumber,
+                CreateColumnHeaders(effectiveOptions, effectiveOptions.Length - 1));
             unchanged.ReadFromPercentage(0d, Math.Max(1, preloadedVisibleLines));
             onProgress(new SearchProgressUpdate(100d, unchanged.MatchedLineCount, 0, unchanged, IsFinal: true));
             return;
@@ -659,7 +709,9 @@ public static class LogSearchBuilder
                 : Math.Max(1, previousReader.TotalLineCount);
         }
 
-        List<FilteredLineDescriptor> descriptors = new(previousReader.CopyDescriptorsBefore(rescanStartOffset));
+        List<FilteredLineDescriptor>[] descriptorStages = CreateDescriptorLists(effectiveOptions.Length);
+        List<FilteredLineDescriptor> descriptors = descriptorStages[^1];
+        descriptors.AddRange(previousReader.CopyDescriptorsBefore(rescanStartOffset));
         long totalLineCount = previousReader.TotalLineCount;
         long scannedOffset = rescanStartOffset;
         long lastPublishedTick = Environment.TickCount64;
@@ -667,15 +719,15 @@ public static class LogSearchBuilder
         Stopwatch stopwatch = Stopwatch.StartNew();
         SearchMatcherCascade matcher = SearchMatcherCascade.Create(options);
 
-        DisplayParserRecordSequence recordSequence = new(parserRule);
-        foreach (DisplayParserRecord record in recordSequence.Enumerate(
+        ParserSearchRecordSequence recordSequence = new(parserRule);
+        foreach (ParserSearchRecord record in recordSequence.Enumerate(
             SearchRealLineScanner.Enumerate(contentSource, encoding, kind, rescanStartOffset, newFileSize, cancellationToken, firstLineNumber),
             cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            scannedOffset = record.NextOffset;
-            totalLineCount = record.LastLineNumber;
-            AddDescriptorIfIncluded(descriptors, record, matcher);
+            scannedOffset = record.SourceRecord.NextOffset;
+            totalLineCount = record.SourceRecord.LastLineNumber;
+            AddDescriptorsByStage(descriptorStages, record, matcher, parserFilterCount);
 
             long now = Environment.TickCount64;
             if (now - lastPublishedTick >= ProgressPublishIntervalMs)
@@ -713,7 +765,7 @@ public static class LogSearchBuilder
                     parserRule,
                     GetParserRescanOffset(recordSequence, newFileSize),
                     GetParserRescanLineNumber(recordSequence, totalLineCount),
-                    CreateColumnHeaders(options, options.Count - 1));
+                    CreateColumnHeaders(effectiveOptions, effectiveOptions.Length - 1));
                 reader.ReadFromPercentage(0d, Math.Max(1, preloadedVisibleLines));
                 lastPublishedDescriptorCount = descriptors.Count;
             }
@@ -733,7 +785,8 @@ public static class LogSearchBuilder
         CancellationToken cancellationToken,
         DisplayParserRule? displayParserRule = null)
     {
-        if (previousReaders.Count != options.Count)
+        SearchOptions[] effectiveOptions = CreateEffectiveSearchOptions(options, displayParserRule);
+        if (previousReaders.Count != effectiveOptions.Length)
         {
             throw new ArgumentException("Previous reader count must match search option count.", nameof(previousReaders));
         }
@@ -760,6 +813,7 @@ public static class LogSearchBuilder
         Encoding encoding = firstReader.SourceEncoding;
         long dataOffset = firstReader.DataOffset;
         DisplayParserRule? parserRule = DisplayParserEvaluator.CloneRule(displayParserRule);
+        int parserFilterCount = DisplayParserEvaluator.GetFilterCount(parserRule);
         if (newFileSize <= oldFileSize)
         {
             FilteredLogRecordSource?[] unchangedReaders = new FilteredLogRecordSource?[previousReaders.Count];
@@ -776,7 +830,7 @@ public static class LogSearchBuilder
                     parserRule,
                     previousReaders[i].ParserRescanOffset,
                     previousReaders[i].ParserRescanLineNumber,
-                    CreateColumnHeaders(options, i));
+                    CreateColumnHeaders(effectiveOptions, i));
                 unchangedReaders[i]!.ReadFromPercentage(0d, GetPreloadedVisibleLines(preloadedVisibleLines, i));
             }
 
@@ -825,19 +879,19 @@ public static class LogSearchBuilder
 
         Stopwatch stopwatch = Stopwatch.StartNew();
         SearchMatcherCascade matcher = SearchMatcherCascade.Create(options);
-        DisplayParserRecordSequence recordSequence = new(parserRule);
+        ParserSearchRecordSequence recordSequence = new(parserRule);
 
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            foreach (DisplayParserRecord record in recordSequence.Enumerate(
+            foreach (ParserSearchRecord record in recordSequence.Enumerate(
                 SearchRealLineScanner.Enumerate(contentSource, encoding, kind, rescanStartOffset, newFileSize, cancellationToken, firstLineNumber),
                 cancellationToken))
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                scannedOffset = record.NextOffset;
-                totalLineCount = record.LastLineNumber;
-                AddDescriptorsByStage(descriptors, record, matcher);
+                scannedOffset = record.SourceRecord.NextOffset;
+                totalLineCount = record.SourceRecord.LastLineNumber;
+                AddDescriptorsByStage(descriptors, record, matcher, parserFilterCount);
 
                 long now = Environment.TickCount64;
                 if (now - lastPublishedTick >= ProgressPublishIntervalMs)
@@ -889,7 +943,7 @@ public static class LogSearchBuilder
                         parserRule,
                         GetParserRescanOffset(recordSequence, readerFileSize),
                         GetParserRescanLineNumber(recordSequence, totalLineCount),
-                        CreateColumnHeaders(options, i));
+                        CreateColumnHeaders(effectiveOptions, i));
                     if (!isPaused)
                     {
                         readers[i]!.ReadFromPercentage(0d, GetPreloadedVisibleLines(preloadedVisibleLines, i));
@@ -928,7 +982,8 @@ public static class LogSearchBuilder
         CancellationToken cancellationToken,
         DisplayParserRule? displayParserRule = null)
     {
-        if (pausedReaders.Count != options.Count)
+        SearchOptions[] effectiveOptions = CreateEffectiveSearchOptions(options, displayParserRule);
+        if (pausedReaders.Count != effectiveOptions.Length)
         {
             throw new ArgumentException("Paused reader count must match search option count.", nameof(pausedReaders));
         }
@@ -974,6 +1029,7 @@ public static class LogSearchBuilder
         }
         long totalLineCount = firstLineNumber - 1;
         DisplayParserRule? parserRule = DisplayParserEvaluator.CloneRule(displayParserRule);
+        int parserFilterCount = DisplayParserEvaluator.GetFilterCount(parserRule);
         List<FilteredLineDescriptor>[] descriptors = new List<FilteredLineDescriptor>[pausedReaders.Count];
         for (int i = 0; i < pausedReaders.Count; i++)
         {
@@ -990,19 +1046,19 @@ public static class LogSearchBuilder
 
         Stopwatch stopwatch = Stopwatch.StartNew();
         SearchMatcherCascade matcher = SearchMatcherCascade.Create(options);
-        DisplayParserRecordSequence recordSequence = new(parserRule);
+        ParserSearchRecordSequence recordSequence = new(parserRule);
 
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            foreach (DisplayParserRecord record in recordSequence.Enumerate(
+            foreach (ParserSearchRecord record in recordSequence.Enumerate(
                 SearchRealLineScanner.Enumerate(contentSource, encoding, kind, resumeStartOffset, newFileSize, cancellationToken, firstLineNumber),
                 cancellationToken))
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                scannedOffset = record.NextOffset;
-                totalLineCount = record.LastLineNumber;
-                AddDescriptorsByStage(descriptors, record, matcher);
+                scannedOffset = record.SourceRecord.NextOffset;
+                totalLineCount = record.SourceRecord.LastLineNumber;
+                AddDescriptorsByStage(descriptors, record, matcher, parserFilterCount);
 
                 long now = Environment.TickCount64;
                 if (now - lastPublishedTick >= ProgressPublishIntervalMs)
@@ -1054,7 +1110,7 @@ public static class LogSearchBuilder
                         parserRule,
                         GetParserRescanOffset(recordSequence, readerFileSize),
                         GetParserRescanLineNumber(recordSequence, totalLineCount),
-                        CreateColumnHeaders(options, i));
+                        CreateColumnHeaders(effectiveOptions, i));
                     if (!isPaused)
                     {
                         readers[i]!.ReadFromPercentage(0d, GetPreloadedVisibleLines(preloadedVisibleLines, i));
@@ -1164,49 +1220,59 @@ public static class LogSearchBuilder
         };
     }
 
-    private static void AddDescriptorIfIncluded(
-        List<FilteredLineDescriptor> descriptors,
-        DisplayParserRecord record,
-        SearchMatcherCascade matcher)
-    {
-        foreach (ExplicitRowData row in FilteredLineUtilities.EnumerateExplicitRows(record.Text))
-        {
-            if (!matcher.TryMatch(row.Text, out FilteredCaptureGroups? captureGroups))
-            {
-                continue;
-            }
-
-            descriptors.Add(new FilteredLineDescriptor(
-                record.StartOffset,
-                record.EndOffset,
-                captureGroups,
-                record.LineNumber,
-                row.Index));
-        }
-    }
-
     private static void AddDescriptorsByStage(
         List<FilteredLineDescriptor>[] descriptors,
-        DisplayParserRecord record,
-        SearchMatcherCascade matcher)
+        ParserSearchRecord record,
+        SearchMatcherCascade manualMatcher,
+        int parserFilterCount)
     {
         if (descriptors.Length == 0)
         {
             return;
         }
 
-        foreach (ExplicitRowData row in FilteredLineUtilities.EnumerateExplicitRows(record.Text))
+        DisplayParserRecord source = record.SourceRecord;
+        int filterLevels = Math.Min(parserFilterCount, record.FilterOutputs.Length);
+        for (int filterIndex = 0; filterIndex < filterLevels; filterIndex++)
         {
-            FilteredCaptureGroups?[] captureGroupsByStage = new FilteredCaptureGroups?[descriptors.Length];
-            int includedStages = matcher.MatchStages(row.Text, captureGroupsByStage);
-            for (int i = 0; i < includedStages; i++)
+            IReadOnlyList<DisplayParserPipelineRow> rows = record.FilterOutputs[filterIndex];
+            for (int rowIndex = 0; rowIndex < rows.Count; rowIndex++)
             {
-                descriptors[i].Add(new FilteredLineDescriptor(
-                    record.StartOffset,
-                    record.EndOffset,
-                    captureGroupsByStage[i],
-                    record.LineNumber,
-                    row.Index));
+                DisplayParserPipelineRow row = rows[rowIndex];
+                descriptors[filterIndex].Add(new FilteredLineDescriptor(
+                    source.StartOffset,
+                    source.EndOffset,
+                    row.CaptureGroups,
+                    source.LineNumber,
+                    rowIndex,
+                    filterIndex));
+            }
+        }
+
+        int manualLevelCount = descriptors.Length - parserFilterCount;
+        if (manualLevelCount <= 0)
+        {
+            return;
+        }
+
+        int parserOutputLevel = parserFilterCount > 0 ? parserFilterCount - 1 : -1;
+        for (int rowIndex = 0; rowIndex < record.FinalRows.Count; rowIndex++)
+        {
+            DisplayParserPipelineRow row = record.FinalRows[rowIndex];
+            FilteredCaptureGroups?[] captureGroupsByStage = new FilteredCaptureGroups?[manualLevelCount];
+            int includedStages = manualMatcher.MatchStages(
+                row.Text,
+                captureGroupsByStage,
+                row.CaptureGroups);
+            for (int manualIndex = 0; manualIndex < includedStages; manualIndex++)
+            {
+                descriptors[parserFilterCount + manualIndex].Add(new FilteredLineDescriptor(
+                    source.StartOffset,
+                    source.EndOffset,
+                    captureGroupsByStage[manualIndex],
+                    source.LineNumber,
+                    rowIndex,
+                    parserOutputLevel));
             }
         }
     }
@@ -1223,16 +1289,21 @@ public static class LogSearchBuilder
             return;
         }
 
-        FilteredCaptureGroups?[] captureGroupsByStage = new FilteredCaptureGroups?[descriptors.Length];
-        int includedStages = matcher.MatchStages(lineText, captureGroupsByStage);
-        for (int i = changedStageIndex; i < includedStages; i++)
+        int remainingStageCount = descriptors.Length - changedStageIndex;
+        FilteredCaptureGroups?[] captureGroupsByStage = new FilteredCaptureGroups?[remainingStageCount];
+        int includedStages = matcher.MatchStages(
+            lineText,
+            captureGroupsByStage,
+            sourceDescriptor.CaptureGroups);
+        for (int relativeIndex = 0; relativeIndex < includedStages; relativeIndex++)
         {
-            descriptors[i].Add(new FilteredLineDescriptor(
+            descriptors[changedStageIndex + relativeIndex].Add(new FilteredLineDescriptor(
                 sourceDescriptor.StartOffset,
                 sourceDescriptor.EndOffset,
-                captureGroupsByStage[i],
+                captureGroupsByStage[relativeIndex],
                 sourceDescriptor.LineNumber,
-                sourceDescriptor.ExplicitRowIndex));
+                sourceDescriptor.ExplicitRowIndex,
+                sourceDescriptor.ParserOutputLevel));
         }
     }
 
@@ -1282,12 +1353,12 @@ public static class LogSearchBuilder
         return readers;
     }
 
-    private static long GetParserRescanOffset(DisplayParserRecordSequence sequence, long fallbackOffset) =>
+    private static long GetParserRescanOffset(ParserSearchRecordSequence sequence, long fallbackOffset) =>
         sequence.IncompleteRecordStartOffset >= 0
             ? sequence.IncompleteRecordStartOffset
             : fallbackOffset;
 
-    private static long GetParserRescanLineNumber(DisplayParserRecordSequence sequence, long totalLineCount) =>
+    private static long GetParserRescanLineNumber(ParserSearchRecordSequence sequence, long totalLineCount) =>
         sequence.IncompleteRecordLineNumber > 0
             ? sequence.IncompleteRecordLineNumber
             : totalLineCount + 1;
@@ -1545,9 +1616,12 @@ public static class LogSearchBuilder
             return includedStages == _matchers.Length;
         }
 
-        public int MatchStages(string text, FilteredCaptureGroups?[] captureGroupsByStage)
+        public int MatchStages(
+            string text,
+            FilteredCaptureGroups?[] captureGroupsByStage,
+            FilteredCaptureGroups? initialCaptureGroups = null)
         {
-            FilteredCaptureGroups? currentCaptureGroups = null;
+            FilteredCaptureGroups? currentCaptureGroups = initialCaptureGroups;
             for (int i = 0; i < _matchers.Length; i++)
             {
                 bool matched = _matchers[i].TryMatch(text, out FilteredCaptureGroups? matchCaptureGroups);

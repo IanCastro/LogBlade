@@ -27,6 +27,16 @@ Navegacao entre registros consulta o source do backend. Navegacao entre segmento
 
 Quando uma cadeia possui um estagio JSON, os estagios anteriores podem extrair fragmentos de linhas fisicas consecutivas. Um JSON incompleto e acumulado sem separador ate ficar completo. O limite de um registro combinado e 4096 linhas fisicas ou 16 MiB de texto. Se a continuacao falhar, o JSON for invalido, o limite for excedido ou o arquivo terminar com o JSON incompleto, as linhas fisicas acumuladas sao preservadas como texto original.
 
+### Estagios Filter
+
+Um estagio `Filter` avalia cada linha explicita existente naquele ponto da cadeia. Linhas que nao satisfazem o pattern sao removidas; cada linha aprovada continua de forma independente pelos estagios seguintes. `Filter` suporta texto literal ou Regex, `Ignore case` e `Invert match`.
+
+Os estagios de transformacao entre dois Filters pertencem ao nivel do primeiro Filter. Em `A -> Filter 1 -> B -> Filter 2 -> C`, o primeiro nivel mostra a saida de `B` e o segundo mostra a saida de `C`. Se uma transformacao posterior produzir varias linhas explicitas, todas continuam associadas a linha aprovada e repetem as capturas Regex do Filter que originou aquele nivel.
+
+Reconstrucao de JSON entre varias linhas fisicas e permitida somente nos estagios anteriores ao primeiro Filter. Depois dele, um estagio JSON pode processar uma linha explicita que ja contenha um JSON completo, mas nunca acumula linhas fisicas ou linhas aprovadas diferentes.
+
+Quando a regra efetiva possui Filters, o viewer principal fica oculto. Cada Filter aparece como um nivel fixo e bloqueado de search; buscas manuais aparecem abaixo desses niveis. Remover ou trocar para uma regra sem Filter restaura o viewer principal e remove somente os niveis fixos.
+
 ## Semantica do search
 
 - O search recebe o texto final do parser, nunca os segmentos visuais de 4096 caracteres.
@@ -43,6 +53,8 @@ Exemplo: se o parser produzir `ERROR\nfailed`, um search por `failed` retorna so
 ## Searches em cascata
 
 Cada nivel recebe somente os resultados aprovados pelo nivel anterior. A unidade preservada entre os niveis e a linha explicita, nao o registro logico inteiro.
+
+Filters do parser formam um prefixo fixo da cascata. Searches manuais formam o sufixo editavel e recebem somente as linhas sobreviventes do ultimo Filter. Alterar um search manual inferior nao recalcula nem cancela os niveis fixos ja completos.
 
 No exemplo `ERROR\nfailed`, se o primeiro nivel procurar `ERROR` e o segundo procurar `failed`, o segundo nivel nao encontra resultado: `failed` e uma linha irma do mesmo registro, mas nao passou pelo primeiro nivel.
 
@@ -64,7 +76,7 @@ Alterar um nivel inferior, continuar uma busca, processar append ou retomar um c
 
 ## Exportacao com Ctrl+S
 
-- Com search ativo, `Ctrl+S` salva o ultimo nivel como TSV com cabecalho e todas as colunas (`#`, `Text` e capturas).
+- Com search ativo, incluindo uma regra de parser com Filter, `Ctrl+S` salva o ultimo nivel como TSV com cabecalho e todas as colunas (`#`, `Text` e capturas).
 - Sem search ativo, `Ctrl+S` salva todos os registros exibidos pelo parser. Newlines do parser sao preservados e segmentos visuais de 4096 caracteres nao criam quebras no arquivo.
 - Sem parser, a exportacao usa o texto original decodificado. As saidas sao gravadas em UTF-8 com BOM e registros sao separados por CRLF.
 
