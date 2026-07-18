@@ -68,8 +68,8 @@ internal sealed class ViewerWindow
     private const int RegexToggleWidth = 72;
     private const int IgnoreCaseToggleWidth = 112;
     private const int InvertMatchToggleWidth = 120;
-    private const int ParserInputVisibilityButtonWidth = 24;
-    private const string ParserInputVisibilityGlyph = "\uE890";
+    private const int SearchInputVisibilityButtonWidth = 24;
+    private const string SearchInputVisibilityGlyph = "\uE890";
     private const int SearchResizeHitSlopPx = 4;
     private const string SearchResizeGripClassName = "LogBladeSearchResizeGripWindow";
     private const string NoParserText = "Choose a parser...";
@@ -87,7 +87,7 @@ internal sealed class ViewerWindow
     private IntPtr _pasteButton;
     private IntPtr _parserCombo;
     private IntPtr _highlightingButton;
-    private IntPtr _parserInputVisibilityFont;
+    private IntPtr _searchInputVisibilityFont;
     private IntPtr _tooltipWindow;
     private IntPtr _searchResizeGrip;
     private FileSystemWatcher? _fileWatcher;
@@ -111,10 +111,10 @@ internal sealed class ViewerWindow
     private IReadOnlyList<CompiledHighlightRule> _compiledHighlightRules = Array.Empty<CompiledHighlightRule>();
     private int _selectedParserRuleIndex = -1;
     private readonly List<SearchLevelState> _searchLevels = new();
-    private readonly List<bool> _parserInputVisibility = new();
+    private readonly List<bool> _parserFilterInputVisibility = new();
     private int _activeSearchLevelCount;
     private int _parserFilterLevelCount;
-    private bool _resetParserInputVisibilityOnNextApply;
+    private bool _resetParserFilterInputVisibilityOnNextApply;
     private DetectedEncodingInfo? _detectedEncoding;
     private ViewportPaneWindow? _mainPane;
     private WindowLayout _layout;
@@ -157,8 +157,8 @@ internal sealed class ViewerWindow
     private sealed class SearchLevelState
     {
         public IntPtr SearchEdit;
-        public IntPtr ParserInputVisibilityButton;
-        public IntPtr ParserInputTooltipText;
+        public IntPtr InputVisibilityButton;
+        public IntPtr InputTooltipText;
         public IntPtr RegexCheckbox;
         public IntPtr IgnoreCaseCheckbox;
         public IntPtr InvertMatchCheckbox;
@@ -169,7 +169,7 @@ internal sealed class ViewerWindow
         public bool IgnoreCase;
         public bool InvertMatch;
         public bool IsParserFilter;
-        public bool ShowParserInput;
+        public bool ShowInputPane = true;
         public double? CustomResultRatio;
     }
 
@@ -191,10 +191,13 @@ internal sealed class ViewerWindow
 
     private readonly record struct SearchLevelSnapshot(string Query, bool UseRegex, bool IgnoreCase, bool InvertMatch);
 
-    private readonly record struct ActiveSearchLevelSnapshot(int SourceIndex, SearchLevelSnapshot Snapshot);
+    private readonly record struct ActiveSearchLevelSnapshot(
+        int SourceIndex,
+        SearchLevelSnapshot Snapshot,
+        bool ShowInputPane);
 
     private readonly record struct SearchLevelLayout(
-        NativeMethods.RECT ParserInputVisibilityButtonRect,
+        NativeMethods.RECT InputVisibilityButtonRect,
         NativeMethods.RECT SearchEditRect,
         NativeMethods.RECT SearchRegexToggleRect,
         NativeMethods.RECT SearchIgnoreCaseToggleRect,
@@ -547,10 +550,10 @@ internal sealed class ViewerWindow
         _boldFont = CreateContentFont(NativeMethods.FW_BOLD, italic: false);
         _italicFont = CreateContentFont(NativeMethods.FW_NORMAL, italic: true);
         _boldItalicFont = CreateContentFont(NativeMethods.FW_BOLD, italic: true);
-        _parserInputVisibilityFont = CreateParserInputVisibilityFont();
-        if (_parserInputVisibilityFont == IntPtr.Zero)
+        _searchInputVisibilityFont = CreateSearchInputVisibilityFont();
+        if (_searchInputVisibilityFont == IntPtr.Zero)
         {
-            _parserInputVisibilityFont = _font;
+            _searchInputVisibilityFont = _font;
         }
 
         MeasureFont();
@@ -688,26 +691,26 @@ internal sealed class ViewerWindow
             IntPtr.Zero);
     }
 
-    private void AddParserInputTooltip(SearchLevelState level)
+    private void AddSearchInputTooltip(SearchLevelState level)
     {
-        SetParserInputTooltip(level, NativeMethods.TTM_ADDTOOLW);
+        SetSearchInputTooltip(level, NativeMethods.TTM_ADDTOOLW);
     }
 
-    private void UpdateParserInputTooltip(SearchLevelState level)
+    private void UpdateSearchInputTooltip(SearchLevelState level)
     {
-        SetParserInputTooltip(level, NativeMethods.TTM_UPDATETIPTEXTW);
+        SetSearchInputTooltip(level, NativeMethods.TTM_UPDATETIPTEXTW);
     }
 
-    private void SetParserInputTooltip(SearchLevelState level, uint message)
+    private void SetSearchInputTooltip(SearchLevelState level, uint message)
     {
-        if (_tooltipWindow == IntPtr.Zero || level.ParserInputVisibilityButton == IntPtr.Zero)
+        if (_tooltipWindow == IntPtr.Zero || level.InputVisibilityButton == IntPtr.Zero)
         {
             return;
         }
 
         IntPtr nextText = Marshal.StringToHGlobalUni(
-            level.ShowParserInput ? "Hide input pane" : "Show input pane");
-        NativeMethods.TOOLINFOW toolInfo = CreateParserInputToolInfo(level, nextText);
+            level.ShowInputPane ? "Hide input pane" : "Show input pane");
+        NativeMethods.TOOLINFOW toolInfo = CreateSearchInputToolInfo(level, nextText);
         IntPtr toolInfoPointer = Marshal.AllocHGlobal(Marshal.SizeOf<NativeMethods.TOOLINFOW>());
         try
         {
@@ -719,21 +722,21 @@ internal sealed class ViewerWindow
             Marshal.FreeHGlobal(toolInfoPointer);
         }
 
-        if (level.ParserInputTooltipText != IntPtr.Zero)
+        if (level.InputTooltipText != IntPtr.Zero)
         {
-            Marshal.FreeHGlobal(level.ParserInputTooltipText);
+            Marshal.FreeHGlobal(level.InputTooltipText);
         }
 
-        level.ParserInputTooltipText = nextText;
+        level.InputTooltipText = nextText;
     }
 
-    private void RemoveParserInputTooltip(SearchLevelState level)
+    private void RemoveSearchInputTooltip(SearchLevelState level)
     {
-        if (_tooltipWindow != IntPtr.Zero && level.ParserInputVisibilityButton != IntPtr.Zero)
+        if (_tooltipWindow != IntPtr.Zero && level.InputVisibilityButton != IntPtr.Zero)
         {
-            NativeMethods.TOOLINFOW toolInfo = CreateParserInputToolInfo(
+            NativeMethods.TOOLINFOW toolInfo = CreateSearchInputToolInfo(
                 level,
-                level.ParserInputTooltipText);
+                level.InputTooltipText);
             IntPtr toolInfoPointer = Marshal.AllocHGlobal(Marshal.SizeOf<NativeMethods.TOOLINFOW>());
             try
             {
@@ -750,19 +753,19 @@ internal sealed class ViewerWindow
             }
         }
 
-        if (level.ParserInputTooltipText != IntPtr.Zero)
+        if (level.InputTooltipText != IntPtr.Zero)
         {
-            Marshal.FreeHGlobal(level.ParserInputTooltipText);
-            level.ParserInputTooltipText = IntPtr.Zero;
+            Marshal.FreeHGlobal(level.InputTooltipText);
+            level.InputTooltipText = IntPtr.Zero;
         }
     }
 
-    private NativeMethods.TOOLINFOW CreateParserInputToolInfo(SearchLevelState level, IntPtr text) => new()
+    private NativeMethods.TOOLINFOW CreateSearchInputToolInfo(SearchLevelState level, IntPtr text) => new()
     {
         cbSize = (uint)Marshal.SizeOf<NativeMethods.TOOLINFOW>(),
         uFlags = NativeMethods.TTF_IDISHWND | NativeMethods.TTF_SUBCLASS,
         hwnd = _hwnd,
-        uId = (nuint)level.ParserInputVisibilityButton,
+        uId = (nuint)level.InputVisibilityButton,
         lpszText = text
     };
 
@@ -902,7 +905,7 @@ internal sealed class ViewerWindow
         }
 
         _selectedParserRuleIndex = selected > 0 && selected <= _parserRules.Count ? selected - 1 : -1;
-        _resetParserInputVisibilityOnNextApply = true;
+        _resetParserFilterInputVisibilityOnNextApply = true;
         ApplyParserRuleChange();
     }
 
@@ -919,7 +922,7 @@ internal sealed class ViewerWindow
             activeRuleName,
             CreateDefaultParserRuleSample(),
             ApplyParserPreview,
-            ResetParserInputVisibilityForRuleSelection);
+            ResetParserFilterInputVisibilityForRuleSelection);
         string? selectedRuleName;
         SetParserComboIndex(_parserRules.Count + 1);
         NativeMethods.EnableWindow(_parserCombo, false);
@@ -940,7 +943,7 @@ internal sealed class ViewerWindow
 
         if (!string.Equals(activeRuleName, selectedRuleName, StringComparison.OrdinalIgnoreCase))
         {
-            _resetParserInputVisibilityOnNextApply = true;
+            _resetParserFilterInputVisibilityOnNextApply = true;
         }
 
         ReloadParserRules(selectedRuleName);
@@ -968,9 +971,9 @@ internal sealed class ViewerWindow
         ApplyParserRuleChange();
     }
 
-    private void ResetParserInputVisibilityForRuleSelection()
+    private void ResetParserFilterInputVisibilityForRuleSelection()
     {
-        _resetParserInputVisibilityOnNextApply = true;
+        _resetParserFilterInputVisibilityOnNextApply = true;
     }
 
     private bool OnKeyDown(int key)
@@ -1456,10 +1459,10 @@ internal sealed class ViewerWindow
     private SearchLevelState CreateSearchLevel(IntPtr hInstance)
     {
         var level = new SearchLevelState();
-        level.ParserInputVisibilityButton = NativeMethods.CreateWindowExW(
+        level.InputVisibilityButton = NativeMethods.CreateWindowExW(
             0,
             "BUTTON",
-            ParserInputVisibilityGlyph,
+            SearchInputVisibilityGlyph,
             NativeMethods.WS_CHILD | NativeMethods.WS_TABSTOP | NativeMethods.BS_AUTOCHECKBOX | NativeMethods.BS_PUSHLIKE,
             0,
             0,
@@ -1469,17 +1472,17 @@ internal sealed class ViewerWindow
             IntPtr.Zero,
             hInstance,
             IntPtr.Zero);
-        if (level.ParserInputVisibilityButton == IntPtr.Zero)
+        if (level.InputVisibilityButton == IntPtr.Zero)
         {
             throw new InvalidOperationException("CreateWindowExW failed for parser input visibility button.");
         }
 
         NativeMethods.SendMessageW(
-            level.ParserInputVisibilityButton,
+            level.InputVisibilityButton,
             NativeMethods.WM_SETFONT,
-            _parserInputVisibilityFont,
+            _searchInputVisibilityFont,
             new IntPtr(1));
-        AddParserInputTooltip(level);
+        AddSearchInputTooltip(level);
 
         level.SearchEdit = NativeMethods.CreateWindowExW(
             0,
@@ -2195,26 +2198,28 @@ internal sealed class ViewerWindow
     private int GetActiveSearchResultCount() =>
         Math.Min(_activeSearchLevelCount, _searchLevels.Count);
 
-    internal static int GetParserInputIndexForSearchResult(int resultIndex, int parserFilterLevelCount) =>
-        resultIndex >= 0 && resultIndex < parserFilterLevelCount - 1
+    internal static int GetInputControllerIndexForSearchResult(int resultIndex, int activeSearchLevelCount) =>
+        resultIndex >= 0 && resultIndex < activeSearchLevelCount - 1
             ? resultIndex + 1
             : -1;
 
-    internal static bool ShouldShowMainPaneForParserInputs(
-        int parserFilterLevelCount,
-        bool firstParserInputVisible) =>
-        parserFilterLevelCount <= 0 || firstParserInputVisible;
+    internal static bool ShouldShowMainPaneForSearchInputs(
+        int activeSearchLevelCount,
+        bool firstSearchInputVisible) =>
+        activeSearchLevelCount <= 0 || firstSearchInputVisible;
 
-    private bool IsParserInputVisible(int inputIndex) =>
+    internal static bool GetDefaultSearchInputVisibility(bool isParserFilter) => !isParserFilter;
+
+    private bool IsSearchInputVisible(int inputIndex) =>
         inputIndex >= 0 &&
-        inputIndex < _parserFilterLevelCount &&
-        inputIndex < _parserInputVisibility.Count &&
-        _parserInputVisibility[inputIndex];
+        inputIndex < _activeSearchLevelCount &&
+        inputIndex < _searchLevels.Count &&
+        _searchLevels[inputIndex].ShowInputPane;
 
     private bool IsSearchResultVisible(int resultIndex)
     {
-        int inputIndex = GetParserInputIndexForSearchResult(resultIndex, _parserFilterLevelCount);
-        return inputIndex < 0 || IsParserInputVisible(inputIndex);
+        int inputIndex = GetInputControllerIndexForSearchResult(resultIndex, _activeSearchLevelCount);
+        return inputIndex < 0 || IsSearchInputVisible(inputIndex);
     }
 
     private int[] GetVisibleActiveSearchResultIndices()
@@ -2275,11 +2280,11 @@ internal sealed class ViewerWindow
         return null;
     }
 
-    private SearchLevelState? FindSearchLevelByParserInputVisibilityButton(IntPtr hwnd)
+    private SearchLevelState? FindSearchLevelByInputVisibilityButton(IntPtr hwnd)
     {
         foreach (SearchLevelState level in _searchLevels)
         {
-            if (level.ParserInputVisibilityButton == hwnd)
+            if (level.InputVisibilityButton == hwnd)
             {
                 return level;
             }
@@ -2407,7 +2412,8 @@ internal sealed class ViewerWindow
             SearchLevelState level = _searchLevels[i];
             activeLevels.Add(new ActiveSearchLevelSnapshot(
                 i,
-                new SearchLevelSnapshot(level.Query, level.UseRegex, level.IgnoreCase, level.InvertMatch)));
+                new SearchLevelSnapshot(level.Query, level.UseRegex, level.IgnoreCase, level.InvertMatch),
+                level.ShowInputPane));
         }
 
         for (int i = _parserFilterLevelCount; i < _searchLevels.Count; i++)
@@ -2417,7 +2423,8 @@ internal sealed class ViewerWindow
             {
                 activeLevels.Add(new ActiveSearchLevelSnapshot(
                     i,
-                    new SearchLevelSnapshot(level.Query, level.UseRegex, level.IgnoreCase, level.InvertMatch)));
+                    new SearchLevelSnapshot(level.Query, level.UseRegex, level.IgnoreCase, level.InvertMatch),
+                    level.ShowInputPane));
             }
         }
 
@@ -2442,10 +2449,14 @@ internal sealed class ViewerWindow
             for (int i = 0; i < activeLevels.Count; i++)
             {
                 SetSearchLevelControls(_searchLevels[i], activeLevels[i].Snapshot);
+                SetSearchLevelInputVisibility(_searchLevels[i], activeLevels[i].ShowInputPane);
                 SetSearchLevelParserFilterState(_searchLevels[i], i < _parserFilterLevelCount);
             }
 
             SearchLevelState emptyLevel = _searchLevels[activeLevels.Count];
+            SetSearchLevelInputVisibility(
+                emptyLevel,
+                GetDefaultSearchInputVisibility(isParserFilter: false));
             SetSearchLevelParserFilterState(emptyLevel, isParserFilter: false);
             SetSearchLevelControls(
                 emptyLevel,
@@ -2466,13 +2477,13 @@ internal sealed class ViewerWindow
     private void ApplyParserFilterSearchLevels(DisplayParserRule? parserRule)
     {
         SearchOptions[] filterOptions = DisplayParserEvaluator.GetFilterOptions(parserRule);
-        if (_resetParserInputVisibilityOnNextApply)
+        if (_resetParserFilterInputVisibilityOnNextApply)
         {
-            ResetParserInputVisibility();
-            _resetParserInputVisibilityOnNextApply = false;
+            ResetParserFilterInputVisibility();
+            _resetParserFilterInputVisibilityOnNextApply = false;
         }
 
-        SynchronizeParserInputVisibility(
+        SynchronizeParserFilterInputVisibility(
             filterOptions.Length,
             preserveWhenEmpty: parserRule is null && _parserPreviewActive);
 
@@ -2482,6 +2493,7 @@ internal sealed class ViewerWindow
         double[] previousPanelRatios = GetNormalizedPanelRatios(previousActiveCount);
         List<ActiveSearchLevelSnapshot> manualLevels = new();
         SearchLevelSnapshot emptyManualLevel = new(string.Empty, UseRegex: true, IgnoreCase: false, InvertMatch: false);
+        bool emptyManualInputVisible = GetDefaultSearchInputVisibility(isParserFilter: false);
         for (int i = 0; i < _searchLevels.Count; i++)
         {
             SearchLevelState level = _searchLevels[i];
@@ -2492,7 +2504,8 @@ internal sealed class ViewerWindow
                 {
                     manualLevels.Add(new ActiveSearchLevelSnapshot(
                         i,
-                        new SearchLevelSnapshot(level.Query, level.UseRegex, level.IgnoreCase, level.InvertMatch)));
+                        new SearchLevelSnapshot(level.Query, level.UseRegex, level.IgnoreCase, level.InvertMatch),
+                        level.ShowInputPane));
                 }
                 else
                 {
@@ -2501,6 +2514,7 @@ internal sealed class ViewerWindow
                         level.UseRegex,
                         level.IgnoreCase,
                         level.InvertMatch);
+                    emptyManualInputVisible = level.ShowInputPane;
                 }
             }
         }
@@ -2530,23 +2544,26 @@ internal sealed class ViewerWindow
                 SetSearchLevelControls(
                     level,
                     new SearchLevelSnapshot(option.Query, option.UseRegex, option.IgnoreCase, option.InvertMatch));
-                level.ShowParserInput = _parserInputVisibility[i];
+                SetSearchLevelInputVisibility(level, _parserFilterInputVisibility[i]);
                 SetSearchLevelParserFilterState(level, isParserFilter: true);
                 int sourceIndex = i < _parserFilterLevelCount && i < previousActiveCount ? i : -1;
                 resultingLevels.Add(new ActiveSearchLevelSnapshot(
                     sourceIndex,
-                    new SearchLevelSnapshot(option.Query, option.UseRegex, option.IgnoreCase, option.InvertMatch)));
+                    new SearchLevelSnapshot(option.Query, option.UseRegex, option.IgnoreCase, option.InvertMatch),
+                    level.ShowInputPane));
             }
 
             for (int i = 0; i < manualLevels.Count; i++)
             {
                 SearchLevelState level = _searchLevels[filterOptions.Length + i];
                 SetSearchLevelControls(level, manualLevels[i].Snapshot);
+                SetSearchLevelInputVisibility(level, manualLevels[i].ShowInputPane);
                 SetSearchLevelParserFilterState(level, isParserFilter: false);
                 resultingLevels.Add(manualLevels[i]);
             }
 
             SearchLevelState emptyLevel = _searchLevels[activeCount];
+            SetSearchLevelInputVisibility(emptyLevel, emptyManualInputVisible);
             SetSearchLevelParserFilterState(emptyLevel, isParserFilter: false);
             SetSearchLevelControls(emptyLevel, emptyManualLevel);
         }
@@ -2592,31 +2609,34 @@ internal sealed class ViewerWindow
     private void SetSearchLevelParserFilterState(SearchLevelState level, bool isParserFilter)
     {
         level.IsParserFilter = isParserFilter;
-        if (!isParserFilter)
-        {
-            level.ShowParserInput = false;
-        }
-
-        SetButtonChecked(level.ParserInputVisibilityButton, level.ShowParserInput);
-        UpdateParserInputTooltip(level);
         NativeMethods.EnableWindow(level.SearchEdit, !isParserFilter);
         NativeMethods.EnableWindow(level.RegexCheckbox, !isParserFilter);
         NativeMethods.EnableWindow(level.IgnoreCaseCheckbox, !isParserFilter);
         NativeMethods.EnableWindow(level.InvertMatchCheckbox, !isParserFilter);
     }
 
-    private void ResetParserInputVisibility()
+    private void SetSearchLevelInputVisibility(SearchLevelState level, bool visible)
     {
-        _parserInputVisibility.Clear();
+        level.ShowInputPane = visible;
+        SetButtonChecked(level.InputVisibilityButton, visible);
+        UpdateSearchInputTooltip(level);
+    }
+
+    private void ResetParserFilterInputVisibility()
+    {
+        _parserFilterInputVisibility.Clear();
         foreach (SearchLevelState level in _searchLevels)
         {
-            level.ShowParserInput = false;
-            SetButtonChecked(level.ParserInputVisibilityButton, checkedState: false);
-            UpdateParserInputTooltip(level);
+            if (level.IsParserFilter)
+            {
+                SetSearchLevelInputVisibility(
+                    level,
+                    GetDefaultSearchInputVisibility(isParserFilter: true));
+            }
         }
     }
 
-    private void SynchronizeParserInputVisibility(int filterCount, bool preserveWhenEmpty)
+    private void SynchronizeParserFilterInputVisibility(int filterCount, bool preserveWhenEmpty)
     {
         filterCount = Math.Max(0, filterCount);
         if (filterCount == 0 && preserveWhenEmpty)
@@ -2624,16 +2644,17 @@ internal sealed class ViewerWindow
             return;
         }
 
-        if (_parserInputVisibility.Count > filterCount)
+        if (_parserFilterInputVisibility.Count > filterCount)
         {
-            _parserInputVisibility.RemoveRange(
+            _parserFilterInputVisibility.RemoveRange(
                 filterCount,
-                _parserInputVisibility.Count - filterCount);
+                _parserFilterInputVisibility.Count - filterCount);
         }
 
-        while (_parserInputVisibility.Count < filterCount)
+        while (_parserFilterInputVisibility.Count < filterCount)
         {
-            _parserInputVisibility.Add(false);
+            _parserFilterInputVisibility.Add(
+                GetDefaultSearchInputVisibility(isParserFilter: true));
         }
     }
 
@@ -3443,11 +3464,11 @@ internal sealed class ViewerWindow
 
     private void DestroySearchLevel(SearchLevelState level)
     {
-        if (level.ParserInputVisibilityButton != IntPtr.Zero)
+        if (level.InputVisibilityButton != IntPtr.Zero)
         {
-            RemoveParserInputTooltip(level);
-            NativeMethods.DestroyWindow(level.ParserInputVisibilityButton);
-            level.ParserInputVisibilityButton = IntPtr.Zero;
+            RemoveSearchInputTooltip(level);
+            NativeMethods.DestroyWindow(level.InputVisibilityButton);
+            level.InputVisibilityButton = IntPtr.Zero;
         }
 
         if (level.SearchEdit != IntPtr.Zero)
@@ -3607,26 +3628,27 @@ internal sealed class ViewerWindow
             return;
         }
 
-        SearchLevelState? parserInputLevel = FindSearchLevelByParserInputVisibilityButton(lParam);
-        if (parserInputLevel is not null &&
-            parserInputLevel.IsParserFilter &&
+        SearchLevelState? inputLevel = FindSearchLevelByInputVisibilityButton(lParam);
+        int inputIndex = inputLevel is null ? -1 : _searchLevels.IndexOf(inputLevel);
+        if (inputLevel is not null &&
+            inputIndex >= 0 &&
+            inputIndex < _activeSearchLevelCount &&
             notification == NativeMethods.BN_CLICKED)
         {
-            parserInputLevel.ShowParserInput = IsButtonChecked(parserInputLevel.ParserInputVisibilityButton);
-            int inputIndex = _searchLevels.IndexOf(parserInputLevel);
-            if (inputIndex >= 0 && inputIndex < _parserInputVisibility.Count)
+            bool showInputPane = IsButtonChecked(inputLevel.InputVisibilityButton);
+            SetSearchLevelInputVisibility(inputLevel, showInputPane);
+            if (inputLevel.IsParserFilter && inputIndex < _parserFilterInputVisibility.Count)
             {
-                _parserInputVisibility[inputIndex] = parserInputLevel.ShowParserInput;
+                _parserFilterInputVisibility[inputIndex] = showInputPane;
             }
 
             if (inputIndex == 0 &&
-                parserInputLevel.ShowParserInput &&
+                showInputPane &&
                 (_customSearchAreaRatio is <= 0d or >= 1d))
             {
                 _customSearchAreaRatio = null;
             }
 
-            UpdateParserInputTooltip(parserInputLevel);
             EndSearchResultsResize();
             UpdateLayout();
             return;
@@ -5045,7 +5067,7 @@ internal sealed class ViewerWindow
             "Consolas");
     }
 
-    private static IntPtr CreateParserInputVisibilityFont()
+    private static IntPtr CreateSearchInputVisibilityFont()
     {
         return NativeMethods.CreateFontW(
             -16,
@@ -5107,7 +5129,7 @@ internal sealed class ViewerWindow
 
     private double GetSearchAreaRatio(int activeSearchCount)
     {
-        if (_parserFilterLevelCount > 0 && !IsParserInputVisible(0))
+        if (_activeSearchLevelCount > 0 && !IsSearchInputVisible(0))
         {
             return 1d;
         }
@@ -5390,14 +5412,14 @@ internal sealed class ViewerWindow
                 bottom = inputBottom
             };
 
-            NativeMethods.RECT parserInputVisibilityRect = CreateZeroRect();
+            NativeMethods.RECT inputVisibilityRect = CreateZeroRect();
             int editLeft = inputRowRect.left;
-            if (i < _parserFilterLevelCount)
+            if (i < _activeSearchLevelCount)
             {
                 int visibilityButtonWidth = Math.Min(
-                    ParserInputVisibilityButtonWidth,
+                    SearchInputVisibilityButtonWidth,
                     GetRectWidth(inputRowRect));
-                parserInputVisibilityRect = new NativeMethods.RECT
+                inputVisibilityRect = new NativeMethods.RECT
                 {
                     left = inputRowRect.left,
                     top = inputRowRect.top,
@@ -5406,7 +5428,7 @@ internal sealed class ViewerWindow
                 };
                 editLeft = Math.Min(
                     inputRowRect.right,
-                    parserInputVisibilityRect.right + SearchLevelRowGap);
+                    inputVisibilityRect.right + SearchLevelRowGap);
             }
 
             NativeMethods.RECT invertMatchRect = new()
@@ -5462,7 +5484,7 @@ internal sealed class ViewerWindow
             }
 
             searchLevelLayouts[i] = new SearchLevelLayout(
-                parserInputVisibilityRect,
+                inputVisibilityRect,
                 editRect,
                 regexRect,
                 ignoreCaseRect,
@@ -5547,18 +5569,18 @@ internal sealed class ViewerWindow
 
         _mainPane?.SetBounds(
             _layout.ViewerRect,
-            ShouldShowMainPaneForParserInputs(_parserFilterLevelCount, IsParserInputVisible(0)));
+            ShouldShowMainPaneForSearchInputs(_activeSearchLevelCount, IsSearchInputVisible(0)));
 
         for (int i = 0; i < _searchLevels.Count && i < _layout.SearchLevelLayouts.Length; i++)
         {
             SearchLevelState level = _searchLevels[i];
             SearchLevelLayout levelLayout = _layout.SearchLevelLayouts[i];
             NativeMethods.MoveWindow(
-                level.ParserInputVisibilityButton,
-                levelLayout.ParserInputVisibilityButtonRect.left,
-                levelLayout.ParserInputVisibilityButtonRect.top,
-                GetRectWidth(levelLayout.ParserInputVisibilityButtonRect),
-                GetRectHeight(levelLayout.ParserInputVisibilityButtonRect),
+                level.InputVisibilityButton,
+                levelLayout.InputVisibilityButtonRect.left,
+                levelLayout.InputVisibilityButtonRect.top,
+                GetRectWidth(levelLayout.InputVisibilityButtonRect),
+                GetRectHeight(levelLayout.InputVisibilityButtonRect),
                 false);
             NativeMethods.MoveWindow(
                 level.SearchEdit,
@@ -5591,8 +5613,8 @@ internal sealed class ViewerWindow
             bool controlsVisible = !IsZeroRect(levelLayout.SearchEditRect);
             int showControlsCommand = controlsVisible ? NativeMethods.SW_SHOW : NativeMethods.SW_HIDE;
             NativeMethods.ShowWindow(
-                level.ParserInputVisibilityButton,
-                IsZeroRect(levelLayout.ParserInputVisibilityButtonRect) ? NativeMethods.SW_HIDE : NativeMethods.SW_SHOW);
+                level.InputVisibilityButton,
+                IsZeroRect(levelLayout.InputVisibilityButtonRect) ? NativeMethods.SW_HIDE : NativeMethods.SW_SHOW);
             NativeMethods.ShowWindow(level.SearchEdit, showControlsCommand);
             NativeMethods.ShowWindow(level.RegexCheckbox, showControlsCommand);
             NativeMethods.ShowWindow(level.IgnoreCaseCheckbox, showControlsCommand);
@@ -5695,12 +5717,12 @@ internal sealed class ViewerWindow
             NativeMethods.DestroyWindow(_searchResizeGrip);
         }
 
-        if (_parserInputVisibilityFont != IntPtr.Zero && _parserInputVisibilityFont != _font)
+        if (_searchInputVisibilityFont != IntPtr.Zero && _searchInputVisibilityFont != _font)
         {
-            NativeMethods.DeleteObject(_parserInputVisibilityFont);
+            NativeMethods.DeleteObject(_searchInputVisibilityFont);
         }
 
-        _parserInputVisibilityFont = IntPtr.Zero;
+        _searchInputVisibilityFont = IntPtr.Zero;
         if (_font != IntPtr.Zero && _font != NativeMethods.GetStockObject(NativeMethods.SYSTEM_FIXED_FONT))
         {
             NativeMethods.DeleteObject(_font);

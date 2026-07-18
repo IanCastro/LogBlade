@@ -631,7 +631,7 @@ internal sealed class RuleEditorWindow
             Sample = GetWindowText(_sampleEdit)
         };
         string result = EvaluateSample(previewRule);
-        NativeMethods.SetWindowTextW(_previewEdit, result);
+        NativeMethods.SetWindowTextW(_previewEdit, MultilineEditText.Normalize(result));
         _updatingPreview = false;
     }
 

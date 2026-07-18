@@ -796,7 +796,7 @@ internal sealed class ParserStageEditorWindow
             string input = GetStageInput();
             if (!CanEditStageInput)
             {
-                NativeMethods.SetWindowTextW(_beforeEdit, input);
+                NativeMethods.SetWindowTextW(_beforeEdit, MultilineEditText.Normalize(input));
             }
 
             DisplayParserStage stage = CreateStageFromControls();
@@ -806,13 +806,13 @@ internal sealed class ParserStageEditorWindow
             }
             catch (ArgumentException ex)
             {
-                NativeMethods.SetWindowTextW(_previewEdit, ex.Message);
+                NativeMethods.SetWindowTextW(_previewEdit, MultilineEditText.Normalize(ex.Message));
                 PublishInvalidPreview();
                 return;
             }
 
             string output = EvaluateStagePreview(input, stage, HasPreviousFilter);
-            NativeMethods.SetWindowTextW(_previewEdit, output);
+            NativeMethods.SetWindowTextW(_previewEdit, MultilineEditText.Normalize(output));
             PublishValidPreview(stage);
         }
         finally

@@ -33,8 +33,9 @@ internal static class Program
             Run("word drag snapping", RunWordDragSnapping);
             Run("non-word double click", RunNonWordDoubleClickSelection);
             Run("display text normalization", RunDisplayTextNormalization);
+            Run("multiline edit normalization", RunMultilineEditNormalization);
             Run("cascaded filter stage preview", RunCascadedFilterStagePreview);
-            Run("parser stage visibility", RunParserStageVisibility);
+            Run("search input visibility", RunSearchInputVisibility);
             Run("output export", () => RunOutputExport(tempRoot));
             Run("window state store", () => RunWindowStateStore(tempRoot));
             Console.WriteLine("Front smoke tests passed.");
@@ -122,40 +123,44 @@ internal static class Program
             "148|Cross asset volumes remain elevated after macro releases");
     }
 
-    private static void RunParserStageVisibility()
+    private static void RunSearchInputVisibility()
     {
         AssertEqual(
-            "main pane visible without filters",
-            ViewerWindow.ShouldShowMainPaneForParserInputs(0, firstParserInputVisible: false),
+            "main pane visible without active search",
+            ViewerWindow.ShouldShowMainPaneForSearchInputs(0, firstSearchInputVisible: false),
             true);
         AssertEqual(
-            "main pane hidden when first input is hidden",
-            ViewerWindow.ShouldShowMainPaneForParserInputs(3, firstParserInputVisible: false),
+            "main pane hidden when first search input is hidden",
+            ViewerWindow.ShouldShowMainPaneForSearchInputs(3, firstSearchInputVisible: false),
             false);
         AssertEqual(
-            "main pane visible when first input is shown",
-            ViewerWindow.ShouldShowMainPaneForParserInputs(3, firstParserInputVisible: true),
+            "main pane visible when first search input is shown",
+            ViewerWindow.ShouldShowMainPaneForSearchInputs(3, firstSearchInputVisible: true),
             true);
         AssertEqual(
-            "first filter result is controlled by second input",
-            ViewerWindow.GetParserInputIndexForSearchResult(0, 3),
+            "first result is controlled by second search input",
+            ViewerWindow.GetInputControllerIndexForSearchResult(0, 3),
             1);
         AssertEqual(
-            "second filter result is controlled by third input",
-            ViewerWindow.GetParserInputIndexForSearchResult(1, 3),
+            "second result is controlled by third search input",
+            ViewerWindow.GetInputControllerIndexForSearchResult(1, 3),
             2);
         AssertEqual(
-            "last filter result is always visible",
-            ViewerWindow.GetParserInputIndexForSearchResult(2, 3),
+            "last active result is always visible",
+            ViewerWindow.GetInputControllerIndexForSearchResult(2, 3),
             -1);
         AssertEqual(
-            "single filter result is always visible",
-            ViewerWindow.GetParserInputIndexForSearchResult(0, 1),
+            "single search result is always visible",
+            ViewerWindow.GetInputControllerIndexForSearchResult(0, 1),
             -1);
         AssertEqual(
-            "manual search result is always visible",
-            ViewerWindow.GetParserInputIndexForSearchResult(3, 3),
-            -1);
+            "parser filters start collapsed",
+            ViewerWindow.GetDefaultSearchInputVisibility(isParserFilter: true),
+            false);
+        AssertEqual(
+            "manual searches start expanded",
+            ViewerWindow.GetDefaultSearchInputVisibility(isParserFilter: false),
+            true);
     }
 
     private static void RunOutputExport(string tempRoot)
@@ -1102,6 +1107,42 @@ internal static class Program
         string normalizedPair = ViewportPaneWindow.NormalizeDisplayText(validSurrogatePair);
         AssertEqual("display normalization valid surrogate pair", normalizedPair, validSurrogatePair);
         AssertEqual("display normalization length", ViewportPaneWindow.NormalizeDisplayText("a\t\uFFFD\u0001\uD800b").Length, 6);
+    }
+
+    private static void RunMultilineEditNormalization()
+    {
+        AssertEqual("multiline edit lf", MultilineEditText.Normalize("a\nb"), "a\r\nb");
+        AssertEqual("multiline edit cr", MultilineEditText.Normalize("a\rb"), "a\r\nb");
+        AssertEqual("multiline edit crlf", MultilineEditText.Normalize("a\r\nb"), "a\r\nb");
+        AssertEqual(
+            "multiline edit mixed",
+            MultilineEditText.Normalize("a\rb\nc\r\nd"),
+            "a\r\nb\r\nc\r\nd");
+
+        DisplayParserStage replacement = new()
+        {
+            Mode = DisplayParserMode.RegexReplace,
+            Rule = "x",
+            Template = @"\n"
+        };
+        string replacementOutput = ParserStageEditorWindow.EvaluateStagePreview(
+            "x",
+            replacement,
+            hasPreviousFilter: false);
+        AssertEqual("replacement keeps parser lf", replacementOutput, "\n");
+        AssertEqual("replacement preview renders crlf", MultilineEditText.Normalize(replacementOutput), "\r\n");
+
+        DisplayParserStage display = new()
+        {
+            Mode = DisplayParserMode.Regex,
+            Rule = "(.*)",
+            Template = @"{0}\n"
+        };
+        string displayOutput = ParserStageEditorWindow.EvaluateStagePreview(
+            "x",
+            display,
+            hasPreviousFilter: false);
+        AssertEqual("regex display keeps escape literal", displayOutput, @"x\n");
     }
 
     private static void RunWindowStateStore(string tempRoot)
