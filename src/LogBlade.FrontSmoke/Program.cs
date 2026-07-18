@@ -34,6 +34,7 @@ internal static class Program
             Run("non-word double click", RunNonWordDoubleClickSelection);
             Run("display text normalization", RunDisplayTextNormalization);
             Run("multiline edit normalization", RunMultilineEditNormalization);
+            Run("clipboard headers", RunClipboardHeaders);
             Run("cascaded filter stage preview", RunCascadedFilterStagePreview);
             Run("search input visibility", RunSearchInputVisibility);
             Run("output export", () => RunOutputExport(tempRoot));
@@ -1143,6 +1144,31 @@ internal static class Program
             display,
             hasPreviousFilter: false);
         AssertEqual("regex display keeps escape literal", displayOutput, @"x\n");
+    }
+
+    private static void RunClipboardHeaders()
+    {
+        string[] headers = ["#", "Text", "Value"];
+        AssertEqual(
+            "clipboard all headers",
+            ViewportPaneWindow.FormatClipboardHeader(headers),
+            "#\tText\tValue");
+        AssertEqual(
+            "clipboard selected headers",
+            ViewportPaneWindow.FormatClipboardHeader(headers, [1, 2]),
+            "Text\tValue");
+        AssertEqual(
+            "clipboard ignores invalid header columns",
+            ViewportPaneWindow.FormatClipboardHeader(headers, [-1, 2, 9]),
+            "Value");
+        AssertEqual(
+            "clipboard preserves empty header position",
+            ViewportPaneWindow.FormatClipboardHeader(["", "Text"]),
+            "\tText");
+        AssertEqual(
+            "clipboard normalizes header tabs",
+            ViewportPaneWindow.FormatClipboardHeader(["Header\tName"]),
+            "Header Name");
     }
 
     private static void RunWindowStateStore(string tempRoot)

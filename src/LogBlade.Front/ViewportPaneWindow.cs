@@ -3522,7 +3522,7 @@ internal sealed class ViewportPaneWindow : IDisposable
 
         if (key == NativeMethods.VK_C && control)
         {
-            CopySelectionToClipboard();
+            CopySelectionToClipboard(includeHeaders: shift);
             return;
         }
 
@@ -4641,16 +4641,16 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
     }
 
-    private void CopySelectionToClipboard()
+    private void CopySelectionToClipboard(bool includeHeaders)
     {
-        if (TryCopyTextSelectionToClipboard())
+        if (TryCopyTextSelectionToClipboard(includeHeaders))
         {
             return;
         }
 
         if (IsSearchCellSelectionMode)
         {
-            CopyCellSelectionToClipboard();
+            CopyCellSelectionToClipboard(includeHeaders);
             return;
         }
 
@@ -4678,6 +4678,14 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         StringBuilder clipboard = new();
+        if (includeHeaders &&
+            _reader is IColumnViewportReader columnReader &&
+            columnReader.ColumnHeaders.Count > 0)
+        {
+            clipboard.Append(FormatClipboardHeader(columnReader.ColumnHeaders));
+            clipboard.Append("\r\n");
+        }
+
         for (int i = 0; i < selected.Count; i++)
         {
             if (i > 0)
@@ -4691,7 +4699,7 @@ internal sealed class ViewportPaneWindow : IDisposable
         SetClipboardText(clipboard.ToString());
     }
 
-    private bool TryCopyTextSelectionToClipboard()
+    private bool TryCopyTextSelectionToClipboard(bool includeHeaders)
     {
         if (!HasTextSelectionRange)
         {
@@ -4703,7 +4711,9 @@ internal sealed class ViewportPaneWindow : IDisposable
             int globalStart = Math.Clamp(Math.Min(_textSelectionAnchorChar, _textSelectionFocusChar), 0, context.Text.Length);
             int globalEnd = Math.Clamp(Math.Max(_textSelectionAnchorChar, _textSelectionFocusChar), 0, context.Text.Length);
             return globalEnd > globalStart &&
-                SetClipboardText(NormalizeClipboardCell(context.Text.Substring(globalStart, globalEnd - globalStart)));
+                SetClipboardText(AddTextSelectionHeader(
+                    NormalizeClipboardCell(context.Text.Substring(globalStart, globalEnd - globalStart)),
+                    includeHeaders));
         }
 
         if (_textSelectionRowKey is null ||
@@ -4741,10 +4751,12 @@ internal sealed class ViewportPaneWindow : IDisposable
             return false;
         }
 
-        return SetClipboardText(NormalizeClipboardCell(text.Substring(start, end - start)));
+        return SetClipboardText(AddTextSelectionHeader(
+            NormalizeClipboardCell(text.Substring(start, end - start)),
+            includeHeaders));
     }
 
-    private void CopyCellSelectionToClipboard()
+    private void CopyCellSelectionToClipboard(bool includeHeaders)
     {
         if (_reader is not IColumnViewportReader columnReader ||
             _reader is not ISelectableViewportReader selectableReader ||
@@ -4816,6 +4828,21 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         StringBuilder clipboard = new();
+        if (includeHeaders)
+        {
+            List<int> headerColumns = new(selectedColumns.Count);
+            for (int i = 0; i < selectedColumns.Count; i++)
+            {
+                if (includedColumns[i])
+                {
+                    headerColumns.Add(selectedColumns[i]);
+                }
+            }
+
+            clipboard.Append(FormatClipboardHeader(columnReader.ColumnHeaders, headerColumns));
+            clipboard.Append("\r\n");
+        }
+
         for (int row = 0; row < includedRows.Count; row++)
         {
             if (row > 0)
@@ -4844,6 +4871,63 @@ internal sealed class ViewportPaneWindow : IDisposable
         }
 
         SetClipboardText(clipboard.ToString());
+    }
+
+    private string AddTextSelectionHeader(string text, bool includeHeaders)
+    {
+        if (!includeHeaders ||
+            _reader is not IColumnViewportReader columnReader ||
+            _textSelectionColumnIndex < 0 ||
+            _textSelectionColumnIndex >= columnReader.ColumnHeaders.Count)
+        {
+            return text;
+        }
+
+        return NormalizeClipboardCell(columnReader.ColumnHeaders[_textSelectionColumnIndex]) +
+            "\r\n" +
+            text;
+    }
+
+    internal static string FormatClipboardHeader(
+        IReadOnlyList<string> headers,
+        IReadOnlyList<int>? columnIndices = null)
+    {
+        StringBuilder result = new();
+        if (columnIndices is null)
+        {
+            for (int i = 0; i < headers.Count; i++)
+            {
+                AppendClipboardHeaderCell(result, headers[i], appendSeparator: i > 0);
+            }
+
+            return result.ToString();
+        }
+
+        bool hasHeader = false;
+        for (int i = 0; i < columnIndices.Count; i++)
+        {
+            int column = columnIndices[i];
+            if (column >= 0 && column < headers.Count)
+            {
+                AppendClipboardHeaderCell(result, headers[column], appendSeparator: hasHeader);
+                hasHeader = true;
+            }
+        }
+
+        return result.ToString();
+    }
+
+    private static void AppendClipboardHeaderCell(
+        StringBuilder target,
+        string value,
+        bool appendSeparator)
+    {
+        if (appendSeparator)
+        {
+            target.Append('\t');
+        }
+
+        target.Append(NormalizeClipboardCell(value));
     }
 
     private bool IsGridCellSelectedForClipboard(ViewportRowSelectionKey rowKey, int columnIndex)

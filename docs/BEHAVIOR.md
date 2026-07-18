@@ -73,6 +73,7 @@ Alterar um nivel inferior, continuar uma busca, processar append ou retomar um c
 - Segmentos visuais de 4096 caracteres sao reunidos sem inserir quebras de linha.
 - Ao copiar varias linhas ou resultados, cada item selecionado continua separado por uma quebra de linha do clipboard.
 - Tabs continuam sendo convertidos em um espaco na copia.
+- `Ctrl+Shift+C` inclui os headers correspondentes as colunas copiadas dos resultados de search; no viewer principal, que nao possui headers, equivale a `Ctrl+C`.
 
 ## Exportacao com Ctrl+S
 
