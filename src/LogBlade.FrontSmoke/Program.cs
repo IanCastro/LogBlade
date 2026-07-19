@@ -137,7 +137,7 @@ internal static class Program
                 {
                     Mode = DisplayParserMode.Regex,
                     Rule = "(?<value>.*)",
-                    Template = "{value}",
+                    Template = "${value}",
                     UseRegex = true,
                     IgnoreCase = true,
                     InvertMatch = true
@@ -145,7 +145,7 @@ internal static class Program
                 new()
                 {
                     Mode = DisplayParserMode.Json,
-                    Rule = "{Value}",
+                    Rule = "${Value}",
                     Template = "ignored-json-template",
                     IgnoreCase = true
                 },
@@ -273,7 +273,7 @@ internal static class Program
             tempRoot,
             "output-export-source.log",
             "{\"Value\":\"first\"}\r\n{\"Value\":\"second\"}\r\n");
-        DisplayParserRule parser = JsonParser("{Value}\nparsed");
+        DisplayParserRule parser = JsonParser("${Value}\nparsed");
         string parsedOutputPath = Path.Combine(tempRoot, "output-export-parsed.log");
         File.WriteAllText(parsedOutputPath, "old content", Encoding.UTF8);
         using (var source = new LogRecordSource(parsedSourcePath, Encoding.UTF8, 0, parser))
@@ -366,12 +366,12 @@ internal static class Program
                 {
                     Mode = DisplayParserMode.Regex,
                     Rule = @": (?<json>.*)",
-                    Template = "{json}"
+                    Template = "${json}"
                 },
                 new()
                 {
                     Mode = DisplayParserMode.Json,
-                    Rule = "{upper:Level} - {Message}"
+                    Rule = "${upper:Level} - ${Message}"
                 }
             }
         };
@@ -431,7 +431,7 @@ internal static class Program
         string first = new('a', ProjectedViewport.VisibleSegmentChars + 3);
         string parsed = first + "\r\n\nend";
         string path = WriteLog(tempRoot, "main-projection.log", "{\"First\":\"" + first + "\",\"Last\":\"end\"}\r\n");
-        DisplayParserRule parser = JsonParser("{First}\r\n\n{Last}");
+        DisplayParserRule parser = JsonParser("${First}\r\n\n${Last}");
 
         using var viewport = new ProjectedViewport(new LogRecordSource(path, Encoding.UTF8, 0, parser), wrapLongLines: true);
         viewport.ReadFromPercentage(0d, 10);
@@ -609,7 +609,7 @@ internal static class Program
             tempRoot,
             "search-projection.log",
             "{\"First\":\"" + longValue + "\",\"Second\":\"match\"}\r\n");
-        DisplayParserRule parser = JsonParser("{First}\n{Second}");
+        DisplayParserRule parser = JsonParser("${First}\n${Second}");
 
         using FilteredLogRecordSource source = LogSearchBuilder.BuildFilteredReader(
             path,
@@ -821,7 +821,7 @@ internal static class Program
     {
         string generated = new('p', ProjectedViewport.VisibleSegmentChars * 100);
         string path = WriteLog(tempRoot, "parsed-scrollbar.log", "{\"Value\":\"x\"}\r\nnext\r\n");
-        DisplayParserRule parser = JsonParser(generated + "{Value}");
+        DisplayParserRule parser = JsonParser(generated + "${Value}");
         using var viewport = new ProjectedViewport(new LogRecordSource(path, Encoding.UTF8, 0, parser), wrapLongLines: true);
         viewport.ReadFromPercentage(0d, 10);
         viewport.ReadNext(50);
@@ -850,12 +850,12 @@ internal static class Program
                 {
                     Mode = DisplayParserMode.Regex,
                     Rule = @": (?<json>.*)",
-                    Template = "{json}"
+                    Template = "${json}"
                 },
                 new()
                 {
                     Mode = DisplayParserMode.Json,
-                    Rule = "{Value}"
+                    Rule = "${Value}"
                 }
             }
         };
@@ -1240,7 +1240,7 @@ internal static class Program
         {
             Mode = DisplayParserMode.Regex,
             Rule = "(.*)",
-            Template = @"{0}\n"
+            Template = @"$0\n"
         };
         string displayOutput = ParserStageEditorWindow.EvaluateStagePreview(
             "x",
@@ -1252,7 +1252,7 @@ internal static class Program
         DisplayParserStage json = new()
         {
             Mode = DisplayParserMode.Json,
-            Rule = @"{Value}\nnext"
+            Rule = @"${Value}\nnext"
         };
         string jsonOutput = ParserStageEditorWindow.EvaluateStagePreview(
             "{\"Value\":\"value\"}",

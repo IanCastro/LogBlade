@@ -18,7 +18,10 @@ internal static class Program
             RunDisplayParserJsonPreservesTemplateWhitespace();
             RunDisplayParserJsonAllowsWhitespaceOnlyTemplate();
             RunDisplayParserJsonOutputEscapes();
+            RunDisplayParserJsonDollarLiteral();
+            RunDisplayParserBraceTextIsLiteral();
             RunDisplayParserJsonInvalidOutputEscapeValidation();
+            RunDisplayParserInvalidOutputTemplateValidation();
             RunDisplayParserJsonWithTrailingText();
             RunDisplayParserJsonSkipsInvalidPrefixCandidate();
             RunDisplayParserGeneratesJsonTemplateFromSample();
@@ -50,6 +53,7 @@ internal static class Program
             RunDisplayParserRegexReplacePreservesSpaces();
             RunDisplayParserRegexReplaceAllowsSpacePattern();
             RunDisplayParserRegexReplaceGroups();
+            RunDisplayParserRegexReplaceNamedTransform();
             RunDisplayParserRegexReplaceReplacementUnicodeEscape();
             RunDisplayParserRegexReplaceReplacementEscapes();
             RunDisplayParserRegexReplaceEscapedBackslashPreservesText();
@@ -198,7 +202,7 @@ internal static class Program
 
     private static void RunDisplayParserJsonTemplate()
     {
-        DisplayParserRule rule = ParserRule(JsonStage("{Timestamp} [{Logger}] {upper:Level} {Logger} - {Message}"));
+        DisplayParserRule rule = ParserRule(JsonStage("${Timestamp} [${Logger}] ${upper:Level} ${Logger} - ${Message}"));
 
         string input = "{ \"Timestamp\": \"2025-09-12 14:50:48.637060\", \"Level\": \"Info\", \"Logger\": \"EventScheduler\", \"Message\": \"Strategy task JT67_48_250912145048_00064 is running\" }";
         string parsed = DisplayParserEvaluator.EvaluateOrOriginal(rule, input);
@@ -211,7 +215,7 @@ internal static class Program
 
     private static void RunDisplayParserJsonPreservesTemplateWhitespace()
     {
-        DisplayParserRule rule = ParserRule(JsonStage(" \t{Level}\r\n "));
+        DisplayParserRule rule = ParserRule(JsonStage(" \t${Level}\r\n "));
 
         AssertEqual(
             "display parser json preserves template whitespace",
@@ -232,7 +236,7 @@ internal static class Program
 
     private static void RunDisplayParserJsonOutputEscapes()
     {
-        DisplayParserRule rule = ParserRule(JsonStage(@"{Value}\n\t\\\u0041\r"));
+        DisplayParserRule rule = ParserRule(JsonStage(@"${Value}\n\t\\\u0041\r"));
 
         AssertEqual(
             "display parser json output escapes",
@@ -240,11 +244,31 @@ internal static class Program
             "value\n\t\\A\r");
     }
 
+    private static void RunDisplayParserJsonDollarLiteral()
+    {
+        DisplayParserRule rule = ParserRule(JsonStage("$$${Value}"));
+
+        AssertEqual(
+            "display parser json dollar literal",
+            DisplayParserEvaluator.EvaluateOrOriginal(rule, "{\"Value\":\"42\"}"),
+            "$42");
+    }
+
+    private static void RunDisplayParserBraceTextIsLiteral()
+    {
+        DisplayParserRule rule = ParserRule(JsonStage("{Value}"));
+
+        AssertEqual(
+            "display parser legacy placeholder is literal",
+            DisplayParserEvaluator.EvaluateOrOriginal(rule, "{\"Value\":\"42\"}"),
+            "{Value}");
+    }
+
     private static void RunDisplayParserJsonInvalidOutputEscapeValidation()
     {
         try
         {
-            DisplayParserEvaluator.ValidateStage(JsonStage(@"{Value}\u00ZZ"));
+            DisplayParserEvaluator.ValidateStage(JsonStage(@"${Value}\u00ZZ"));
         }
         catch (ArgumentException ex) when (ex.Message.Contains("Unicode escape", StringComparison.Ordinal))
         {
@@ -254,9 +278,19 @@ internal static class Program
         throw new InvalidOperationException("display parser json invalid output escape: expected validation failure.");
     }
 
+    private static void RunDisplayParserInvalidOutputTemplateValidation()
+    {
+        AssertThrows<ArgumentException>(
+            "display parser unterminated output template",
+            () => DisplayParserEvaluator.ValidateStage(JsonStage("${Value")));
+        AssertThrows<ArgumentException>(
+            "display parser empty output placeholder",
+            () => DisplayParserEvaluator.ValidateStage(RegexStage(".*", "${}")));
+    }
+
     private static void RunDisplayParserJsonWithTrailingText()
     {
-        DisplayParserRule rule = ParserRule(JsonStage("{upper:Level} {Logger} - {Message}"));
+        DisplayParserRule rule = ParserRule(JsonStage("${upper:Level} ${Logger} - ${Message}"));
 
         string input = "{ \"Level\": \"Info\", \"Logger\": \"EventScheduler\", \"Message\": \"running\" } 2025-09-12 [EventScheduler]";
         AssertEqual("display parser json trailing text", DisplayParserEvaluator.EvaluateOrOriginal(rule, input), "INFO EventScheduler - running");
@@ -264,7 +298,7 @@ internal static class Program
 
     private static void RunDisplayParserJsonSkipsInvalidPrefixCandidate()
     {
-        DisplayParserRule rule = ParserRule(JsonStage("{Level}"));
+        DisplayParserRule rule = ParserRule(JsonStage("${Level}"));
         string input = "2026-06-24 [Logger] {\"Level\":\"Info\"}";
 
         AssertEqual(
@@ -280,7 +314,7 @@ internal static class Program
         AssertEqual(
             "display parser generated json template",
             DisplayParserEvaluator.GenerateJsonTemplateFromSample(sample),
-            "Timestamp - {Timestamp}, Level - {Level}");
+            "Timestamp - ${Timestamp}, Level - ${Level}");
     }
 
     private static void RunDisplayParserGeneratesJsonTemplateFromMultipleSamples()
@@ -293,7 +327,7 @@ internal static class Program
         AssertEqual(
             "display parser generated distinct json template",
             DisplayParserEvaluator.GenerateJsonTemplateFromSample(sample),
-            "Key - {Key}, Level - {Level}, Message - {Message}");
+            "Key - ${Key}, Level - ${Level}, Message - ${Message}");
     }
 
     private static void RunDisplayParserGeneratesNestedJsonTemplate()
@@ -306,8 +340,8 @@ internal static class Program
         AssertEqual(
             "display parser generated nested json template",
             generatedTemplate,
-            "State.Message - {State.Message}, State.Code - {State.Code}, " +
-            "items.0.name - {items.0.name}, items.1.name - {items.1.name}");
+            "State.Message - ${State.Message}, State.Code - ${State.Code}, " +
+            "items.0.name - ${items.0.name}, items.1.name - ${items.1.name}");
         AssertEqual(
             "display parser evaluates generated nested json template",
             DisplayParserEvaluator.EvaluateOrOriginal(ParserRule(JsonStage(generatedTemplate)), sample),
@@ -323,7 +357,7 @@ internal static class Program
         AssertEqual(
             "display parser generated template from split json",
             DisplayParserEvaluator.GenerateJsonTemplateFromSample(sample),
-            "Timestamp - {Timestamp}, Level - {Level}, Message - {Message}");
+            "Timestamp - ${Timestamp}, Level - ${Level}, Message - ${Message}");
     }
 
     private static void RunDisplayParserIgnoresInvalidJsonTemplatePaths()
@@ -335,7 +369,7 @@ internal static class Program
         AssertEqual(
             "display parser ignores invalid json template paths",
             DisplayParserEvaluator.GenerateJsonTemplateFromSample(sample),
-            "Valid - {Valid}, State.Message - {State.Message}");
+            "Valid - ${Valid}, State.Message - ${State.Message}");
     }
 
     private static void RunDisplayParserGeneratesEmptyTemplateWithoutJson()
@@ -350,7 +384,7 @@ internal static class Program
     {
         DisplayParserRule rule = ParserRule(RegexStage(
             @"(?<Timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+).*?\[(?<Logger>[^\]]+)\].*?(?<Level>Info).*? - (?<Message>.*)",
-            "{Timestamp} [{Logger}] {upper:Level} {Logger} - {Message}"));
+            "${Timestamp} [${Logger}] ${upper:Level} ${Logger} - ${Message}"));
 
         string input = "2025-09-12 14:50:48.637060 [EventScheduler] Info EventScheduler - Strategy task JT67_48_250912145048_00064 is running";
         AssertEqual(
@@ -376,7 +410,7 @@ internal static class Program
 
     private static void RunDisplayParserRegexPreservesDisplaySpaces()
     {
-        DisplayParserRule rule = ParserRule(RegexStage(@"(?<value>abc)", " \t{value}\r\n "));
+        DisplayParserRule rule = ParserRule(RegexStage(@"(?<value>abc)", " \t${value}\r\n "));
 
         AssertEqual(
             "display parser regex preserves display spaces",
@@ -398,7 +432,7 @@ internal static class Program
     {
         DisplayParserRule rule = ParserRule(RegexStage(
             @"(?<value>abc)",
-            @"{value}\n\t\\\u0041\r\q"));
+            @"${value}\n\t\\\u0041\r\q"));
 
         AssertEqual(
             "display parser regex output escapes",
@@ -408,7 +442,7 @@ internal static class Program
 
     private static void RunDisplayParserRegexPatternEscapesRemainRegex()
     {
-        DisplayParserRule rule = ParserRule(RegexStage(@"\b(?<value>\d+)\b", "{value}"));
+        DisplayParserRule rule = ParserRule(RegexStage(@"\b(?<value>\d+)\b", "${value}"));
 
         AssertEqual(
             "display parser regex pattern escapes remain regex",
@@ -420,7 +454,7 @@ internal static class Program
     {
         try
         {
-            DisplayParserEvaluator.ValidateStage(RegexStage("abc", @"{0}\u123"));
+            DisplayParserEvaluator.ValidateStage(RegexStage("abc", @"$0\u123"));
         }
         catch (ArgumentException ex) when (ex.Message.Contains("Unicode escape", StringComparison.Ordinal))
         {
@@ -434,7 +468,7 @@ internal static class Program
     {
         try
         {
-            DisplayParserEvaluator.ValidateStage(RegexStage(@"(?<word>[a-z]+)\s+\k<word>", "{word}"));
+            DisplayParserEvaluator.ValidateStage(RegexStage(@"(?<word>[a-z]+)\s+\k<word>", "${word}"));
         }
         catch (ArgumentException ex) when (ex.Message.Contains("non-backtracking", StringComparison.OrdinalIgnoreCase))
         {
@@ -460,7 +494,7 @@ internal static class Program
 
     private static void RunDisplayParserFallbackOriginal()
     {
-        DisplayParserRule rule = ParserRule(JsonStage("{Level} {Message}"));
+        DisplayParserRule rule = ParserRule(JsonStage("${Level} ${Message}"));
 
         AssertEqual("display parser fallback original", DisplayParserEvaluator.EvaluateOrOriginal(rule, "not json"), "not json");
     }
@@ -468,8 +502,8 @@ internal static class Program
     private static void RunDisplayParserRegexThenJsonTemplate()
     {
         DisplayParserRule rule = ParserRule(
-            RegexStage(@": (?<json>.*)", "{json}"),
-            JsonStage("{Key}"));
+            RegexStage(@": (?<json>.*)", "${json}"),
+            JsonStage("${Key}"));
 
         AssertEqual("display parser regex then json", DisplayParserEvaluator.EvaluateOrOriginal(rule, "Out[0]: {\"Key\":\"Value\"}"), "Value");
     }
@@ -477,8 +511,8 @@ internal static class Program
     private static void RunDisplayParserRegexThenJsonAcrossLines()
     {
         DisplayParserRule rule = ParserRule(
-            RegexStage(@": (?<json>.*)", "{json}"),
-            JsonStage("{Timestamp} [{Logger}] {upper:Level} {Logger} - {Message}"));
+            RegexStage(@": (?<json>.*)", "${json}"),
+            JsonStage("${Timestamp} [${Logger}] ${upper:Level} ${Logger} - ${Message}"));
         string input =
             "a[0]: { \"Timestamp\": \"2025-09-12 14:50:48.637060\", \"Level\": \"Inf\r\n" +
             "a[1]: o\", \"Logger\": \"EventScheduler\", \"Mes\r" +
@@ -494,8 +528,8 @@ internal static class Program
     private static void RunDisplayParserIncompleteJsonPreservesOriginalLines()
     {
         DisplayParserRule rule = ParserRule(
-            RegexStage(@": (?<json>.*)", "{json}"),
-            JsonStage("{Key}"));
+            RegexStage(@": (?<json>.*)", "${json}"),
+            JsonStage("${Key}"));
         string input =
             "a[0]: {\"Key\":\"val\r\n" +
             "a[1]: ue";
@@ -509,8 +543,8 @@ internal static class Program
     private static void RunDisplayParserContinuationMismatchPreservesOriginalLines()
     {
         DisplayParserRule rule = ParserRule(
-            RegexStage(@": (?<json>.*)", "{json}"),
-            JsonStage("{Key}"));
+            RegexStage(@": (?<json>.*)", "${json}"),
+            JsonStage("${Key}"));
         string input =
             "a[0]: {\"Key\":\"val\r\n" +
             "not a continuation\r\n" +
@@ -527,8 +561,8 @@ internal static class Program
     private static void RunDisplayParserRecordLineLimitPreservesOriginalLines()
     {
         DisplayParserRule rule = ParserRule(
-            RegexStage(@": (?<json>.*)", "{json}"),
-            JsonStage("{Key}"));
+            RegexStage(@": (?<json>.*)", "${json}"),
+            JsonStage("${Key}"));
         StringBuilder input = new();
         input.Append("a[0]: {");
         for (int i = 1; i <= 4096; i++)
@@ -549,8 +583,8 @@ internal static class Program
     private static void RunDisplayParserSecondStageFailureReturnsFirstOutput()
     {
         DisplayParserRule rule = ParserRule(
-            RegexStage(@"payload=(?<json>.*)", "{json}"),
-            JsonStage("{Key}"));
+            RegexStage(@"payload=(?<json>.*)", "${json}"),
+            JsonStage("${Key}"));
 
         AssertEqual("display parser second stage failure", DisplayParserEvaluator.EvaluateOrOriginal(rule, "payload=not-json"), "not-json");
     }
@@ -599,6 +633,17 @@ internal static class Program
         AssertEqual("display parser regex replace groups", DisplayParserEvaluator.EvaluateOrOriginal(rule, "user=ana id=42"), "user:ana id:42");
     }
 
+    private static void RunDisplayParserRegexReplaceNamedTransform()
+    {
+        DisplayParserRule rule = ParserRule(
+            RegexReplaceStage(@"(?<key>\w+)=(?<value>\w+)", "${upper:key}:${lower:value}"));
+
+        AssertEqual(
+            "display parser regex replace named transform",
+            DisplayParserEvaluator.EvaluateOrOriginal(rule, "User=ANA Id=VALUE"),
+            "USER:ana ID:value");
+    }
+
     private static void RunDisplayParserRegexReplaceReplacementUnicodeEscape()
     {
         DisplayParserRule rule = ParserRule(RegexReplaceStage(@"\|", @"\u0001"));
@@ -634,7 +679,7 @@ internal static class Program
     {
         DisplayParserRule rule = ParserRule(
             RegexReplaceStage(@"missing", "replacement"),
-            RegexStage(@"abc", "{0}"));
+            RegexStage(@"abc", "$0"));
 
         AssertEqual("display parser regex replace no match allows next stage", DisplayParserEvaluator.EvaluateOrOriginal(rule, "abc"), "abc");
     }
@@ -643,7 +688,7 @@ internal static class Program
     {
         DisplayParserRule rule = ParserRule(
             RegexReplaceStage(@"\u0001", "|"),
-            JsonStage("{Key}"));
+            JsonStage("${Key}"));
 
         AssertEqual("display parser regex replace then json", DisplayParserEvaluator.EvaluateOrOriginal(rule, "{\"Key\":\"A\u0001B\"}"), "A|B");
     }
@@ -696,7 +741,7 @@ internal static class Program
             tempRoot,
             "display-parser-search-literal.log",
             "{\"Level\":\"Info\",\"Message\":\"ready\"}\r\n{\"Level\":\"Error\",\"Message\":\"failed\"}\r\n");
-        DisplayParserRule parser = ParserRule(JsonStage("{upper:Level} - {Message}"));
+        DisplayParserRule parser = ParserRule(JsonStage("${upper:Level} - ${Message}"));
 
         using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
@@ -717,7 +762,7 @@ internal static class Program
             tempRoot,
             "display-parser-search-regex.log",
             "{\"Level\":\"Info\",\"Message\":\"ready\"}\r\n{\"Level\":\"Error\",\"Message\":\"failed\"}\r\n");
-        DisplayParserRule parser = ParserRule(JsonStage("{upper:Level} - {Message}"));
+        DisplayParserRule parser = ParserRule(JsonStage("${upper:Level} - ${Message}"));
 
         using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
@@ -735,7 +780,7 @@ internal static class Program
     private static void RunAppendSearchUsesDisplayParser(string tempRoot)
     {
         string path = WriteLog(tempRoot, "display-parser-append.log", "{\"Level\":\"Info\",\"Message\":\"ready\"}\r\n");
-        DisplayParserRule parser = ParserRule(JsonStage("{upper:Level} - {Message}"));
+        DisplayParserRule parser = ParserRule(JsonStage("${upper:Level} - ${Message}"));
 
         using FilteredLogRecordSource initial = LogSearchBuilder.BuildFilteredReader(
             path,
@@ -759,8 +804,8 @@ internal static class Program
             "display-parser-cascade-search-literal.log",
             "Out[0]: {\"Key\":\"Value\"}\r\nOut[1]: {\"Key\":\"Other\"}\r\n");
         DisplayParserRule parser = ParserRule(
-            RegexStage(@": (?<json>.*)", "{json}"),
-            JsonStage("KEY={Key}"));
+            RegexStage(@": (?<json>.*)", "${json}"),
+            JsonStage("KEY=${Key}"));
 
         using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
@@ -785,8 +830,8 @@ internal static class Program
             "a[2]: sage\": \"Strategy task JT67_48_250912145048_00064 is running\" }\r\n" +
             "plain\r\n");
         DisplayParserRule parser = ParserRule(
-            RegexStage(@": (?<json>.*)", "{json}"),
-            JsonStage("{Timestamp} [{Logger}] {upper:Level} {Logger} - {Message}"));
+            RegexStage(@": (?<json>.*)", "${json}"),
+            JsonStage("${Timestamp} [${Logger}] ${upper:Level} ${Logger} - ${Message}"));
 
         using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
@@ -821,8 +866,8 @@ internal static class Program
             "display-parser-cascade-search-regex.log",
             "Out[0]: {\"Level\":\"Info\",\"Message\":\"ready\"}\r\nOut[1]: {\"Level\":\"Error\",\"Message\":\"failed\"}\r\n");
         DisplayParserRule parser = ParserRule(
-            RegexStage(@": (?<json>.*)", "{json}"),
-            JsonStage("{upper:Level} - {Message}"));
+            RegexStage(@": (?<json>.*)", "${json}"),
+            JsonStage("${upper:Level} - ${Message}"));
 
         using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
@@ -841,8 +886,8 @@ internal static class Program
     {
         string path = WriteLog(tempRoot, "display-parser-cascade-append.log", "Out[0]: {\"Level\":\"Info\",\"Message\":\"ready\"}\r\n");
         DisplayParserRule parser = ParserRule(
-            RegexStage(@": (?<json>.*)", "{json}"),
-            JsonStage("{upper:Level} - {Message}"));
+            RegexStage(@": (?<json>.*)", "${json}"),
+            JsonStage("${upper:Level} - ${Message}"));
 
         using FilteredLogRecordSource initial = LogSearchBuilder.BuildFilteredReader(
             path,
@@ -867,8 +912,8 @@ internal static class Program
             "a[0]: {\"Level\":\"Inf\r\n" +
             "a[1]: o\",\"Message\":\"run\r\n");
         DisplayParserRule parser = ParserRule(
-            RegexStage(@": (?<json>.*)", "{json}"),
-            JsonStage("{upper:Level} - {Message}"));
+            RegexStage(@": (?<json>.*)", "${json}"),
+            JsonStage("${upper:Level} - ${Message}"));
 
         using FilteredLogRecordSource initial = LogSearchBuilder.BuildFilteredReader(
             path,
@@ -1355,7 +1400,7 @@ internal static class Program
             tempRoot,
             "display-parser-search-second-line.log",
             "{\"Level\":\"Info\",\"Message\":\"ready\"}\r\n{\"Level\":\"Error\",\"Message\":\"failed\"}\r\n");
-        DisplayParserRule parser = ParserRule(JsonStage("{upper:Level}\n{Message}"));
+        DisplayParserRule parser = ParserRule(JsonStage("${upper:Level}\n${Message}"));
 
         using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
@@ -1383,7 +1428,7 @@ internal static class Program
     private static void RunSearchCapturesOnlyMatchingParsedLine(string tempRoot)
     {
         string path = WriteLog(tempRoot, "display-parser-search-multiline-captures.log", "{\"Level\":\"Error\",\"Message\":\"failed\"}\r\n");
-        DisplayParserRule parser = ParserRule(JsonStage("{upper:Level}\n{Message}"));
+        DisplayParserRule parser = ParserRule(JsonStage("${upper:Level}\n${Message}"));
 
         using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
@@ -1413,7 +1458,7 @@ internal static class Program
             tempRoot,
             "display-parser-search-long-explicit-lines.log",
             "{\"First\":\"" + first + "\",\"Second\":\"tail\"}\r\n");
-        DisplayParserRule parser = ParserRule(JsonStage("{First}\n{Second}"));
+        DisplayParserRule parser = ParserRule(JsonStage("${First}\n${Second}"));
 
         using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
@@ -1433,7 +1478,7 @@ internal static class Program
             tempRoot,
             "display-parser-search-multiple-explicit-lines.log",
             "{\"First\":\"MATCH one\",\"Second\":\"skip\",\"Third\":\"MATCH two\"}\r\n");
-        DisplayParserRule parser = ParserRule(JsonStage("{First}\n{Second}\n{Third}"));
+        DisplayParserRule parser = ParserRule(JsonStage("${First}\n${Second}\n${Third}"));
 
         using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
@@ -1457,7 +1502,7 @@ internal static class Program
     private static void RunSearchInvertFiltersParsedLines(string tempRoot)
     {
         string path = WriteLog(tempRoot, "display-parser-search-invert-lines.log", "{\"Level\":\"ERROR\",\"Message\":\"failed\"}\r\n");
-        DisplayParserRule parser = ParserRule(JsonStage("{Level}\n{Message}"));
+        DisplayParserRule parser = ParserRule(JsonStage("${Level}\n${Message}"));
 
         using FilteredLogRecordSource reader = LogSearchBuilder.BuildFilteredReader(
             path,
@@ -1473,7 +1518,7 @@ internal static class Program
     private static void RunCascadedSearchDoesNotCrossParsedLines(string tempRoot)
     {
         string path = WriteLog(tempRoot, "display-parser-cascade-lines.log", "{\"Level\":\"ERROR\",\"Message\":\"failed\"}\r\n");
-        DisplayParserRule parser = ParserRule(JsonStage("{Level}\n{Message}"));
+        DisplayParserRule parser = ParserRule(JsonStage("${Level}\n${Message}"));
         SearchOptions[] options =
         {
             new("ERROR", UseRegex: false, IgnoreCase: false),
@@ -1495,7 +1540,7 @@ internal static class Program
     private static void RunChangedCascadedSearchUsesMatchedParsedLine(string tempRoot)
     {
         string path = WriteLog(tempRoot, "display-parser-changed-cascade-lines.log", "{\"Level\":\"ERROR\",\"Message\":\"failed\"}\r\n");
-        DisplayParserRule parser = ParserRule(JsonStage("{Level}\n{Message}"));
+        DisplayParserRule parser = ParserRule(JsonStage("${Level}\n${Message}"));
         SearchOptions[] initialOptions =
         {
             new("ERROR", UseRegex: false, IgnoreCase: false),
@@ -1532,7 +1577,7 @@ internal static class Program
     private static void RunAppendSearchKeepsMatchedParsedLine(string tempRoot)
     {
         string path = WriteLog(tempRoot, "display-parser-append-lines.log", "{\"Level\":\"INFO\",\"Message\":\"ready\"}\r\n");
-        DisplayParserRule parser = ParserRule(JsonStage("{Level}\n{Message}"));
+        DisplayParserRule parser = ParserRule(JsonStage("${Level}\n${Message}"));
         SearchOptions options = new("failed", UseRegex: false, IgnoreCase: false);
         using FilteredLogRecordSource initial = LogSearchBuilder.BuildFilteredReader(path, Encoding.UTF8, dataOffset: 0, options, parser);
         File.AppendAllText(path, "{\"Level\":\"ERROR\",\"Message\":\"failed\"}\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
@@ -1879,8 +1924,8 @@ internal static class Program
             new("running", UseRegex: false, IgnoreCase: false)
         };
         DisplayParserRule parser = ParserRule(
-            RegexStage(@": (?<json>.*)", "{json}"),
-            JsonStage("{upper:Level} - {Message}"));
+            RegexStage(@": (?<json>.*)", "${json}"),
+            JsonStage("${upper:Level} - ${Message}"));
 
         FilteredLogRecordSource[] initial = LogSearchBuilder.BuildStagedFilteredReaders(
             path,
@@ -2597,7 +2642,7 @@ internal static class Program
             path,
             Encoding.UTF8,
             dataOffset: 0,
-            ParserRule(JsonStage("{Value}")));
+            ParserRule(JsonStage("${Value}")));
         reader.ReadFromPercentage(0d, 4);
         LogViewportRecord[] initial = CopyRecords(reader.CurrentRecords);
 
@@ -3311,7 +3356,7 @@ internal static class Program
     private static void RunDisplayParserFilterEvaluatesExplicitLines()
     {
         DisplayParserRule parser = ParserRule(
-            RegexStage("(.*)", "{0}\nextra"),
+            RegexStage("(.*)", "$0\nextra"),
             FilterStage("extra"),
             RegexReplaceStage("extra", "selected"));
 
@@ -3499,7 +3544,7 @@ internal static class Program
         string path = WriteFile(tempRoot, "parser-filter-captures.log", "keep raw\r\n");
         DisplayParserRule parser = ParserRule(
             FilterStage(@"keep (?<kind>raw)", useRegex: true),
-            RegexStage("(.*)", "{0}\n{0}-copy"));
+            RegexStage("(.*)", "$0\n$0-copy"));
 
         FilteredLogRecordSource[] readers = LogSearchBuilder.BuildStagedFilteredReaders(
             path,
@@ -3567,8 +3612,8 @@ internal static class Program
             "parser-filter-json-before.log",
             "a[0]: {\"Level\":\"Err\r\na[1]: or\",\"Message\":\"failed\"}\r\n");
         DisplayParserRule parser = ParserRule(
-            RegexStage(": (?<json>.*)", "{json}"),
-            JsonStage("{Level} {Message}"),
+            RegexStage(": (?<json>.*)", "${json}"),
+            JsonStage("${Level} ${Message}"),
             FilterStage("Error"));
 
         FilteredLogRecordSource[] readers = LogSearchBuilder.BuildStagedFilteredReaders(
@@ -3596,7 +3641,7 @@ internal static class Program
             "{\"Level\":\"Err\r\nor\"}\r\n");
         DisplayParserRule parser = ParserRule(
             FilterStage(".*", useRegex: true),
-            JsonStage("{Level}"));
+            JsonStage("${Level}"));
 
         FilteredLogRecordSource[] readers = LogSearchBuilder.BuildStagedFilteredReaders(
             path,
@@ -3621,7 +3666,7 @@ internal static class Program
 
     private static void RunParserFilterPreviewDoesNotCombineExplicitLines()
     {
-        DisplayParserRule jsonStage = ParserRule(JsonStage("{Level}"));
+        DisplayParserRule jsonStage = ParserRule(JsonStage("${Level}"));
         string preview = DisplayParserEvaluator.EvaluateExplicitLinesIndependently(
             jsonStage,
             "{\"Level\":\"Err\r\nor\"}");
@@ -3924,7 +3969,7 @@ internal static class Program
                 new()
                 {
                     Mode = DisplayParserMode.Json,
-                    Rule = "{upper:Level} {Message}"
+                    Rule = "${upper:Level} ${Message}"
                 }
             }
         };

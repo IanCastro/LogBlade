@@ -232,7 +232,7 @@ public static class DisplayParserEvaluator
 
             string path = paths[i];
             template.Append(path);
-            template.Append(" - {");
+            template.Append(" - ${");
             template.Append(path);
             template.Append('}');
         }
@@ -303,7 +303,11 @@ public static class DisplayParserEvaluator
                 throw new ArgumentException("Regex error: " + ex.Message, nameof(stage), ex);
             }
 
-            _ = DecodeOutputEscapes(stage.Template);
+            string decodedOutput = DecodeOutputEscapes(stage.Template);
+            _ = DisplayParserOutputTemplate.Compile(
+                stage.Mode == DisplayParserMode.Regex && decodedOutput.Length == 0
+                    ? "$0"
+                    : decodedOutput);
 
             return;
         }
@@ -313,7 +317,7 @@ public static class DisplayParserEvaluator
             throw new ArgumentException("Rule is required.", nameof(stage));
         }
 
-        _ = DecodeOutputEscapes(stage.Rule);
+        _ = DisplayParserOutputTemplate.Compile(DecodeOutputEscapes(stage.Rule));
     }
 
     public static string EvaluateOrOriginal(DisplayParserRule? rule, string input)
@@ -452,86 +456,11 @@ public static class DisplayParserEvaluator
         return output.ToString();
     }
 
-    internal static string EvaluateJson(string template, string input)
+    internal static string EvaluateJson(DisplayParserOutputTemplate template, string input)
     {
         string json = ExtractFirstJsonValue(input);
         using JsonDocument document = JsonDocument.Parse(json);
-        return RenderTemplate(template, selector => ResolveJsonPlaceholder(document.RootElement, selector));
-    }
-
-    internal static string RenderTemplate(string template, Func<string, string?> resolveValue)
-    {
-        StringBuilder output = new();
-        for (int i = 0; i < template.Length; i++)
-        {
-            char current = template[i];
-            if (current == '{')
-            {
-                if (i + 1 < template.Length && template[i + 1] == '{')
-                {
-                    output.Append('{');
-                    i++;
-                    continue;
-                }
-
-                int end = FindPlaceholderEnd(template, i + 1);
-                if (end < 0)
-                {
-                    output.Append(current);
-                    continue;
-                }
-
-                string expression = template.Substring(i + 1, end - i - 1).Trim();
-                output.Append(EvaluateTemplatePlaceholder(expression, resolveValue));
-                i = end;
-                continue;
-            }
-
-            if (current == '}' && i + 1 < template.Length && template[i + 1] == '}')
-            {
-                output.Append('}');
-                i++;
-                continue;
-            }
-
-            output.Append(current);
-        }
-
-        return output.ToString();
-    }
-
-    private static string EvaluateTemplatePlaceholder(string expression, Func<string, string?> resolveValue)
-    {
-        if (expression.Length == 0)
-        {
-            return string.Empty;
-        }
-
-        string transform = string.Empty;
-        string selector = expression;
-        int separator = expression.IndexOf(':');
-        if (separator > 0)
-        {
-            string candidate = expression.Substring(0, separator).Trim();
-            if (IsSupportedTransform(candidate))
-            {
-                transform = candidate.ToLowerInvariant();
-                selector = expression.Substring(separator + 1).Trim();
-            }
-        }
-
-        string? formatted = resolveValue(selector);
-        if (formatted is null)
-        {
-            return string.Empty;
-        }
-
-        return transform switch
-        {
-            "upper" => formatted.ToUpperInvariant(),
-            "lower" => formatted.ToLowerInvariant(),
-            _ => formatted
-        };
+        return template.Render(selector => ResolveJsonPlaceholder(document.RootElement, selector));
     }
 
     private static string? ResolveJsonPlaceholder(JsonElement root, string selector)
@@ -762,25 +691,6 @@ public static class DisplayParserEvaluator
         }
 
         return -1;
-    }
-
-    private static int FindPlaceholderEnd(string template, int start)
-    {
-        for (int i = start; i < template.Length; i++)
-        {
-            if (template[i] == '}')
-            {
-                return i;
-            }
-        }
-
-        return -1;
-    }
-
-    private static bool IsSupportedTransform(string value)
-    {
-        return string.Equals(value, "upper", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(value, "lower", StringComparison.OrdinalIgnoreCase);
     }
 
     private static int GetHexValue(char value)

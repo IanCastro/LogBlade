@@ -138,7 +138,8 @@ internal sealed class DisplayParserRuntime
     {
         private readonly string _rule;
         private readonly Regex? _regex;
-        private readonly string _decodedOutput = string.Empty;
+        private readonly DisplayParserOutputTemplate? _outputTemplate;
+        private readonly MatchEvaluator? _replacementEvaluator;
         private readonly bool _isValid = true;
         private readonly HashSet<string>? _regexGroupNames;
         private readonly SearchOptions _filterOptions;
@@ -156,11 +157,21 @@ internal sealed class DisplayParserRuntime
                 {
                     _regex = LogRegex.Create(_rule);
                     _regexGroupNames = new HashSet<string>(_regex.GetGroupNames(), StringComparer.Ordinal);
-                    _decodedOutput = DisplayParserEvaluator.DecodeOutputEscapes(stage.Template ?? string.Empty);
+                    string decodedOutput = DisplayParserEvaluator.DecodeOutputEscapes(stage.Template ?? string.Empty);
+                    _outputTemplate = DisplayParserOutputTemplate.Compile(
+                        Mode == DisplayParserMode.Regex && decodedOutput.Length == 0
+                            ? "$0"
+                            : decodedOutput);
+                    if (Mode == DisplayParserMode.RegexReplace)
+                    {
+                        _replacementEvaluator = match =>
+                            _outputTemplate!.Render(selector => ResolveRegexPlaceholder(match, selector));
+                    }
                 }
                 else if (Mode == DisplayParserMode.Json)
                 {
-                    _decodedOutput = DisplayParserEvaluator.DecodeOutputEscapes(_rule);
+                    _outputTemplate = DisplayParserOutputTemplate.Compile(
+                        DisplayParserEvaluator.DecodeOutputEscapes(_rule));
                 }
                 else if (Mode == DisplayParserMode.Filter)
                 {
@@ -229,8 +240,8 @@ internal sealed class DisplayParserRuntime
                 parsed = Mode switch
                 {
                     DisplayParserMode.Regex => EvaluateRegex(input),
-                    DisplayParserMode.Json => DisplayParserEvaluator.EvaluateJson(_decodedOutput, input),
-                    DisplayParserMode.RegexReplace => _regex!.Replace(input, _decodedOutput),
+                    DisplayParserMode.Json => DisplayParserEvaluator.EvaluateJson(_outputTemplate!, input),
+                    DisplayParserMode.RegexReplace => _regex!.Replace(input, _replacementEvaluator!),
                     DisplayParserMode.Filter => input,
                     _ => input
                 };
@@ -284,10 +295,7 @@ internal sealed class DisplayParserRuntime
                 throw new InvalidOperationException("Regex did not match.");
             }
 
-            string displayTemplate = string.IsNullOrEmpty(_decodedOutput) ? "{0}" : _decodedOutput;
-            return DisplayParserEvaluator.RenderTemplate(
-                displayTemplate,
-                selector => ResolveRegexPlaceholder(match, selector));
+            return _outputTemplate!.Render(selector => ResolveRegexPlaceholder(match, selector));
         }
 
         private string? ResolveRegexPlaceholder(Match match, string selector)

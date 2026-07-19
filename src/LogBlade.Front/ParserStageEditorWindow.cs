@@ -740,7 +740,7 @@ internal sealed class ParserStageEditorWindow
     {
         if (mode == DisplayParserMode.Regex)
         {
-            return new ParserStageDraft("(.*)", "{0}", false, false, false);
+            return new ParserStageDraft("(.*)", "$0", false, false, false);
         }
 
         if (mode == DisplayParserMode.RegexReplace)
@@ -756,7 +756,7 @@ internal sealed class ParserStageEditorWindow
         string generatedTemplate = DisplayParserEvaluator.GenerateJsonTemplateFromSample(GetStageInput());
         return new ParserStageDraft(
             generatedTemplate.Length == 0
-                ? "key1 - {key1}, key2 - {key2}"
+                ? "key1 - ${key1}, key2 - ${key2}"
                 : generatedTemplate,
             string.Empty,
             false,
