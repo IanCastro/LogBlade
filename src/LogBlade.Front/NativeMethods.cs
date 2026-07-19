@@ -192,6 +192,9 @@ internal static class NativeMethods
     public const int VK_V = 0x56;
     public const int VK_CONTROL = 0x11;
     public const int VK_SHIFT = 0x10;
+    public const int VK_TAB = 0x09;
+    public const int VK_RETURN = 0x0D;
+    public const int VK_ESCAPE = 0x1B;
     public const int CF_UNICODETEXT = 13;
     public const int ICON_SMALL = 0;
     public const int ICON_BIG = 1;

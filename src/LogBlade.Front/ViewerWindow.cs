@@ -57,6 +57,7 @@ internal sealed class ViewerWindow
     private const int PasteButtonWidth = 64;
     private const int ParserComboWidth = 360;
     private const int HighlightingButtonWidth = 110;
+    private const int RegexReferenceButtonWidth = 36;
     private const int SearchInputRowHeight = 24;
     private const int SearchProgressRowHeight = 24;
     private const int SearchDebounceMs = 200;
@@ -87,9 +88,12 @@ internal sealed class ViewerWindow
     private IntPtr _pasteButton;
     private IntPtr _parserCombo;
     private IntPtr _highlightingButton;
+    private IntPtr _regexReferenceButton;
+    private IntPtr _regexReferenceTooltipText;
     private IntPtr _searchInputVisibilityFont;
     private IntPtr _tooltipWindow;
     private IntPtr _searchResizeGrip;
+    private RegexReferenceWindow? _regexReferenceWindow;
     private FileSystemWatcher? _fileWatcher;
     private GCHandle _selfHandle;
     private int _lineHeight = 16;
@@ -211,6 +215,7 @@ internal sealed class ViewerWindow
         NativeMethods.RECT PasteButtonRect,
         NativeMethods.RECT ParserComboRect,
         NativeMethods.RECT HighlightingButtonRect,
+        NativeMethods.RECT RegexReferenceButtonRect,
         NativeMethods.RECT ViewerRect,
         NativeMethods.RECT SearchAreaRect,
         SearchLevelLayout[] SearchLevelLayouts,
@@ -561,6 +566,7 @@ internal sealed class ViewerWindow
         IntPtr hInstance = NativeMethods.GetModuleHandleW(null);
         CreateParserControls(hInstance);
         CreateTooltipWindow(hInstance);
+        AddRegexReferenceTooltip();
         ReloadParserRules(selectRuleName: null);
         ReloadHighlightRules();
 
@@ -666,6 +672,26 @@ internal sealed class ViewerWindow
 
         NativeMethods.SendMessageW(_highlightingButton, NativeMethods.WM_SETFONT, _font, new IntPtr(1));
 
+        _regexReferenceButton = NativeMethods.CreateWindowExW(
+            0,
+            "BUTTON",
+            ".*",
+            NativeMethods.WS_CHILD | NativeMethods.WS_VISIBLE | NativeMethods.WS_TABSTOP | NativeMethods.BS_PUSHBUTTON,
+            0,
+            0,
+            1,
+            1,
+            _hwnd,
+            IntPtr.Zero,
+            hInstance,
+            IntPtr.Zero);
+        if (_regexReferenceButton == IntPtr.Zero)
+        {
+            throw new InvalidOperationException("CreateWindowExW failed for Regex reference button.");
+        }
+
+        NativeMethods.SendMessageW(_regexReferenceButton, NativeMethods.WM_SETFONT, _font, new IntPtr(1));
+
     }
 
     private void CreateTooltipWindow(IntPtr hInstance)
@@ -689,6 +715,38 @@ internal sealed class ViewerWindow
             IntPtr.Zero,
             hInstance,
             IntPtr.Zero);
+    }
+
+    private void AddRegexReferenceTooltip()
+    {
+        if (_tooltipWindow == IntPtr.Zero || _regexReferenceButton == IntPtr.Zero)
+        {
+            return;
+        }
+
+        _regexReferenceTooltipText = Marshal.StringToHGlobalUni("Regex reference");
+        NativeMethods.TOOLINFOW toolInfo = new()
+        {
+            cbSize = (uint)Marshal.SizeOf<NativeMethods.TOOLINFOW>(),
+            uFlags = NativeMethods.TTF_IDISHWND | NativeMethods.TTF_SUBCLASS,
+            hwnd = _hwnd,
+            uId = (nuint)_regexReferenceButton,
+            lpszText = _regexReferenceTooltipText
+        };
+        IntPtr toolInfoPointer = Marshal.AllocHGlobal(Marshal.SizeOf<NativeMethods.TOOLINFOW>());
+        try
+        {
+            Marshal.StructureToPtr(toolInfo, toolInfoPointer, fDeleteOld: false);
+            NativeMethods.SendMessageW(
+                _tooltipWindow,
+                NativeMethods.TTM_ADDTOOLW,
+                IntPtr.Zero,
+                toolInfoPointer);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(toolInfoPointer);
+        }
     }
 
     private void AddSearchInputTooltip(SearchLevelState level)
@@ -812,6 +870,28 @@ internal sealed class ViewerWindow
 
         _compiledHighlightRules = HighlightRuleCompiler.Compile(_highlightRules);
         ApplyHighlightRulesToPanes();
+    }
+
+    private void OpenRegexReference()
+    {
+        if (_regexReferenceWindow is not null)
+        {
+            _regexReferenceWindow.Activate();
+            return;
+        }
+
+        RegexReferenceWindow window = new(() => _regexReferenceWindow = null);
+        _regexReferenceWindow = window;
+        try
+        {
+            window.Show(_hwnd);
+        }
+        catch
+        {
+            _regexReferenceWindow = null;
+            window.Dispose();
+            throw;
+        }
     }
 
     private void ApplyHighlightRulePreview(IReadOnlyList<HighlightRule> rules)
@@ -3667,6 +3747,12 @@ internal sealed class ViewerWindow
             return;
         }
 
+        if (lParam == _regexReferenceButton && notification == NativeMethods.BN_CLICKED)
+        {
+            OpenRegexReference();
+            return;
+        }
+
         SearchLevelState? inputLevel = FindSearchLevelByInputVisibilityButton(lParam);
         int inputIndex = inputLevel is null ? -1 : _searchLevels.IndexOf(inputLevel);
         if (inputLevel is not null &&
@@ -5396,9 +5482,20 @@ internal sealed class ViewerWindow
 
         int parserComboLeft = controlCursor;
         int availableControlsWidth = Math.Max(0, controlsRight - parserComboLeft);
-        int highlightingWidth = Math.Min(HighlightingButtonWidth, availableControlsWidth);
-        int highlightingGap = highlightingWidth > 0 ? SearchToggleGap : 0;
-        int parserComboWidth = Math.Min(ParserComboWidth, Math.Max(0, availableControlsWidth - highlightingWidth - highlightingGap));
+        int regexReferenceWidth = Math.Min(RegexReferenceButtonWidth, availableControlsWidth);
+        int remainingBeforeRegexReference = Math.Max(0, availableControlsWidth - regexReferenceWidth);
+        int regexReferenceGap = regexReferenceWidth > 0 && remainingBeforeRegexReference > 0
+            ? Math.Min(SearchToggleGap, remainingBeforeRegexReference)
+            : 0;
+        remainingBeforeRegexReference -= regexReferenceGap;
+        int highlightingWidth = Math.Min(HighlightingButtonWidth, remainingBeforeRegexReference);
+        int remainingBeforeHighlighting = Math.Max(0, remainingBeforeRegexReference - highlightingWidth);
+        int highlightingGap = highlightingWidth > 0 && remainingBeforeHighlighting > 0
+            ? Math.Min(SearchToggleGap, remainingBeforeHighlighting)
+            : 0;
+        int parserComboWidth = Math.Min(
+            ParserComboWidth,
+            Math.Max(0, remainingBeforeHighlighting - highlightingGap));
         NativeMethods.RECT parserComboRect = new()
         {
             left = parserComboLeft,
@@ -5411,6 +5508,15 @@ internal sealed class ViewerWindow
             left = parserComboRect.right + highlightingGap,
             top = controlTop,
             right = Math.Min(controlsRight, parserComboRect.right + highlightingGap + highlightingWidth),
+            bottom = controlBottom
+        };
+        NativeMethods.RECT regexReferenceButtonRect = new()
+        {
+            left = highlightingButtonRect.right + regexReferenceGap,
+            top = controlTop,
+            right = Math.Min(
+                controlsRight,
+                highlightingButtonRect.right + regexReferenceGap + regexReferenceWidth),
             bottom = controlBottom
         };
         int viewerBottom = Math.Max(topBarBottom, clientRect.bottom - searchAreaHeight);
@@ -5550,6 +5656,7 @@ internal sealed class ViewerWindow
             pasteButtonRect,
             parserComboRect,
             highlightingButtonRect,
+            regexReferenceButtonRect,
             viewerRect,
             searchAreaRect,
             searchLevelLayouts,
@@ -5604,6 +5711,22 @@ internal sealed class ViewerWindow
                 GetRectHeight(_layout.HighlightingButtonRect),
                 false);
             NativeMethods.ShowWindow(_highlightingButton, GetRectWidth(_layout.HighlightingButtonRect) > 0 ? NativeMethods.SW_SHOW : NativeMethods.SW_HIDE);
+        }
+
+        if (_regexReferenceButton != IntPtr.Zero)
+        {
+            NativeMethods.MoveWindow(
+                _regexReferenceButton,
+                _layout.RegexReferenceButtonRect.left,
+                _layout.RegexReferenceButtonRect.top,
+                GetRectWidth(_layout.RegexReferenceButtonRect),
+                GetRectHeight(_layout.RegexReferenceButtonRect),
+                false);
+            NativeMethods.ShowWindow(
+                _regexReferenceButton,
+                GetRectWidth(_layout.RegexReferenceButtonRect) > 0
+                    ? NativeMethods.SW_SHOW
+                    : NativeMethods.SW_HIDE);
         }
 
         _mainPane?.SetBounds(
@@ -5714,6 +5837,10 @@ internal sealed class ViewerWindow
 
         _mainPane?.Dispose();
 
+        RegexReferenceWindow? regexReferenceWindow = _regexReferenceWindow;
+        _regexReferenceWindow = null;
+        regexReferenceWindow?.Dispose();
+
         if (_openButton != IntPtr.Zero)
         {
             NativeMethods.DestroyWindow(_openButton);
@@ -5738,6 +5865,12 @@ internal sealed class ViewerWindow
             _highlightingButton = IntPtr.Zero;
         }
 
+        if (_regexReferenceButton != IntPtr.Zero)
+        {
+            NativeMethods.DestroyWindow(_regexReferenceButton);
+            _regexReferenceButton = IntPtr.Zero;
+        }
+
         foreach (SearchLevelState level in _searchLevels)
         {
             DestroySearchLevel(level);
@@ -5749,6 +5882,12 @@ internal sealed class ViewerWindow
         {
             NativeMethods.DestroyWindow(_tooltipWindow);
             _tooltipWindow = IntPtr.Zero;
+        }
+
+        if (_regexReferenceTooltipText != IntPtr.Zero)
+        {
+            Marshal.FreeHGlobal(_regexReferenceTooltipText);
+            _regexReferenceTooltipText = IntPtr.Zero;
         }
 
         if (_searchResizeGrip != IntPtr.Zero)

@@ -40,6 +40,7 @@ internal static class Program
             Run("search input visibility", RunSearchInputVisibility);
             Run("output export", () => RunOutputExport(tempRoot));
             Run("window state store", () => RunWindowStateStore(tempRoot));
+            Run("regex reference content", RunRegexReferenceContent);
             Console.WriteLine("Front smoke tests passed.");
             return 0;
         }
@@ -65,6 +66,36 @@ internal static class Program
     {
         Console.WriteLine("Running " + name + "...");
         action();
+    }
+
+    private static void RunRegexReferenceContent()
+    {
+        string reference = RegexReferenceWindow.ReferenceText;
+        AssertReferenceContains(reference, ".NET REGEX PATTERNS");
+        AssertReferenceContains(reference, "This syntax belongs to .NET Regex.");
+        AssertReferenceContains(reference, "LOGBLADE REGEX EXECUTION");
+        AssertReferenceContains(reference, "These are LogBlade rules, not Regex syntax.");
+        AssertReferenceContains(reference, "LOGBLADE OUTPUT TEMPLATES");
+        AssertReferenceContains(reference, "This is LogBlade syntax, not Regex pattern syntax");
+        AssertReferenceContains(reference, "$1");
+        AssertReferenceContains(reference, "${State.Message}");
+        AssertReferenceContains(reference, "${upper:name}");
+        AssertReferenceContains(reference, @"\b");
+        AssertReferenceContains(reference, @"\.");
+        AssertReferenceContains(reference, @"\\");
+        AssertReferenceContains(reference, "Complete parser example");
+        AssertReferenceContains(reference, "Display template");
+        AssertReferenceContains(reference, "Regex Replace renders the template for every match.");
+        AssertReferenceContains(reference, "Lookarounds and backreferences in patterns are not supported by NonBacktracking.");
+        AssertReferenceContains(reference, "Displayed as result columns");
+    }
+
+    private static void AssertReferenceContains(string reference, string expected)
+    {
+        if (!reference.Contains(expected, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Regex reference is missing: " + expected);
+        }
     }
 
     private static void RunCascadedFilterStagePreview()
