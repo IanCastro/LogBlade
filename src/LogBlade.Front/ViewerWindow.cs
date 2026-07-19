@@ -890,6 +890,7 @@ internal sealed class ViewerWindow
 
     private void OnParserSelectionChanged()
     {
+        DisplayParserRule? previousRule = GetValidEffectiveParserRule();
         int selected = NativeMethods.SendMessageW(_parserCombo, NativeMethods.CB_GETCURSEL, IntPtr.Zero, IntPtr.Zero).ToInt32();
         int configureIndex = _parserRules.Count + 1;
         if (selected == configureIndex)
@@ -906,7 +907,7 @@ internal sealed class ViewerWindow
 
         _selectedParserRuleIndex = selected > 0 && selected <= _parserRules.Count ? selected - 1 : -1;
         _resetParserFilterInputVisibilityOnNextApply = true;
-        ApplyParserRuleChange();
+        ApplyParserRuleChangeIfNeeded(previousRule);
     }
 
     private void OpenRuleManager()
@@ -928,9 +929,11 @@ internal sealed class ViewerWindow
         NativeMethods.EnableWindow(_parserCombo, false);
         NativeMethods.EnableWindow(_highlightingButton, false);
         _configurationWindowOpen = true;
+        DisplayParserRule? effectiveRuleBeforeClose = null;
         try
         {
             selectedRuleName = manager.ShowModal(_hwnd);
+            effectiveRuleBeforeClose = GetValidEffectiveParserRule();
         }
         finally
         {
@@ -947,11 +950,12 @@ internal sealed class ViewerWindow
         }
 
         ReloadParserRules(selectedRuleName);
-        ApplyParserRuleChange();
+        ApplyParserRuleChangeIfNeeded(effectiveRuleBeforeClose);
     }
 
     private void ApplyParserPreview(DisplayParserRule? rule)
     {
+        DisplayParserRule? previousRule = GetValidEffectiveParserRule();
         DisplayParserRule? validRule = null;
         if (rule is not null)
         {
@@ -968,7 +972,42 @@ internal sealed class ViewerWindow
 
         _parserPreviewActive = true;
         _previewParserRule = validRule;
-        ApplyParserRuleChange();
+        ApplyParserRuleChangeIfNeeded(previousRule);
+    }
+
+    private DisplayParserRule? GetValidEffectiveParserRule()
+    {
+        DisplayParserRule? rule = GetEffectiveParserRule();
+        if (rule is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            DisplayParserEvaluator.ValidateRule(rule);
+            return rule;
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
+    }
+
+    private void ApplyParserRuleChangeIfNeeded(DisplayParserRule? previousRule)
+    {
+        DisplayParserRule? currentRule = GetValidEffectiveParserRule();
+        if (!DisplayParserRuleProcessingComparer.AreEquivalent(previousRule, currentRule))
+        {
+            ApplyParserRuleChange();
+            return;
+        }
+
+        if (_resetParserFilterInputVisibilityOnNextApply)
+        {
+            ApplyParserFilterSearchLevels(currentRule);
+            UpdateLayout();
+        }
     }
 
     private void ResetParserFilterInputVisibilityForRuleSelection()

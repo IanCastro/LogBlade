@@ -31,6 +31,8 @@ Os campos que produzem texto (`Display` de Regex, template JSON e `Replacement` 
 
 Todos os patterns Regex do Search, Filter, stage Regex e Regex Replace usam o engine `NonBacktracking` com `CultureInvariant` e sem timeout. Grupos numerados e nomeados sao suportados, inclusive em replacements, mas construcoes incompativeis com `NonBacktracking`, como backreferences no pattern e lookarounds, sao rejeitadas na validacao.
 
+O preview em tempo real so recria readers e reinicia searches quando o pipeline efetivo muda. Publicacoes repetidas da mesma configuracao e alteracoes apenas em nome, amostra ou propriedades ignoradas pelo modo do stage nao recalculam a janela principal.
+
 ### Estagios Filter
 
 Um estagio `Filter` avalia cada linha explicita existente naquele ponto da cadeia. Linhas que nao satisfazem o pattern sao removidas; cada linha aprovada continua de forma independente pelos estagios seguintes. `Filter` suporta texto literal ou Regex, `Ignore case` e `Invert match`.

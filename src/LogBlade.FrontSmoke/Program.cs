@@ -36,6 +36,7 @@ internal static class Program
             Run("multiline edit normalization", RunMultilineEditNormalization);
             Run("clipboard headers", RunClipboardHeaders);
             Run("cascaded filter stage preview", RunCascadedFilterStagePreview);
+            Run("parser processing equivalence", RunParserProcessingEquivalence);
             Run("search input visibility", RunSearchInputVisibility);
             Run("output export", () => RunOutputExport(tempRoot));
             Run("window state store", () => RunWindowStateStore(tempRoot));
@@ -122,6 +123,108 @@ internal static class Program
             "stage after cascaded filter preview",
             replaced,
             "148|Cross asset volumes remain elevated after macro releases");
+    }
+
+    private static void RunParserProcessingEquivalence()
+    {
+        DisplayParserRule original = new()
+        {
+            Name = "Original",
+            Sample = "sample-a",
+            Stages = new List<DisplayParserStage>
+            {
+                new()
+                {
+                    Mode = DisplayParserMode.Regex,
+                    Rule = "(?<value>.*)",
+                    Template = "{value}",
+                    UseRegex = true,
+                    IgnoreCase = true,
+                    InvertMatch = true
+                },
+                new()
+                {
+                    Mode = DisplayParserMode.Json,
+                    Rule = "{Value}",
+                    Template = "ignored-json-template",
+                    IgnoreCase = true
+                },
+                new()
+                {
+                    Mode = DisplayParserMode.RegexReplace,
+                    Rule = "=",
+                    Template = "|"
+                },
+                new()
+                {
+                    Mode = DisplayParserMode.Filter,
+                    Rule = "ERROR",
+                    Template = "ignored-filter-template",
+                    UseRegex = true,
+                    IgnoreCase = false,
+                    InvertMatch = false
+                }
+            }
+        };
+
+        DisplayParserRule equivalent = original.Clone();
+        equivalent.Name = "Renamed";
+        equivalent.Sample = "sample-b";
+        equivalent.Stages[0].UseRegex = false;
+        equivalent.Stages[0].IgnoreCase = false;
+        equivalent.Stages[0].InvertMatch = false;
+        equivalent.Stages[1].Template = "different-ignored-json-template";
+        equivalent.Stages[1].UseRegex = true;
+        equivalent.Stages[3].Template = "different-ignored-filter-template";
+        AssertEqual(
+            "parser processing ignores metadata and inactive properties",
+            DisplayParserRuleProcessingComparer.AreEquivalent(original, equivalent),
+            true);
+
+        DisplayParserRule equivalentEmptyTemplate = original.Clone();
+        equivalentEmptyTemplate.Stages[2].Template = null!;
+        original.Stages[2].Template = string.Empty;
+        AssertEqual(
+            "parser processing normalizes empty output text",
+            DisplayParserRuleProcessingComparer.AreEquivalent(original, equivalentEmptyTemplate),
+            true);
+
+        AssertParserProcessingDifferent(original, rule => rule.Stages[0].Rule = "different", "rule");
+        AssertParserProcessingDifferent(original, rule => rule.Stages[0].Template = "different", "regex template");
+        AssertParserProcessingDifferent(original, rule => rule.Stages[0].Mode = DisplayParserMode.RegexReplace, "mode");
+        AssertParserProcessingDifferent(original, rule => rule.Stages[2].Template = "different", "regex replace template");
+        AssertParserProcessingDifferent(original, rule => rule.Stages[3].UseRegex = false, "filter regex");
+        AssertParserProcessingDifferent(original, rule => rule.Stages[3].IgnoreCase = true, "filter ignore case");
+        AssertParserProcessingDifferent(original, rule => rule.Stages[3].InvertMatch = true, "filter invert match");
+        AssertParserProcessingDifferent(original, rule => rule.Stages.RemoveAt(3), "stage count");
+
+        DisplayParserRule reordered = original.Clone();
+        (reordered.Stages[0], reordered.Stages[1]) = (reordered.Stages[1], reordered.Stages[0]);
+        AssertEqual(
+            "parser processing detects stage order",
+            DisplayParserRuleProcessingComparer.AreEquivalent(original, reordered),
+            false);
+        AssertEqual(
+            "parser processing detects null",
+            DisplayParserRuleProcessingComparer.AreEquivalent(original, null),
+            false);
+        AssertEqual(
+            "parser processing accepts matching null",
+            DisplayParserRuleProcessingComparer.AreEquivalent(null, null),
+            true);
+    }
+
+    private static void AssertParserProcessingDifferent(
+        DisplayParserRule original,
+        Action<DisplayParserRule> change,
+        string name)
+    {
+        DisplayParserRule changed = original.Clone();
+        change(changed);
+        AssertEqual(
+            "parser processing detects " + name,
+            DisplayParserRuleProcessingComparer.AreEquivalent(original, changed),
+            false);
     }
 
     private static void RunSearchInputVisibility()
