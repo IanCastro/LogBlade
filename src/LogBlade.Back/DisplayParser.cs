@@ -65,24 +65,6 @@ public sealed class DisplayParserStage
 
 public static class DisplayParserEvaluator
 {
-    internal static int FindFirstJsonStageIndex(DisplayParserRule? rule)
-    {
-        if (rule?.Stages is null)
-        {
-            return -1;
-        }
-
-        for (int i = 0; i < rule.Stages.Count; i++)
-        {
-            if (rule.Stages[i].Mode == DisplayParserMode.Json)
-            {
-                return i;
-            }
-        }
-
-        return -1;
-    }
-
     public static int GetFilterCount(DisplayParserRule? rule)
     {
         if (rule?.Stages is null)
@@ -161,23 +143,11 @@ public static class DisplayParserEvaluator
         string input,
         out string parsed)
     {
-        parsed = input;
-        int start = Math.Clamp(startIndex, 0, rule.Stages.Count);
-        int end = Math.Clamp(endIndexExclusive, start, rule.Stages.Count);
-        string current = input;
-        for (int i = start; i < end; i++)
-        {
-            if (!TryEvaluateStage(rule.Stages[i], current, out string next))
-            {
-                parsed = input;
-                return false;
-            }
-
-            current = next;
-        }
-
-        parsed = current;
-        return true;
+        return new DisplayParserRuntime(rule).TryEvaluateStageRange(
+            startIndex,
+            endIndexExclusive,
+            input,
+            out parsed);
     }
 
     internal static string EvaluateStageRangeOrOriginal(
@@ -186,28 +156,10 @@ public static class DisplayParserEvaluator
         int endIndexExclusive,
         string input)
     {
-        int start = Math.Clamp(startIndex, 0, rule.Stages.Count);
-        int end = Math.Clamp(endIndexExclusive, start, rule.Stages.Count);
-        string current = input;
-        string lastValid = input;
-        for (int i = start; i < end; i++)
-        {
-            DisplayParserStage stage = rule.Stages[i];
-            if (stage.Mode == DisplayParserMode.Filter)
-            {
-                continue;
-            }
-
-            if (!TryEvaluateStage(stage, current, out string next))
-            {
-                return lastValid;
-            }
-
-            current = next;
-            lastValid = current;
-        }
-
-        return lastValid;
+        return new DisplayParserRuntime(rule).EvaluateStageRangeOrOriginal(
+            startIndex,
+            endIndexExclusive,
+            input);
     }
 
     public static string GenerateJsonTemplateFromSample(string sample)
@@ -423,10 +375,11 @@ public static class DisplayParserEvaluator
 
     public static string EvaluateExplicitLinesIndependently(DisplayParserRule rule, string input)
     {
+        DisplayParserRuntime runtime = new(rule);
         List<string> output = new();
         foreach (ExplicitRowData row in FilteredLineUtilities.EnumerateExplicitRows(input))
         {
-            output.Add(EvaluateStageRangeOrOriginal(rule, 0, rule.Stages.Count, row.Text));
+            output.Add(runtime.EvaluateStageRangeOrOriginal(0, runtime.StageCount, row.Text));
         }
 
         return string.Join(Environment.NewLine, output);
@@ -434,70 +387,10 @@ public static class DisplayParserEvaluator
 
     public static bool TryEvaluate(DisplayParserRule rule, string input, out string parsed)
     {
-        parsed = input;
-        string current = input;
-        string lastValid = input;
-        bool hasValidStage = false;
-
-        for (int i = 0; i < rule.Stages.Count; i++)
-        {
-            if (!TryEvaluateStage(rule.Stages[i], current, out string next))
-            {
-                parsed = lastValid;
-                return hasValidStage;
-            }
-
-            current = next;
-            lastValid = current;
-            hasValidStage = true;
-        }
-
-        parsed = lastValid;
-        return hasValidStage;
+        return new DisplayParserRuntime(rule).TryEvaluate(input, out parsed);
     }
 
-    private static bool TryEvaluateStage(DisplayParserStage stage, string input, out string parsed)
-    {
-        parsed = input;
-        try
-        {
-            parsed = stage.Mode switch
-            {
-                DisplayParserMode.Regex => EvaluateRegex(stage.Rule, stage.Template, input),
-                DisplayParserMode.Json => EvaluateJson(stage.Rule, input),
-                DisplayParserMode.RegexReplace => EvaluateRegexReplace(stage.Rule, stage.Template, input),
-                DisplayParserMode.Filter => input,
-                _ => input
-            };
-            return true;
-        }
-        catch (Exception ex) when (ex is ArgumentException or JsonException or InvalidOperationException)
-        {
-            parsed = input;
-            return false;
-        }
-    }
-
-    private static string EvaluateRegex(string pattern, string? template, string input)
-    {
-        Regex regex = new(pattern, RegexOptions.CultureInvariant);
-        Match match = regex.Match(input);
-        if (!match.Success)
-        {
-            throw new InvalidOperationException("Regex did not match.");
-        }
-
-        string displayTemplate = string.IsNullOrEmpty(template) ? "{0}" : template;
-        return RenderTemplate(displayTemplate, selector => ResolveRegexPlaceholder(regex, match, selector));
-    }
-
-    private static string EvaluateRegexReplace(string pattern, string? replacement, string input)
-    {
-        Regex regex = new(pattern, RegexOptions.CultureInvariant);
-        return regex.Replace(input, DecodeRegexReplacementEscapes(replacement ?? string.Empty));
-    }
-
-    private static string DecodeRegexReplacementEscapes(string replacement)
+    internal static string DecodeRegexReplacementEscapes(string replacement)
     {
         if (replacement.IndexOf('\\') < 0)
         {
@@ -560,14 +453,14 @@ public static class DisplayParserEvaluator
         return output.ToString();
     }
 
-    private static string EvaluateJson(string template, string input)
+    internal static string EvaluateJson(string template, string input)
     {
         string json = ExtractFirstJsonValue(input);
         using JsonDocument document = JsonDocument.Parse(json);
         return RenderTemplate(template, selector => ResolveJsonPlaceholder(document.RootElement, selector));
     }
 
-    private static string RenderTemplate(string template, Func<string, string?> resolveValue)
+    internal static string RenderTemplate(string template, Func<string, string?> resolveValue)
     {
         StringBuilder output = new();
         for (int i = 0; i < template.Length; i++)
@@ -647,32 +540,6 @@ public static class DisplayParserEvaluator
         return TryGetJsonValue(root, selector, out JsonElement value)
             ? FormatJsonValue(value)
             : null;
-    }
-
-    private static string? ResolveRegexPlaceholder(Regex regex, Match match, string selector)
-    {
-        if (selector.Length == 0)
-        {
-            return null;
-        }
-
-        if (int.TryParse(selector, out int groupNumber))
-        {
-            return groupNumber >= 0 && groupNumber < match.Groups.Count
-                ? GetGroupValue(match.Groups[groupNumber])
-                : null;
-        }
-
-        string[] groupNames = regex.GetGroupNames();
-        for (int i = 0; i < groupNames.Length; i++)
-        {
-            if (string.Equals(groupNames[i], selector, StringComparison.Ordinal))
-            {
-                return GetGroupValue(match.Groups[selector]);
-            }
-        }
-
-        return null;
     }
 
     private static bool TryGetJsonValue(JsonElement root, string selector, out JsonElement value)
@@ -937,8 +804,4 @@ public static class DisplayParserEvaluator
         return -1;
     }
 
-    private static string GetGroupValue(Group group)
-    {
-        return group.Success ? group.Value : string.Empty;
-    }
 }

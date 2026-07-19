@@ -27,13 +27,25 @@ internal sealed class DisplayParserRecordSequence
     internal const int MaximumRecordChars = 16 * 1024 * 1024;
     internal const int MaximumRecordLines = 4096;
 
-    private readonly DisplayParserRule? _rule;
+    private readonly DisplayParserRuntime _runtime;
+    private readonly int _stageEndExclusive;
     private readonly int _jsonStageIndex;
 
     public DisplayParserRecordSequence(DisplayParserRule? rule)
+        : this(new DisplayParserRuntime(rule))
     {
-        _rule = DisplayParserEvaluator.CloneRule(rule);
-        _jsonStageIndex = DisplayParserEvaluator.FindFirstJsonStageIndex(_rule);
+    }
+
+    internal DisplayParserRecordSequence(DisplayParserRuntime runtime)
+        : this(runtime, runtime.StageCount)
+    {
+    }
+
+    internal DisplayParserRecordSequence(DisplayParserRuntime runtime, int stageEndExclusive)
+    {
+        _runtime = runtime;
+        _stageEndExclusive = Math.Clamp(stageEndExclusive, 0, runtime.StageCount);
+        _jsonStageIndex = runtime.FindFirstJsonStageIndex(_stageEndExclusive);
     }
 
     public long LastLineNumberSeen { get; private set; }
@@ -47,13 +59,15 @@ internal sealed class DisplayParserRecordSequence
         LastLineNumberSeen = 0;
         IncompleteRecordStartOffset = -1;
         IncompleteRecordLineNumber = 0;
-        if (_rule is null || _jsonStageIndex < 0)
+        if (_stageEndExclusive == 0 || _jsonStageIndex < 0)
         {
             foreach (RealLineData line in source)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 LastLineNumberSeen = line.LineNumber;
-                yield return CreateSingle(line, DisplayParserEvaluator.EvaluateOrOriginal(_rule, line.Text));
+                yield return CreateSingle(
+                    line,
+                    _runtime.EvaluateStageRangeOrOriginal(0, _stageEndExclusive, line.Text));
             }
 
             yield break;
@@ -156,7 +170,9 @@ internal sealed class DisplayParserRecordSequence
             nextBufferedJson = null;
             if (!TryEvaluatePrefix(line.Text, out string fragment))
             {
-                records.Add(CreateSingle(line, DisplayParserEvaluator.EvaluateOrOriginal(_rule, line.Text)));
+                records.Add(CreateSingle(
+                    line,
+                    _runtime.EvaluateStageRangeOrOriginal(0, _stageEndExclusive, line.Text)));
                 return records;
             }
 
@@ -183,7 +199,9 @@ internal sealed class DisplayParserRecordSequence
                 return records;
             }
 
-            records.Add(CreateSingle(line, DisplayParserEvaluator.EvaluateOrOriginal(_rule, line.Text)));
+            records.Add(CreateSingle(
+                line,
+                _runtime.EvaluateStageRangeOrOriginal(0, _stageEndExclusive, line.Text)));
             return records;
         }
 
@@ -206,10 +224,14 @@ internal sealed class DisplayParserRecordSequence
     }
 
     private bool TryEvaluatePrefix(string input, out string fragment) =>
-        DisplayParserEvaluator.TryEvaluateStageRange(_rule!, 0, _jsonStageIndex, input, out fragment);
+        _runtime.TryEvaluateStageRange(0, _jsonStageIndex, input, out fragment);
 
     private bool TryEvaluateJsonAndRemaining(string input, out string parsed) =>
-        DisplayParserEvaluator.TryEvaluateStageRange(_rule!, _jsonStageIndex, _rule!.Stages.Count, input, out parsed);
+        _runtime.TryEvaluateStageRange(
+            _jsonStageIndex,
+            _stageEndExclusive,
+            input,
+            out parsed);
 
     private static DisplayParserRecord CreateSingle(RealLineData line, string text, long groupStartOffset = -1) =>
         new(

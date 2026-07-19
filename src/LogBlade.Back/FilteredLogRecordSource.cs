@@ -10,7 +10,7 @@ public sealed class FilteredLogRecordSource : ILogRecordSource
     private Encoding _encoding;
     private long _dataOffset;
     private long _fileSize;
-    private readonly DisplayParserRule? _displayParserRule;
+    private readonly DisplayParserRuntime _parserRuntime;
     private FilteredLineDescriptor[] _descriptors;
     private string[] _columnHeaders;
     private readonly List<LogViewportRecord> _currentRecords = new();
@@ -38,13 +38,40 @@ public sealed class FilteredLogRecordSource : ILogRecordSource
         long parserRescanOffset = -1,
         long parserRescanLineNumber = 0,
         IReadOnlyList<string>? columnHeaders = null)
+        : this(
+            contentSource,
+            kind,
+            encoding,
+            dataOffset,
+            fileSize,
+            descriptors,
+            totalLineCount,
+            new DisplayParserRuntime(displayParserRule),
+            parserRescanOffset,
+            parserRescanLineNumber,
+            columnHeaders)
+    {
+    }
+
+    private FilteredLogRecordSource(
+        LogContentSource contentSource,
+        LogEncodingKind kind,
+        Encoding encoding,
+        long dataOffset,
+        long fileSize,
+        IReadOnlyList<FilteredLineDescriptor> descriptors,
+        long totalLineCount,
+        DisplayParserRuntime parserRuntime,
+        long parserRescanOffset,
+        long parserRescanLineNumber,
+        IReadOnlyList<string>? columnHeaders)
     {
         _contentSource = contentSource;
         _kind = kind;
         _encoding = encoding;
         _dataOffset = dataOffset;
         _fileSize = fileSize;
-        _displayParserRule = DisplayParserEvaluator.CloneRule(displayParserRule);
+        _parserRuntime = parserRuntime;
         _parserRescanOffset = parserRescanOffset >= dataOffset ? parserRescanOffset : fileSize;
         _parserRescanLineNumber = parserRescanLineNumber > 0 ? parserRescanLineNumber : totalLineCount + 1;
         _descriptors = new FilteredLineDescriptor[descriptors.Count];
@@ -164,6 +191,7 @@ public sealed class FilteredLogRecordSource : ILogRecordSource
     internal long TotalLineCount => _totalLineCount;
     internal long ParserRescanOffset => _parserRescanOffset;
     internal long ParserRescanLineNumber => _parserRescanLineNumber;
+    internal DisplayParserRuntime ParserRuntime => _parserRuntime;
 
     public IReadOnlyList<LogViewportRecord> ReadNextRecords(int count)
     {
@@ -340,11 +368,11 @@ public sealed class FilteredLogRecordSource : ILogRecordSource
         ThrowIfDisposed();
         using Stream stream = LogFileUtilities.OpenSourceStream(_contentSource);
         byte[] scanBuffer = new byte[SearchRealLineScanner.RequiredBufferBytes];
-        DisplayParserRecordSequence? sequence = DisplayParserEvaluator.GetFilterCount(_displayParserRule) == 0
-            ? new DisplayParserRecordSequence(_displayParserRule)
+        DisplayParserRecordSequence? sequence = _parserRuntime.FilterCount == 0
+            ? new DisplayParserRecordSequence(_parserRuntime)
             : null;
-        DisplayParserFilterPipelineSequence? filterSequence = sequence is null && _displayParserRule is not null
-            ? new DisplayParserFilterPipelineSequence(_displayParserRule)
+        DisplayParserFilterPipelineSequence? filterSequence = sequence is null
+            ? new DisplayParserFilterPipelineSequence(_parserRuntime)
             : null;
         string? cachedLogicalText = null;
         long cachedStart = -1;
@@ -386,7 +414,7 @@ public sealed class FilteredLogRecordSource : ILogRecordSource
             _fileSize,
             _descriptors,
             _totalLineCount,
-            _displayParserRule,
+            _parserRuntime,
             _parserRescanOffset,
             _parserRescanLineNumber,
             _columnHeaders)
@@ -464,31 +492,65 @@ public sealed class FilteredLogRecordSource : ILogRecordSource
         string? cachedLogicalText = null;
         long cachedStart = -1;
         long cachedEnd = -1;
-        for (int i = firstIndex; i < endIndex; i++)
+        Stream? stream = null;
+        byte[]? scanBuffer = null;
+        DisplayParserRecordSequence? sequence = null;
+        DisplayParserFilterPipelineSequence? filterSequence = null;
+        try
         {
-            long previousIndex = i - previousTop;
-            if (previousIndex >= 0 && previousIndex < previousRecords.LongLength)
+            for (int i = firstIndex; i < endIndex; i++)
             {
-                LogViewportRecord existing = previousRecords[(int)previousIndex];
-                _currentRecords.Add(existing);
-                cachedLogicalText = existing.LogicalText;
-                cachedStart = existing.Key.StartOffset;
-                cachedEnd = existing.Key.EndOffset;
-                lastEnd = existing.Key.EndOffset;
-                continue;
-            }
+                long previousIndex = i - previousTop;
+                if (previousIndex >= 0 && previousIndex < previousRecords.LongLength)
+                {
+                    LogViewportRecord existing = previousRecords[(int)previousIndex];
+                    _currentRecords.Add(existing);
+                    cachedLogicalText = existing.LogicalText;
+                    cachedStart = existing.Key.StartOffset;
+                    cachedEnd = existing.Key.EndOffset;
+                    lastEnd = existing.Key.EndOffset;
+                    continue;
+                }
 
-            FilteredLineDescriptor descriptor = _descriptors[i];
-            string logicalText = cachedLogicalText is not null &&
-                cachedStart == descriptor.StartOffset &&
-                cachedEnd == descriptor.EndOffset
-                ? cachedLogicalText
-                : ReadDescriptorText(descriptor);
-            cachedLogicalText = logicalText;
-            cachedStart = descriptor.StartOffset;
-            cachedEnd = descriptor.EndOffset;
-            _currentRecords.Add(CreateRecord(descriptor, logicalText));
-            lastEnd = descriptor.EndOffset;
+                FilteredLineDescriptor descriptor = _descriptors[i];
+                string logicalText;
+                if (cachedLogicalText is not null &&
+                    cachedStart == descriptor.StartOffset &&
+                    cachedEnd == descriptor.EndOffset)
+                {
+                    logicalText = cachedLogicalText;
+                }
+                else
+                {
+                    stream ??= LogFileUtilities.OpenSourceStream(_contentSource);
+                    scanBuffer ??= new byte[SearchRealLineScanner.RequiredBufferBytes];
+                    if (_parserRuntime.FilterCount > 0)
+                    {
+                        filterSequence ??= new DisplayParserFilterPipelineSequence(_parserRuntime);
+                    }
+                    else
+                    {
+                        sequence ??= new DisplayParserRecordSequence(_parserRuntime);
+                    }
+
+                    logicalText = ReadDescriptorText(
+                        stream,
+                        descriptor,
+                        sequence,
+                        filterSequence,
+                        scanBuffer);
+                }
+
+                cachedLogicalText = logicalText;
+                cachedStart = descriptor.StartOffset;
+                cachedEnd = descriptor.EndOffset;
+                _currentRecords.Add(CreateRecord(descriptor, logicalText));
+                lastEnd = descriptor.EndOffset;
+            }
+        }
+        finally
+        {
+            stream?.Dispose();
         }
 
         _viewportBytes = Math.Max(0, lastEnd - firstStart);
@@ -521,17 +583,6 @@ public sealed class FilteredLogRecordSource : ILogRecordSource
         return cells;
     }
 
-    private string ReadDescriptorText(FilteredLineDescriptor descriptor) =>
-        DisplayParserRecordEvaluator.ReadRecordText(
-            _contentSource,
-            _encoding,
-            _kind,
-            descriptor.StartOffset,
-            descriptor.EndOffset,
-            descriptor.LineNumber,
-            _displayParserRule,
-            descriptor.ParserOutputLevel);
-
     private string ReadDescriptorText(
         Stream stream,
         FilteredLineDescriptor descriptor,
@@ -560,7 +611,7 @@ public sealed class FilteredLogRecordSource : ILogRecordSource
             descriptor.StartOffset,
             descriptor.EndOffset,
             descriptor.LineNumber,
-            sequence ?? new DisplayParserRecordSequence(_displayParserRule),
+            sequence ?? new DisplayParserRecordSequence(_parserRuntime),
             scanBuffer);
     }
 

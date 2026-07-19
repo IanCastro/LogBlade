@@ -26,14 +26,15 @@ internal sealed class ParserSearchRecordSequence
 
     public ParserSearchRecordSequence(DisplayParserRule? rule)
     {
-        if (DisplayParserEvaluator.GetFilterCount(rule) > 0)
+        DisplayParserRuntime runtime = new(rule);
+        if (runtime.FilterCount > 0)
         {
-            _filterSequence = new DisplayParserFilterPipelineSequence(rule!);
+            _filterSequence = new DisplayParserFilterPipelineSequence(runtime);
             FilterCount = _filterSequence.FilterCount;
         }
         else
         {
-            _recordSequence = new DisplayParserRecordSequence(rule);
+            _recordSequence = new DisplayParserRecordSequence(runtime);
         }
     }
 

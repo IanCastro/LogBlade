@@ -55,6 +55,7 @@ internal static class Program
             RunDisplayParserFilterOptions();
             RunDisplayParserCreatesMainRuleBeforeFirstFilter();
             RunParserFiltersProduceSegmentedSearchLevels(tempRoot);
+            RunParserFilterScrollReusesCompiledRuntime(tempRoot);
             RunParserFilterPreservesRegexCaptures(tempRoot);
             RunParserFilterEmptyReaderPreservesCaptureHeaders(tempRoot);
             RunParserFilterAllowsMultilineJsonBeforeFilter(tempRoot);
@@ -3292,6 +3293,94 @@ internal static class Program
                 "parser second filter segment output",
                 readers[1].CurrentDisplayTexts,
                 "keep final second");
+        }
+        finally
+        {
+            DisposeReaders(readers);
+        }
+    }
+
+    private static void RunParserFilterScrollReusesCompiledRuntime(string tempRoot)
+    {
+        StringBuilder content = new();
+        for (int i = 0; i < 12; i++)
+        {
+            content.Append("target|35=B|148=message-");
+            content.Append(i.ToString("00"));
+            content.Append("|10=000|\r\n");
+        }
+
+        string path = WriteFile(tempRoot, "parser-filter-scroll.log", content.ToString());
+        DisplayParserRule parser = ParserRule(
+            FilterStage("target", useRegex: true),
+            RegexReplaceStage(@"\|", "\\n"),
+            FilterStage("148", useRegex: true),
+            RegexReplaceStage("=", "|"));
+
+        FilteredLogRecordSource[] readers = LogSearchBuilder.BuildStagedFilteredReaders(
+            path,
+            Encoding.UTF8,
+            dataOffset: 0,
+            Array.Empty<SearchOptions>(),
+            parser);
+        try
+        {
+            FilteredLogRecordSource intermediate = readers[0];
+            intermediate.ReadFromPercentage(0d, 4);
+            AssertSequence(
+                "parser filter scroll explicit rows",
+                intermediate.CurrentDisplayTexts,
+                "target",
+                "35=B",
+                "148=message-00",
+                "10=000");
+
+            using FilteredLogRecordSource worker = readers[1].CloneForWorker();
+            AssertEqual(
+                "parser filter worker shares runtime",
+                ReferenceEquals(readers[1].ParserRuntime, worker.ParserRuntime),
+                true);
+
+            worker.ReadFromPercentage(0d, 4);
+            LogViewportRecord[] initial = new LogViewportRecord[worker.CurrentRecords.Count];
+            for (int i = 0; i < initial.Length; i++)
+            {
+                initial[i] = worker.CurrentRecords[i];
+            }
+
+            AssertSequence(
+                "parser filter scroll initial output",
+                worker.CurrentDisplayTexts,
+                "148|message-00",
+                "148|message-01",
+                "148|message-02",
+                "148|message-03");
+
+            worker.ReadNextRecords(2);
+            AssertEqual(
+                "parser filter scroll first overlap reused",
+                ReferenceEquals(initial[2], worker.CurrentRecords[0]),
+                true);
+            AssertEqual(
+                "parser filter scroll second overlap reused",
+                ReferenceEquals(initial[3], worker.CurrentRecords[1]),
+                true);
+            AssertSequence(
+                "parser filter scroll forward output",
+                worker.CurrentDisplayTexts,
+                "148|message-02",
+                "148|message-03",
+                "148|message-04",
+                "148|message-05");
+
+            worker.ReadPreviousRecords(1);
+            AssertSequence(
+                "parser filter scroll backward output",
+                worker.CurrentDisplayTexts,
+                "148|message-01",
+                "148|message-02",
+                "148|message-03",
+                "148|message-04");
         }
         finally
         {
