@@ -29,6 +29,8 @@ Quando uma cadeia possui um estagio JSON, os estagios anteriores podem extrair f
 
 Os campos que produzem texto (`Display` de Regex, template JSON e `Replacement` de Regex Replace) interpretam `\n`, `\r`, `\t`, `\\` e escapes Unicode de quatro digitos (`\uFFFF`). `\\n` produz os caracteres literais `\n`, e escapes desconhecidos permanecem literais. Patterns de Regex e Filter nao passam por essa decodificacao.
 
+Todos os patterns Regex do Search, Filter, stage Regex e Regex Replace usam o engine `NonBacktracking` com `CultureInvariant` e sem timeout. Grupos numerados e nomeados sao suportados, inclusive em replacements, mas construcoes incompativeis com `NonBacktracking`, como backreferences no pattern e lookarounds, sao rejeitadas na validacao.
+
 ### Estagios Filter
 
 Um estagio `Filter` avalia cada linha explicita existente naquele ponto da cadeia. Linhas que nao satisfazem o pattern sao removidas; cada linha aprovada continua de forma independente pelos estagios seguintes. `Filter` suporta texto literal ou Regex, `Ignore case` e `Invert match`.

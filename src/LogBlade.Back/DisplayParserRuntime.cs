@@ -154,7 +154,7 @@ internal sealed class DisplayParserRuntime
             {
                 if (Mode is DisplayParserMode.Regex or DisplayParserMode.RegexReplace)
                 {
-                    _regex = new Regex(_rule, RegexOptions.CultureInvariant);
+                    _regex = LogRegex.Create(_rule);
                     _regexGroupNames = new HashSet<string>(_regex.GetGroupNames(), StringComparer.Ordinal);
                     _decodedOutput = DisplayParserEvaluator.DecodeOutputEscapes(stage.Template ?? string.Empty);
                 }
@@ -174,13 +174,7 @@ internal sealed class DisplayParserRuntime
                         : StringComparison.Ordinal;
                     if (stage.UseRegex)
                     {
-                        RegexOptions options = RegexOptions.CultureInvariant | RegexOptions.NonBacktracking;
-                        if (stage.IgnoreCase)
-                        {
-                            options |= RegexOptions.IgnoreCase;
-                        }
-
-                        _regex = new Regex(_rule, options);
+                        _regex = LogRegex.Create(_rule, stage.IgnoreCase);
                         int[] groupNumbers = _regex.GetGroupNumbers();
                         string[] groupNames = _regex.GetGroupNames();
                         List<int> captureNumbers = new();

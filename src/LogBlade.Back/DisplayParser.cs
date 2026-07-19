@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Text.RegularExpressions;
 
 [JsonConverter(typeof(JsonStringEnumConverter<DisplayParserMode>))]
 public enum DisplayParserMode
@@ -297,7 +296,7 @@ public static class DisplayParserEvaluator
 
             try
             {
-                _ = new Regex(stage.Rule, RegexOptions.CultureInvariant);
+                _ = LogRegex.Create(stage.Rule);
             }
             catch (ArgumentException ex)
             {

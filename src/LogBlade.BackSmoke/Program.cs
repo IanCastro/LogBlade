@@ -35,6 +35,7 @@ internal static class Program
             RunDisplayParserRegexOutputEscapes();
             RunDisplayParserRegexPatternEscapesRemainRegex();
             RunDisplayParserRegexInvalidOutputEscapeValidation();
+            RunDisplayParserRegexRejectsUnsupportedNonBacktrackingPattern();
             RunDisplayParserRegexInvalidRegexValidation();
             RunDisplayParserFallbackOriginal();
             RunDisplayParserRegexThenJsonTemplate();
@@ -55,6 +56,7 @@ internal static class Program
             RunDisplayParserRegexReplacePreservesUnknownReplacementEscape();
             RunDisplayParserRegexReplaceNoMatchAllowsNextStage();
             RunDisplayParserRegexReplaceThenJsonTemplate();
+            RunDisplayParserRegexReplaceRejectsUnsupportedNonBacktrackingPattern();
             RunDisplayParserRegexReplaceInvalidRegexValidation();
             RunDisplayParserRegexReplaceInvalidReplacementEscapeValidation();
             RunDisplayParserFilterEvaluatesExplicitLines();
@@ -428,6 +430,20 @@ internal static class Program
         throw new InvalidOperationException("display parser regex invalid output escape: expected validation failure.");
     }
 
+    private static void RunDisplayParserRegexRejectsUnsupportedNonBacktrackingPattern()
+    {
+        try
+        {
+            DisplayParserEvaluator.ValidateStage(RegexStage(@"(?<word>[a-z]+)\s+\k<word>", "{word}"));
+        }
+        catch (ArgumentException ex) when (ex.Message.Contains("non-backtracking", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        throw new InvalidOperationException("display parser regex unsupported non-backtracking pattern: expected validation failure.");
+    }
+
     private static void RunDisplayParserRegexInvalidRegexValidation()
     {
         try
@@ -630,6 +646,20 @@ internal static class Program
             JsonStage("{Key}"));
 
         AssertEqual("display parser regex replace then json", DisplayParserEvaluator.EvaluateOrOriginal(rule, "{\"Key\":\"A\u0001B\"}"), "A|B");
+    }
+
+    private static void RunDisplayParserRegexReplaceRejectsUnsupportedNonBacktrackingPattern()
+    {
+        try
+        {
+            DisplayParserEvaluator.ValidateStage(RegexReplaceStage(@"(?<=prefix)value", "replacement"));
+        }
+        catch (ArgumentException ex) when (ex.Message.Contains("non-backtracking", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        throw new InvalidOperationException("display parser regex replace unsupported non-backtracking pattern: expected validation failure.");
     }
 
     private static void RunDisplayParserRegexReplaceInvalidRegexValidation()

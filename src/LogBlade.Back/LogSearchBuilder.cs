@@ -1534,22 +1534,7 @@ public static class LogSearchBuilder
     }
 
     private static Regex CreateRegex(SearchOptions options)
-    {
-        RegexOptions regexOptions = RegexOptions.CultureInvariant | RegexOptions.NonBacktracking;
-        if (options.IgnoreCase)
-        {
-            regexOptions |= RegexOptions.IgnoreCase;
-        }
-
-        try
-        {
-            return new Regex(options.Query, regexOptions);
-        }
-        catch (NotSupportedException ex)
-        {
-            throw new ArgumentException("Regex is not supported by the non-backtracking engine: " + ex.Message, nameof(options), ex);
-        }
-    }
+        => LogRegex.Create(options.Query, options.IgnoreCase);
 
     private static string[] CreateCaptureGroupHeaders(Regex regex)
     {
