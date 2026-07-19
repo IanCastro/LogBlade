@@ -27,6 +27,8 @@ Navegacao entre registros consulta o source do backend. Navegacao entre segmento
 
 Quando uma cadeia possui um estagio JSON, os estagios anteriores podem extrair fragmentos de linhas fisicas consecutivas. Um JSON incompleto e acumulado sem separador ate ficar completo. O limite de um registro combinado e 4096 linhas fisicas ou 16 MiB de texto. Se a continuacao falhar, o JSON for invalido, o limite for excedido ou o arquivo terminar com o JSON incompleto, as linhas fisicas acumuladas sao preservadas como texto original.
 
+Os campos que produzem texto (`Display` de Regex, template JSON e `Replacement` de Regex Replace) interpretam `\n`, `\r`, `\t`, `\\` e escapes Unicode de quatro digitos (`\uFFFF`). `\\n` produz os caracteres literais `\n`, e escapes desconhecidos permanecem literais. Patterns de Regex e Filter nao passam por essa decodificacao.
+
 ### Estagios Filter
 
 Um estagio `Filter` avalia cada linha explicita existente naquele ponto da cadeia. Linhas que nao satisfazem o pattern sao removidas; cada linha aprovada continua de forma independente pelos estagios seguintes. `Filter` suporta texto literal ou Regex, `Ignore case` e `Invert match`.

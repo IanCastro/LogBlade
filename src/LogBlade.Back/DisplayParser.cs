@@ -304,10 +304,7 @@ public static class DisplayParserEvaluator
                 throw new ArgumentException("Regex error: " + ex.Message, nameof(stage), ex);
             }
 
-            if (stage.Mode == DisplayParserMode.RegexReplace)
-            {
-                _ = DecodeRegexReplacementEscapes(stage.Template);
-            }
+            _ = DecodeOutputEscapes(stage.Template);
 
             return;
         }
@@ -316,6 +313,8 @@ public static class DisplayParserEvaluator
         {
             throw new ArgumentException("Rule is required.", nameof(stage));
         }
+
+        _ = DecodeOutputEscapes(stage.Rule);
     }
 
     public static string EvaluateOrOriginal(DisplayParserRule? rule, string input)
@@ -390,24 +389,25 @@ public static class DisplayParserEvaluator
         return new DisplayParserRuntime(rule).TryEvaluate(input, out parsed);
     }
 
-    internal static string DecodeRegexReplacementEscapes(string replacement)
+    internal static string DecodeOutputEscapes(string? value)
     {
-        if (replacement.IndexOf('\\') < 0)
+        value ??= string.Empty;
+        if (value.IndexOf('\\') < 0)
         {
-            return replacement;
+            return value;
         }
 
-        StringBuilder output = new(replacement.Length);
-        for (int i = 0; i < replacement.Length; i++)
+        StringBuilder output = new(value.Length);
+        for (int i = 0; i < value.Length; i++)
         {
-            char current = replacement[i];
-            if (current != '\\' || i + 1 >= replacement.Length)
+            char current = value[i];
+            if (current != '\\' || i + 1 >= value.Length)
             {
                 output.Append(current);
                 continue;
             }
 
-            char escaped = replacement[++i];
+            char escaped = value[++i];
             switch (escaped)
             {
                 case 'r':
@@ -423,24 +423,24 @@ public static class DisplayParserEvaluator
                     output.Append('\\');
                     break;
                 case 'u':
-                    if (i + 4 >= replacement.Length)
+                    if (i + 4 >= value.Length)
                     {
-                        throw new ArgumentException("Replacement Unicode escape must use four hex digits.");
+                        throw new ArgumentException("Output Unicode escape must use four hex digits.");
                     }
 
-                    int value = 0;
+                    int codePoint = 0;
                     for (int digit = 0; digit < 4; digit++)
                     {
-                        int hex = GetHexValue(replacement[i + 1 + digit]);
+                        int hex = GetHexValue(value[i + 1 + digit]);
                         if (hex < 0)
                         {
-                            throw new ArgumentException("Replacement Unicode escape contains invalid hex digits.");
+                            throw new ArgumentException("Output Unicode escape contains invalid hex digits.");
                         }
 
-                        value = (value << 4) | hex;
+                        codePoint = (codePoint << 4) | hex;
                     }
 
-                    output.Append((char)value);
+                    output.Append((char)codePoint);
                     i += 4;
                     break;
                 default:

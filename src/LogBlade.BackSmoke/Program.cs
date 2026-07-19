@@ -17,6 +17,8 @@ internal static class Program
             RunDisplayParserJsonTemplate();
             RunDisplayParserJsonPreservesTemplateWhitespace();
             RunDisplayParserJsonAllowsWhitespaceOnlyTemplate();
+            RunDisplayParserJsonOutputEscapes();
+            RunDisplayParserJsonInvalidOutputEscapeValidation();
             RunDisplayParserJsonWithTrailingText();
             RunDisplayParserJsonSkipsInvalidPrefixCandidate();
             RunDisplayParserGeneratesJsonTemplateFromSample();
@@ -30,6 +32,9 @@ internal static class Program
             RunDisplayParserRegexPreservesPatternSpaces();
             RunDisplayParserRegexPreservesDisplaySpaces();
             RunDisplayParserRegexAllowsWhitespaceOnlyDisplay();
+            RunDisplayParserRegexOutputEscapes();
+            RunDisplayParserRegexPatternEscapesRemainRegex();
+            RunDisplayParserRegexInvalidOutputEscapeValidation();
             RunDisplayParserRegexInvalidRegexValidation();
             RunDisplayParserFallbackOriginal();
             RunDisplayParserRegexThenJsonTemplate();
@@ -46,6 +51,7 @@ internal static class Program
             RunDisplayParserRegexReplaceGroups();
             RunDisplayParserRegexReplaceReplacementUnicodeEscape();
             RunDisplayParserRegexReplaceReplacementEscapes();
+            RunDisplayParserRegexReplaceEscapedBackslashPreservesText();
             RunDisplayParserRegexReplacePreservesUnknownReplacementEscape();
             RunDisplayParserRegexReplaceNoMatchAllowsNextStage();
             RunDisplayParserRegexReplaceThenJsonTemplate();
@@ -222,6 +228,30 @@ internal static class Program
             "   ");
     }
 
+    private static void RunDisplayParserJsonOutputEscapes()
+    {
+        DisplayParserRule rule = ParserRule(JsonStage(@"{Value}\n\t\\\u0041\r"));
+
+        AssertEqual(
+            "display parser json output escapes",
+            DisplayParserEvaluator.EvaluateOrOriginal(rule, "{\"Value\":\"value\"}"),
+            "value\n\t\\A\r");
+    }
+
+    private static void RunDisplayParserJsonInvalidOutputEscapeValidation()
+    {
+        try
+        {
+            DisplayParserEvaluator.ValidateStage(JsonStage(@"{Value}\u00ZZ"));
+        }
+        catch (ArgumentException ex) when (ex.Message.Contains("Unicode escape", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        throw new InvalidOperationException("display parser json invalid output escape: expected validation failure.");
+    }
+
     private static void RunDisplayParserJsonWithTrailingText()
     {
         DisplayParserRule rule = ParserRule(JsonStage("{upper:Level} {Logger} - {Message}"));
@@ -360,6 +390,42 @@ internal static class Program
             "display parser regex allows whitespace-only display",
             DisplayParserEvaluator.EvaluateOrOriginal(rule, "abc"),
             "   ");
+    }
+
+    private static void RunDisplayParserRegexOutputEscapes()
+    {
+        DisplayParserRule rule = ParserRule(RegexStage(
+            @"(?<value>abc)",
+            @"{value}\n\t\\\u0041\r\q"));
+
+        AssertEqual(
+            "display parser regex output escapes",
+            DisplayParserEvaluator.EvaluateOrOriginal(rule, "abc"),
+            "abc\n\t\\A\r\\q");
+    }
+
+    private static void RunDisplayParserRegexPatternEscapesRemainRegex()
+    {
+        DisplayParserRule rule = ParserRule(RegexStage(@"\b(?<value>\d+)\b", "{value}"));
+
+        AssertEqual(
+            "display parser regex pattern escapes remain regex",
+            DisplayParserEvaluator.EvaluateOrOriginal(rule, "id 42 value"),
+            "42");
+    }
+
+    private static void RunDisplayParserRegexInvalidOutputEscapeValidation()
+    {
+        try
+        {
+            DisplayParserEvaluator.ValidateStage(RegexStage("abc", @"{0}\u123"));
+        }
+        catch (ArgumentException ex) when (ex.Message.Contains("Unicode escape", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        throw new InvalidOperationException("display parser regex invalid output escape: expected validation failure.");
     }
 
     private static void RunDisplayParserRegexInvalidRegexValidation()
@@ -529,6 +595,16 @@ internal static class Program
         DisplayParserRule rule = ParserRule(RegexReplaceStage(@"x", @"\t\n\r\\"));
 
         AssertEqual("display parser regex replace replacement escapes", DisplayParserEvaluator.EvaluateOrOriginal(rule, "x"), "\t\n\r\\");
+    }
+
+    private static void RunDisplayParserRegexReplaceEscapedBackslashPreservesText()
+    {
+        DisplayParserRule rule = ParserRule(RegexReplaceStage("x", @"\\n"));
+
+        AssertEqual(
+            "display parser regex replace escaped backslash preserves text",
+            DisplayParserEvaluator.EvaluateOrOriginal(rule, "x"),
+            @"\n");
     }
 
     private static void RunDisplayParserRegexReplacePreservesUnknownReplacementEscape()

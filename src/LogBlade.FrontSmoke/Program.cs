@@ -1143,7 +1143,20 @@ internal static class Program
             "x",
             display,
             hasPreviousFilter: false);
-        AssertEqual("regex display keeps escape literal", displayOutput, @"x\n");
+        AssertEqual("regex display keeps parser lf", displayOutput, "x\n");
+        AssertEqual("regex display preview renders crlf", MultilineEditText.Normalize(displayOutput), "x\r\n");
+
+        DisplayParserStage json = new()
+        {
+            Mode = DisplayParserMode.Json,
+            Rule = @"{Value}\nnext"
+        };
+        string jsonOutput = ParserStageEditorWindow.EvaluateStagePreview(
+            "{\"Value\":\"value\"}",
+            json,
+            hasPreviousFilter: false);
+        AssertEqual("json template keeps parser lf", jsonOutput, "value\nnext");
+        AssertEqual("json template preview renders crlf", MultilineEditText.Normalize(jsonOutput), "value\r\nnext");
     }
 
     private static void RunClipboardHeaders()

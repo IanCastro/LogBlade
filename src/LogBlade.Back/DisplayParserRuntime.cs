@@ -137,9 +137,8 @@ internal sealed class DisplayParserRuntime
     private sealed class CompiledDisplayParserStage
     {
         private readonly string _rule;
-        private readonly string _template;
         private readonly Regex? _regex;
-        private readonly string _decodedReplacement = string.Empty;
+        private readonly string _decodedOutput = string.Empty;
         private readonly bool _isValid = true;
         private readonly HashSet<string>? _regexGroupNames;
         private readonly SearchOptions _filterOptions;
@@ -151,17 +150,17 @@ internal sealed class DisplayParserRuntime
         {
             Mode = stage.Mode;
             _rule = stage.Rule ?? string.Empty;
-            _template = stage.Template ?? string.Empty;
             try
             {
                 if (Mode is DisplayParserMode.Regex or DisplayParserMode.RegexReplace)
                 {
                     _regex = new Regex(_rule, RegexOptions.CultureInvariant);
                     _regexGroupNames = new HashSet<string>(_regex.GetGroupNames(), StringComparer.Ordinal);
-                    if (Mode == DisplayParserMode.RegexReplace)
-                    {
-                        _decodedReplacement = DisplayParserEvaluator.DecodeRegexReplacementEscapes(_template);
-                    }
+                    _decodedOutput = DisplayParserEvaluator.DecodeOutputEscapes(stage.Template ?? string.Empty);
+                }
+                else if (Mode == DisplayParserMode.Json)
+                {
+                    _decodedOutput = DisplayParserEvaluator.DecodeOutputEscapes(_rule);
                 }
                 else if (Mode == DisplayParserMode.Filter)
                 {
@@ -236,8 +235,8 @@ internal sealed class DisplayParserRuntime
                 parsed = Mode switch
                 {
                     DisplayParserMode.Regex => EvaluateRegex(input),
-                    DisplayParserMode.Json => DisplayParserEvaluator.EvaluateJson(_rule, input),
-                    DisplayParserMode.RegexReplace => _regex!.Replace(input, _decodedReplacement),
+                    DisplayParserMode.Json => DisplayParserEvaluator.EvaluateJson(_decodedOutput, input),
+                    DisplayParserMode.RegexReplace => _regex!.Replace(input, _decodedOutput),
                     DisplayParserMode.Filter => input,
                     _ => input
                 };
@@ -291,7 +290,7 @@ internal sealed class DisplayParserRuntime
                 throw new InvalidOperationException("Regex did not match.");
             }
 
-            string displayTemplate = string.IsNullOrEmpty(_template) ? "{0}" : _template;
+            string displayTemplate = string.IsNullOrEmpty(_decodedOutput) ? "{0}" : _decodedOutput;
             return DisplayParserEvaluator.RenderTemplate(
                 displayTemplate,
                 selector => ResolveRegexPlaceholder(match, selector));
