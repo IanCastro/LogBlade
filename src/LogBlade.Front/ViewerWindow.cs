@@ -501,12 +501,14 @@ internal sealed class ViewerWindow
                     self.OnPastedTextLaunchComplete(lParam);
                     return IntPtr.Zero;
                 case NativeMethods.WM_CLOSE:
-                    if (self._configurationWindowOpen)
+                    if (self._closing)
                     {
                         return IntPtr.Zero;
                     }
 
+                    self._closing = true;
                     self.SaveWindowState();
+                    AuxiliaryWindowRegistry.CloseAll();
                     return NativeMethods.DefWindowProcW(hwnd, msg, wParam, lParam);
                 case NativeMethods.WM_DESTROY:
                     self._closing = true;
@@ -862,6 +864,11 @@ internal sealed class ViewerWindow
             _configurationWindowOpen = false;
         }
 
+        if (_closing)
+        {
+            return;
+        }
+
         if (saved)
         {
             ReloadHighlightRules();
@@ -896,6 +903,11 @@ internal sealed class ViewerWindow
 
     private void ApplyHighlightRulePreview(IReadOnlyList<HighlightRule> rules)
     {
+        if (_closing)
+        {
+            return;
+        }
+
         _compiledHighlightRules = HighlightRuleCompiler.Compile(rules);
         ApplyHighlightRulesToPanes();
     }
@@ -1013,15 +1025,27 @@ internal sealed class ViewerWindow
         try
         {
             selectedRuleName = manager.ShowModal(_hwnd);
-            effectiveRuleBeforeClose = GetValidEffectiveParserRule();
+            if (!_closing)
+            {
+                effectiveRuleBeforeClose = GetValidEffectiveParserRule();
+            }
         }
         finally
         {
             _configurationWindowOpen = false;
-            NativeMethods.EnableWindow(_parserCombo, true);
-            NativeMethods.EnableWindow(_highlightingButton, true);
+            if (!_closing)
+            {
+                NativeMethods.EnableWindow(_parserCombo, true);
+                NativeMethods.EnableWindow(_highlightingButton, true);
+            }
+
             _parserPreviewActive = false;
             _previewParserRule = null;
+        }
+
+        if (_closing)
+        {
+            return;
         }
 
         if (!string.Equals(activeRuleName, selectedRuleName, StringComparison.OrdinalIgnoreCase))
@@ -1035,6 +1059,11 @@ internal sealed class ViewerWindow
 
     private void ApplyParserPreview(DisplayParserRule? rule)
     {
+        if (_closing)
+        {
+            return;
+        }
+
         DisplayParserRule? previousRule = GetValidEffectiveParserRule();
         DisplayParserRule? validRule = null;
         if (rule is not null)

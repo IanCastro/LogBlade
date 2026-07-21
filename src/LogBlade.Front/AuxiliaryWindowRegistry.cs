@@ -28,6 +28,22 @@ internal static class AuxiliaryWindowRegistry
         s_hiddenByMainWindow.Remove(hwnd);
     }
 
+    public static void CloseAll()
+    {
+        IntPtr[] openWindows = s_openWindows.ToArray();
+        s_openWindows.Clear();
+        s_hiddenByMainWindow.Clear();
+        s_mainWindowMinimized = false;
+
+        for (int i = openWindows.Length - 1; i >= 0; i--)
+        {
+            if (openWindows[i] != IntPtr.Zero)
+            {
+                NativeMethods.DestroyWindow(openWindows[i]);
+            }
+        }
+    }
+
     public static void SetMainWindowMinimized(bool minimized)
     {
         if (s_mainWindowMinimized == minimized)
