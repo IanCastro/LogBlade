@@ -14,8 +14,8 @@ internal sealed class ParserStageEditorWindow
     private const int IdPreviewEdit = 106;
     private const int IdBeforeEdit = 107;
     private const int IdNameEdit = 108;
-    private const int IdSaveButton = 201;
-    private const int IdCancelButton = 202;
+    private const int IdSaveButton = NativeMethods.IDOK;
+    private const int IdCancelButton = NativeMethods.IDCANCEL;
     private const int IdAddNewStageButton = 203;
     private const int IdUndoStageButton = 204;
     private const int IdFilterRegex = 110;
@@ -211,8 +211,11 @@ internal sealed class ParserStageEditorWindow
             NativeMethods.MSG msg;
             while (!_closed && NativeMethods.GetMessageW(out msg, IntPtr.Zero, 0, 0) > 0)
             {
-                NativeMethods.TranslateMessage(ref msg);
-                NativeMethods.DispatchMessageW(ref msg);
+                if (!NativeMethods.IsDialogMessageW(_hwnd, ref msg))
+                {
+                    NativeMethods.TranslateMessage(ref msg);
+                    NativeMethods.DispatchMessageW(ref msg);
+                }
             }
         }
         finally
@@ -376,7 +379,7 @@ internal sealed class ParserStageEditorWindow
             NativeMethods.SetWindowTextW(_beforeEdit, _sampleText);
         }
 
-        _saveButton = CreateButton("Save", IdSaveButton);
+        _saveButton = CreateButton("Save", IdSaveButton, isDefault: true);
         if (_createRuleMode)
         {
             _addNewStageButton = CreateButton("Add New Stage", IdAddNewStageButton);
@@ -1054,13 +1057,16 @@ internal sealed class ParserStageEditorWindow
         return hwnd;
     }
 
-    private IntPtr CreateButton(string text, int id)
+    private IntPtr CreateButton(string text, int id, bool isDefault = false)
     {
+        int buttonStyle = isDefault
+            ? NativeMethods.BS_DEFPUSHBUTTON
+            : NativeMethods.BS_PUSHBUTTON;
         IntPtr hwnd = NativeMethods.CreateWindowExW(
             0,
             "BUTTON",
             text,
-            NativeMethods.WS_CHILD | NativeMethods.WS_VISIBLE | NativeMethods.WS_TABSTOP | NativeMethods.BS_PUSHBUTTON,
+            NativeMethods.WS_CHILD | NativeMethods.WS_VISIBLE | NativeMethods.WS_TABSTOP | buttonStyle,
             0,
             0,
             10,

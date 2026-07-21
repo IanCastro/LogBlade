@@ -21,8 +21,8 @@ internal sealed class HighlightRuleManagerWindow
     private const int IdRemove = 203;
     private const int IdUp = 204;
     private const int IdDown = 205;
-    private const int IdOk = 206;
-    private const int IdCancel = 207;
+    private const int IdOk = NativeMethods.IDOK;
+    private const int IdCancel = NativeMethods.IDCANCEL;
     private const int IdExport = 208;
     private const int IdImport = 209;
     private const int RuleListItemHeight = 24;
@@ -274,7 +274,7 @@ internal sealed class HighlightRuleManagerWindow
         _foregroundColorLabel = CreateLabel("Text");
         _foregroundColorSwatch = CreateSwatch();
         _chooseForegroundColorButton = CreateButton("Choose...", IdChooseForegroundColor);
-        _okButton = CreateButton("OK", IdOk);
+        _okButton = CreateButton("OK", IdOk, isDefault: true);
         _cancelButton = CreateButton("Cancel", IdCancel);
 
         ReloadList(_rules.Count > 0 ? 0 : -1);
@@ -803,7 +803,13 @@ internal sealed class HighlightRuleManagerWindow
 
     private IntPtr CreateCheckbox(string text, int id) => CreateControl("BUTTON", text, NativeMethods.WS_CHILD | NativeMethods.WS_VISIBLE | NativeMethods.WS_TABSTOP | NativeMethods.BS_AUTOCHECKBOX, id);
 
-    private IntPtr CreateButton(string text, int id) => CreateControl("BUTTON", text, NativeMethods.WS_CHILD | NativeMethods.WS_VISIBLE | NativeMethods.WS_TABSTOP | NativeMethods.BS_PUSHBUTTON, id);
+    private IntPtr CreateButton(string text, int id, bool isDefault = false) =>
+        CreateControl(
+            "BUTTON",
+            text,
+            NativeMethods.WS_CHILD | NativeMethods.WS_VISIBLE | NativeMethods.WS_TABSTOP |
+                (isDefault ? NativeMethods.BS_DEFPUSHBUTTON : NativeMethods.BS_PUSHBUTTON),
+            id);
 
     private IntPtr CreateControl(string className, string text, int style, int id)
     {

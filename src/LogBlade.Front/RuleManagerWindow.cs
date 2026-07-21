@@ -12,7 +12,7 @@ internal sealed class RuleManagerWindow
     private const int IdEditButton = 202;
     private const int IdRemoveButton = 203;
     private const int IdDuplicateButton = 204;
-    private const int IdCloseButton = 205;
+    private const int IdCloseButton = NativeMethods.IDCANCEL;
     private const int IdUpButton = 206;
     private const int IdDownButton = 207;
     private const int IdExportButton = 208;
@@ -94,8 +94,11 @@ internal sealed class RuleManagerWindow
                     continue;
                 }
 
-                NativeMethods.TranslateMessage(ref msg);
-                NativeMethods.DispatchMessageW(ref msg);
+                if (!NativeMethods.IsDialogMessageW(_hwnd, ref msg))
+                {
+                    NativeMethods.TranslateMessage(ref msg);
+                    NativeMethods.DispatchMessageW(ref msg);
+                }
             }
         }
         finally

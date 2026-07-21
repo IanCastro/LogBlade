@@ -28,6 +28,7 @@ internal static class NativeMethods
     public const int BS_AUTOCHECKBOX = 0x00000003;
     public const int BS_AUTORADIOBUTTON = 0x00000009;
     public const int BS_PUSHBUTTON = 0x00000000;
+    public const int BS_DEFPUSHBUTTON = 0x00000001;
     public const int BS_PUSHLIKE = 0x00001000;
     public const int CBS_DROPDOWNLIST = 0x0003;
     public const int CBS_OWNERDRAWFIXED = 0x0010;
@@ -88,6 +89,8 @@ internal static class NativeMethods
     public const int WM_ERASEBKGND = 0x0014;
     public const int WM_NCCREATE = 0x0081;
     public const int WM_NCDESTROY = 0x0082;
+    public const int IDOK = 1;
+    public const int IDCANCEL = 2;
     public const int SC_MINIMIZE = 0xF020;
     public const int BM_GETCHECK = 0x00F0;
     public const int BM_SETCHECK = 0x00F1;

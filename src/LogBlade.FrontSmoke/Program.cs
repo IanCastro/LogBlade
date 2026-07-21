@@ -83,8 +83,13 @@ internal static class Program
         AssertReferenceContains(reference, @"\b");
         AssertReferenceContains(reference, @"\.");
         AssertReferenceContains(reference, @"\\");
+        AssertReferenceContains(reference, "Anchors and alternation");
+        AssertReferenceContains(reference, "Start of the current input");
+        AssertReferenceContains(reference, "End of the current input");
         AssertReferenceContains(reference, "Complete parser example");
         AssertReferenceContains(reference, "Display template");
+        AssertReferenceContains(reference, "Input             12:34:56 error Disk full");
+        AssertReferenceContains(reference, "Result            12:34:56 [ERROR] Disk full");
         AssertReferenceContains(reference, "Regex Replace renders the template for every match.");
         AssertReferenceContains(reference, "Lookarounds and backreferences in patterns are not supported by NonBacktracking.");
         AssertReferenceContains(reference, "Displayed as result columns");

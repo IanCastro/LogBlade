@@ -25,9 +25,9 @@ Characters and classes
   \.                 Literal dot
   \\                 Literal backslash
 
-Anchors and alternatives
-  ^                 Start of the explicit line
-  $                 End of the explicit line
+Anchors and alternation
+  ^                 Start of the current input
+  $                 End of the current input
   \b                Word boundary
   a|b               Either a or b
 
@@ -84,8 +84,10 @@ Regex Display renders the first match. Regex Replace renders the template for ev
 JSON Template resolves selectors from the parsed JSON value.
 
 Complete parser example
+  Input             12:34:56 error Disk full
   Regex pattern     ^(?<time>\S+)\s+(?<level>\w+)\s+(?<message>.*)$
   Display template  ${time} [${upper:level}] ${message}
+  Result            12:34:56 [ERROR] Disk full
 """;
 
     private static readonly NativeMethods.WindowProc s_wndProc = WindowProc;

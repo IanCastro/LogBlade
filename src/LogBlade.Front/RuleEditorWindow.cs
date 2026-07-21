@@ -14,8 +14,8 @@ internal sealed class RuleEditorWindow
     private const int IdRemoveStageButton = 203;
     private const int IdUpStageButton = 204;
     private const int IdDownStageButton = 205;
-    private const int IdSaveButton = 206;
-    private const int IdCancelButton = 207;
+    private const int IdSaveButton = NativeMethods.IDOK;
+    private const int IdCancelButton = NativeMethods.IDCANCEL;
 
     private readonly IReadOnlyList<DisplayParserRule> _existingRules;
     private readonly DisplayParserRule? _initialRule;
@@ -118,8 +118,11 @@ internal sealed class RuleEditorWindow
             NativeMethods.MSG msg;
             while (!_closed && NativeMethods.GetMessageW(out msg, IntPtr.Zero, 0, 0) > 0)
             {
-                NativeMethods.TranslateMessage(ref msg);
-                NativeMethods.DispatchMessageW(ref msg);
+                if (!NativeMethods.IsDialogMessageW(_hwnd, ref msg))
+                {
+                    NativeMethods.TranslateMessage(ref msg);
+                    NativeMethods.DispatchMessageW(ref msg);
+                }
             }
         }
         finally
@@ -272,7 +275,7 @@ internal sealed class RuleEditorWindow
         _sampleEdit = CreateEdit(IdSampleEdit, multiline: true, readOnly: false);
         _previewLabel = CreateLabel("Preview");
         _previewEdit = CreateEdit(IdPreviewEdit, multiline: true, readOnly: true);
-        _saveButton = CreateButton("Save", IdSaveButton);
+        _saveButton = CreateButton("Save", IdSaveButton, isDefault: true);
         _cancelButton = CreateButton("Cancel", IdCancelButton);
 
         if (_initialRule is null)
@@ -768,13 +771,16 @@ internal sealed class RuleEditorWindow
         return hwnd;
     }
 
-    private IntPtr CreateButton(string text, int id)
+    private IntPtr CreateButton(string text, int id, bool isDefault = false)
     {
+        int buttonStyle = isDefault
+            ? NativeMethods.BS_DEFPUSHBUTTON
+            : NativeMethods.BS_PUSHBUTTON;
         IntPtr hwnd = NativeMethods.CreateWindowExW(
             0,
             "BUTTON",
             text,
-            NativeMethods.WS_CHILD | NativeMethods.WS_VISIBLE | NativeMethods.WS_TABSTOP | NativeMethods.BS_PUSHBUTTON,
+            NativeMethods.WS_CHILD | NativeMethods.WS_VISIBLE | NativeMethods.WS_TABSTOP | buttonStyle,
             0,
             0,
             10,
