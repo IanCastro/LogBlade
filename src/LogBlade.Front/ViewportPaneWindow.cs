@@ -211,6 +211,7 @@ internal sealed class ViewportPaneWindow : IDisposable
     public int VisibleLineCount => Math.Max(1, _visibleLineCount);
     public int VisibleDataLineCount => Math.Max(1, _visibleLineCount - GetHeaderLineCount(_reader));
     public bool IsVisible => _isVisible;
+    public bool HasSelection => HasTextSelection || _selectionSelectAllRows || _selectionRanges.Count > 0 || _cellSelectionColumns.Count > 0;
 
     public void Create(IntPtr parentHwnd, IntPtr hInstance)
     {
@@ -3237,8 +3238,6 @@ internal sealed class ViewportPaneWindow : IDisposable
 
         return false;
     }
-
-    private bool HasSelection => HasTextSelection || _selectionSelectAllRows || _selectionRanges.Count > 0 || _cellSelectionColumns.Count > 0;
 
     private bool HasTextSelection => _textSelectionRowKey is not null || (_textSelectionSegmentKey is not null && _textSelectionContext is not null);
 

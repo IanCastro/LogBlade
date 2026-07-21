@@ -38,6 +38,7 @@ internal static class Program
             Run("cascaded filter stage preview", RunCascadedFilterStagePreview);
             Run("parser processing equivalence", RunParserProcessingEquivalence);
             Run("search input visibility", RunSearchInputVisibility);
+            Run("viewport focus restore", RunViewportFocusRestore);
             Run("output export", () => RunOutputExport(tempRoot));
             Run("window state store", () => RunWindowStateStore(tempRoot));
             Run("regex reference content", RunRegexReferenceContent);
@@ -301,6 +302,50 @@ internal static class Program
             "manual searches start expanded",
             ViewerWindow.GetDefaultSearchInputVisibility(isParserFilter: false),
             true);
+    }
+
+    private static void RunViewportFocusRestore()
+    {
+        IntPtr mainHwnd = new(1);
+        IntPtr paneHwnd = new(2);
+        IntPtr otherControlHwnd = new(3);
+
+        AssertEqual(
+            "restore selected pane without a focused control",
+            ViewerWindow.ShouldRestoreViewportFocus(false, false, true, true, paneHwnd, IntPtr.Zero, mainHwnd),
+            true);
+        AssertEqual(
+            "restore selected pane when main window has focus",
+            ViewerWindow.ShouldRestoreViewportFocus(false, false, true, true, paneHwnd, mainHwnd, mainHwnd),
+            true);
+        AssertEqual(
+            "preserve another focused control",
+            ViewerWindow.ShouldRestoreViewportFocus(false, false, true, true, paneHwnd, otherControlHwnd, mainHwnd),
+            false);
+        AssertEqual(
+            "do not refocus an already focused pane",
+            ViewerWindow.ShouldRestoreViewportFocus(false, false, true, true, paneHwnd, paneHwnd, mainHwnd),
+            false);
+        AssertEqual(
+            "do not restore without selection",
+            ViewerWindow.ShouldRestoreViewportFocus(false, false, true, false, paneHwnd, IntPtr.Zero, mainHwnd),
+            false);
+        AssertEqual(
+            "do not restore a hidden pane",
+            ViewerWindow.ShouldRestoreViewportFocus(false, false, false, true, paneHwnd, IntPtr.Zero, mainHwnd),
+            false);
+        AssertEqual(
+            "do not restore a destroyed pane",
+            ViewerWindow.ShouldRestoreViewportFocus(false, false, true, true, IntPtr.Zero, IntPtr.Zero, mainHwnd),
+            false);
+        AssertEqual(
+            "do not restore while closing",
+            ViewerWindow.ShouldRestoreViewportFocus(true, false, true, true, paneHwnd, IntPtr.Zero, mainHwnd),
+            false);
+        AssertEqual(
+            "do not restore over a configuration window",
+            ViewerWindow.ShouldRestoreViewportFocus(false, true, true, true, paneHwnd, IntPtr.Zero, mainHwnd),
+            false);
     }
 
     private static void RunOutputExport(string tempRoot)

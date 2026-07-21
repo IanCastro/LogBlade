@@ -103,6 +103,7 @@ internal sealed class ViewerWindow
     private bool _configurationWindowOpen;
     private bool _resourcesDisposed;
     private bool _windowStateSaved;
+    private ViewportPaneWindow? _viewportPanePendingFocusRestore;
     private bool _updatingParserCombo;
     private bool _updatingSearchControls;
     private long _knownContentFileSize;
@@ -440,6 +441,9 @@ internal sealed class ViewerWindow
                 case NativeMethods.WM_SIZE:
                     self.OnSize(wParam.ToInt32());
                     return IntPtr.Zero;
+                case NativeMethods.WM_ACTIVATEAPP:
+                    self.OnAppActivationChanged(wParam != IntPtr.Zero);
+                    return NativeMethods.DefWindowProcW(hwnd, msg, wParam, lParam);
                 case NativeMethods.WM_COMMAND:
                     self.OnCommand(wParam, lParam);
                     return IntPtr.Zero;
@@ -499,6 +503,9 @@ internal sealed class ViewerWindow
                     return IntPtr.Zero;
                 case NativeMethods.WM_APP_PASTE_COMPLETE:
                     self.OnPastedTextLaunchComplete(lParam);
+                    return IntPtr.Zero;
+                case NativeMethods.WM_APP_RESTORE_VIEWPORT_FOCUS:
+                    self.RestoreViewportPaneFocus();
                     return IntPtr.Zero;
                 case NativeMethods.WM_CLOSE:
                     if (self._closing)
@@ -2042,6 +2049,83 @@ internal sealed class ViewerWindow
 
         UpdateLayout();
     }
+
+    private void OnAppActivationChanged(bool active)
+    {
+        if (!active)
+        {
+            _viewportPanePendingFocusRestore = FindFocusedSelectedViewportPane();
+            return;
+        }
+
+        if (_viewportPanePendingFocusRestore is not null &&
+            !NativeMethods.PostMessageW(_hwnd, NativeMethods.WM_APP_RESTORE_VIEWPORT_FOCUS, IntPtr.Zero, IntPtr.Zero))
+        {
+            _viewportPanePendingFocusRestore = null;
+        }
+    }
+
+    private ViewportPaneWindow? FindFocusedSelectedViewportPane()
+    {
+        IntPtr focusedWindow = NativeMethods.GetFocus();
+        if (_mainPane is ViewportPaneWindow mainPane &&
+            mainPane.Hwnd == focusedWindow &&
+            mainPane.IsVisible &&
+            mainPane.HasSelection)
+        {
+            return mainPane;
+        }
+
+        for (int i = 0; i < _activeSearchLevelCount && i < _searchLevels.Count; i++)
+        {
+            if (_searchLevels[i].ResultsPane is ViewportPaneWindow pane &&
+                pane.Hwnd == focusedWindow &&
+                pane.IsVisible &&
+                pane.HasSelection)
+            {
+                return pane;
+            }
+        }
+
+        return null;
+    }
+
+    private void RestoreViewportPaneFocus()
+    {
+        ViewportPaneWindow? pane = _viewportPanePendingFocusRestore;
+        _viewportPanePendingFocusRestore = null;
+        if (pane is null)
+        {
+            return;
+        }
+
+        if (ShouldRestoreViewportFocus(
+            _closing,
+            _configurationWindowOpen,
+            pane.IsVisible,
+            pane.HasSelection,
+            pane.Hwnd,
+            NativeMethods.GetFocus(),
+            _hwnd))
+        {
+            pane.Focus();
+        }
+    }
+
+    internal static bool ShouldRestoreViewportFocus(
+        bool closing,
+        bool configurationWindowOpen,
+        bool paneVisible,
+        bool paneHasSelection,
+        IntPtr paneHwnd,
+        IntPtr currentFocusHwnd,
+        IntPtr mainHwnd) =>
+        !closing &&
+        !configurationWindowOpen &&
+        paneVisible &&
+        paneHasSelection &&
+        paneHwnd != IntPtr.Zero &&
+        (currentFocusHwnd == IntPtr.Zero || currentFocusHwnd == mainHwnd);
 
     private void SaveWindowState()
     {

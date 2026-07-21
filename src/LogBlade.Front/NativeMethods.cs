@@ -64,6 +64,7 @@ internal static class NativeMethods
     public const int GWLP_USERDATA = -21;
     public const int WM_CREATE = 0x0001;
     public const int WM_DESTROY = 0x0002;
+    public const int WM_ACTIVATEAPP = 0x001C;
     public const int WM_CLOSE = 0x0010;
     public const int WM_COMMAND = 0x0111;
     public const int WM_SYSCOMMAND = 0x0112;
@@ -115,6 +116,7 @@ internal static class NativeMethods
     public const int WM_APP_SEARCH_COMPLETE = WM_APP + 4;
     public const int WM_APP_FILE_CHANGED = WM_APP + 5;
     public const int WM_APP_PASTE_COMPLETE = WM_APP + 6;
+    public const int WM_APP_RESTORE_VIEWPORT_FOCUS = WM_APP + 7;
     public const int SB_LINEUP = 0;
     public const int SB_LINEDOWN = 1;
     public const int SB_PAGEUP = 2;
@@ -682,6 +684,9 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     public static extern IntPtr SetFocus(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetFocus();
 
     [DllImport("user32.dll")]
     public static extern short GetKeyState(int nVirtKey);
