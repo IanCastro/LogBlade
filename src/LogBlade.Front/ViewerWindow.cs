@@ -62,8 +62,10 @@ internal sealed class ViewerWindow
     private const int SearchProgressRowHeight = 24;
     private const int SearchDebounceMs = 200;
     private const nuint SearchDebounceTimerId = 1;
-    private const int SearchInnerPadding = 4;
-    private const int SearchLevelRowGap = 4;
+    private const int SearchHorizontalPadding = 4;
+    private const int SearchVerticalPadding = 0;
+    private const int SearchLevelVerticalGap = 0;
+    private const int SearchControlGap = 4;
     private const int SearchProgressGap = 4;
     private const int SearchToggleGap = 8;
     private const int RegexToggleWidth = 72;
@@ -5409,10 +5411,10 @@ internal sealed class ViewerWindow
     {
         int levelCount = Math.Max(1, _searchLevels.Count);
         int activeCount = Math.Min(GetVisibleActiveSearchResultCount(), levelCount);
-        return (SearchInnerPadding * 2) +
+        return (SearchVerticalPadding * 2) +
             (levelCount * SearchInputRowHeight) +
-            (Math.Max(0, levelCount - 1) * SearchLevelRowGap) +
-            (activeCount * SearchLevelRowGap) +
+            (Math.Max(0, levelCount - 1) * SearchLevelVerticalGap) +
+            (activeCount * SearchLevelVerticalGap) +
             SearchProgressGap +
             SearchProgressRowHeight;
     }
@@ -5758,7 +5760,10 @@ internal sealed class ViewerWindow
             bottom = searchAreaBottom
         };
 
-        NativeMethods.RECT searchAreaInner = InsetRect(searchAreaRect, SearchInnerPadding);
+        NativeMethods.RECT searchAreaInner = InsetRect(
+            searchAreaRect,
+            SearchHorizontalPadding,
+            SearchVerticalPadding);
         SearchLevelLayout[] searchLevelLayouts = new SearchLevelLayout[_searchLevels.Count];
         int rowTop = searchAreaInner.top;
         bool hasVisibleLevel = false;
@@ -5766,7 +5771,7 @@ internal sealed class ViewerWindow
         {
             if (hasVisibleLevel)
             {
-                rowTop += SearchLevelRowGap;
+                rowTop += SearchLevelVerticalGap;
             }
 
             int inputBottom = Math.Min(searchAreaInner.bottom, rowTop + SearchInputRowHeight);
@@ -5794,7 +5799,7 @@ internal sealed class ViewerWindow
                 };
                 editLeft = Math.Min(
                     inputRowRect.right,
-                    inputVisibilityRect.right + SearchLevelRowGap);
+                    inputVisibilityRect.right + SearchControlGap);
             }
 
             NativeMethods.RECT invertMatchRect = new()
@@ -5833,7 +5838,7 @@ internal sealed class ViewerWindow
             rowTop = inputBottom;
             if (i < _activeSearchLevelCount && IsSearchResultVisible(i))
             {
-                rowTop += SearchLevelRowGap;
+                rowTop += SearchLevelVerticalGap;
                 resultDividerY = rowTop;
                 int resultHeight = i < searchResultHeights.Length ? searchResultHeights[i] : 0;
                 int resultBottom = Math.Min(searchAreaInner.bottom, rowTop + resultHeight);
@@ -6274,14 +6279,17 @@ internal sealed class ViewerWindow
 
     private static NativeMethods.RECT CreateZeroRect() => new();
 
-    private static NativeMethods.RECT InsetRect(NativeMethods.RECT rect, int inset)
+    private static NativeMethods.RECT InsetRect(
+        NativeMethods.RECT rect,
+        int horizontalInset,
+        int verticalInset)
     {
         return new NativeMethods.RECT
         {
-            left = Math.Min(rect.right, rect.left + inset),
-            top = Math.Min(rect.bottom, rect.top + inset),
-            right = Math.Max(rect.left, rect.right - inset),
-            bottom = Math.Max(rect.top, rect.bottom - inset)
+            left = Math.Min(rect.right, rect.left + horizontalInset),
+            top = Math.Min(rect.bottom, rect.top + verticalInset),
+            right = Math.Max(rect.left, rect.right - horizontalInset),
+            bottom = Math.Max(rect.top, rect.bottom - verticalInset)
         };
     }
 
