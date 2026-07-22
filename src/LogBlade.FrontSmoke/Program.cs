@@ -38,6 +38,7 @@ internal static class Program
             Run("cascaded filter stage preview", RunCascadedFilterStagePreview);
             Run("parser processing equivalence", RunParserProcessingEquivalence);
             Run("search input visibility", RunSearchInputVisibility);
+            Run("panel divider resize", RunPanelDividerResize);
             Run("viewport focus restore", RunViewportFocusRestore);
             Run("output export", () => RunOutputExport(tempRoot));
             Run("window state store", () => RunWindowStateStore(tempRoot));
@@ -346,6 +347,115 @@ internal static class Program
             "do not restore over a configuration window",
             ViewerWindow.ShouldRestoreViewportFocus(false, true, true, true, paneHwnd, IntPtr.Zero, mainHwnd),
             false);
+    }
+
+    private static void RunPanelDividerResize()
+    {
+        double[] startRatios = { 0.30d, 0.20d, 0.10d, 0.40d };
+        AssertDividerPositions(
+            "second divider moves left",
+            ViewerWindow.ResizePanelRatiosAtDivider(startRatios, 1, 0.25d),
+            0.15d,
+            0.25d,
+            0.40d);
+        AssertDividerPositions(
+            "second divider moves right",
+            ViewerWindow.ResizePanelRatiosAtDivider(startRatios, 1, 0.75d),
+            0.45d,
+            0.75d,
+            0.80d);
+        AssertPanelRatios(
+            "first divider preserves right proportions",
+            ViewerWindow.ResizePanelRatiosAtDivider(new[] { 0.20d, 0.30d, 0.10d, 0.40d }, 0, 0.40d),
+            0.40d,
+            0.225d,
+            0.075d,
+            0.30d);
+        AssertPanelRatios(
+            "last divider preserves left proportions",
+            ViewerWindow.ResizePanelRatiosAtDivider(new[] { 0.20d, 0.30d, 0.10d, 0.40d }, 2, 0.80d),
+            0.26666666666666666d,
+            0.40d,
+            0.13333333333333333d,
+            0.20d);
+        AssertPanelRatios(
+            "left endpoint collapses left panels",
+            ViewerWindow.ResizePanelRatiosAtDivider(startRatios, 1, 0d),
+            0d,
+            0d,
+            0.20d,
+            0.80d);
+        AssertPanelRatios(
+            "right endpoint collapses right panels",
+            ViewerWindow.ResizePanelRatiosAtDivider(startRatios, 1, 1d),
+            0.60d,
+            0.40d,
+            0d,
+            0d);
+        AssertPanelRatios(
+            "collapsed left side reopens evenly",
+            ViewerWindow.ResizePanelRatiosAtDivider(new[] { 0d, 0d, 0.40d, 0.60d }, 1, 0.20d),
+            0.10d,
+            0.10d,
+            0.32d,
+            0.48d);
+        AssertPanelRatios(
+            "collapsed right side reopens evenly",
+            ViewerWindow.ResizePanelRatiosAtDivider(new[] { 0.40d, 0.60d, 0d, 0d }, 1, 0.80d),
+            0.32d,
+            0.48d,
+            0.10d,
+            0.10d);
+        AssertPanelRatios(
+            "invalid ratios normalize before resize",
+            ViewerWindow.ResizePanelRatiosAtDivider(new[] { double.NaN, -1d, 2d }, 1, 0.40d),
+            0.20d,
+            0.20d,
+            0.60d);
+        AssertPanelRatios(
+            "invalid divider leaves normalized ratios unchanged",
+            ViewerWindow.ResizePanelRatiosAtDivider(new[] { 2d, 1d }, 3, 0.50d),
+            0.50d,
+            0.50d);
+        AssertPanelRatios(
+            "invalid target keeps the original divider",
+            ViewerWindow.ResizePanelRatiosAtDivider(startRatios, 1, double.NaN),
+            startRatios);
+        AssertPanelRatios(
+            "visible-only ratios exclude hidden panels",
+            ViewerWindow.ResizePanelRatiosAtDivider(new[] { 0.25d, 0.75d }, 0, 0.40d),
+            0.40d,
+            0.60d);
+        AssertEqual(
+            "empty panel ratios stay empty",
+            ViewerWindow.ResizePanelRatiosAtDivider(Array.Empty<double>(), 0, 0.50d).Length,
+            0);
+    }
+
+    private static void AssertDividerPositions(
+        string name,
+        IReadOnlyList<double> panelRatios,
+        params double[] expectedPositions)
+    {
+        AssertEqual(name + " panel count", panelRatios.Count, expectedPositions.Length + 1);
+        double position = 0d;
+        for (int i = 0; i < expectedPositions.Length; i++)
+        {
+            position += panelRatios[i];
+            AssertNear(name + " divider " + i, position, expectedPositions[i], 0.000000001d);
+        }
+    }
+
+    private static void AssertPanelRatios(
+        string name,
+        IReadOnlyList<double> actual,
+        params double[] expected)
+    {
+        AssertEqual(name + " count", actual.Count, expected.Length);
+        for (int i = 0; i < expected.Length; i++)
+        {
+            AssertNear(name + " [" + i + "]", actual[i], expected[i], 0.000000001d);
+        }
     }
 
     private static void RunOutputExport(string tempRoot)
