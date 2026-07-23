@@ -64,8 +64,8 @@ Requirements: Windows x64 and the .NET 8 SDK with the NativeAOT build prerequisi
 ```powershell
 .\test-back.ps1
 .\test-front.ps1
-.\package.ps1 -Version 0.1.0-beta.1 -RequireNativeAot
-.\release.ps1 -Version 0.1.0-beta.1 -RequireNativeAot
+.\package.ps1 -Version 0.1.0-beta.2 -RequireNativeAot
+.\release.ps1 -Version 0.1.0-beta.2 -RequireNativeAot
 ```
 
 The final ZIP and checksum file are written to `artifacts\release`.
