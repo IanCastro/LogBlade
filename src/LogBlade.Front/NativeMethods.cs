@@ -47,6 +47,8 @@ internal static class NativeMethods
     public const int SIZE_RESTORED = 0;
     public const int SIZE_MINIMIZED = 1;
     public const int SIZE_MAXIMIZED = 2;
+    public const int SM_CYHSCROLL = 3;
+    public const int SM_CYBORDER = 6;
     public const int SM_CXDRAG = 68;
     public const int SM_CYDRAG = 69;
     public const int SRCCOPY = 0x00CC0020;

@@ -74,7 +74,6 @@ internal sealed class ViewerWindow
     private const int SearchInputVisibilityButtonWidth = 24;
     private const string SearchInputVisibilityGlyph = "\uE890";
     private const int SearchResizeHitSlopPx = 4;
-    private const string SearchResizeGripClassName = "LogBladeSearchResizeGripWindow";
     private const string NoParserText = "Choose a parser...";
     private const string ConfigureParserText = "Configure parsers...";
     private const int DefaultWindowWidth = 1100;
@@ -94,7 +93,6 @@ internal sealed class ViewerWindow
     private IntPtr _regexReferenceTooltipText;
     private IntPtr _searchInputVisibilityFont;
     private IntPtr _tooltipWindow;
-    private IntPtr _searchResizeGrip;
     private RegexReferenceWindow? _regexReferenceWindow;
     private FileSystemWatcher? _fileWatcher;
     private GCHandle _selfHandle;
@@ -150,8 +148,6 @@ internal sealed class ViewerWindow
 
     private static readonly NativeMethods.WindowProc s_wndProc = WindowProc;
     private static readonly NativeMethods.WindowProc s_searchEditProc = SearchEditProc;
-    private static readonly NativeMethods.WindowProc s_searchResizeGripProc = SearchResizeGripProc;
-    private static bool s_searchResizeGripRegistered;
 
     private sealed class SearchLevelState
     {
@@ -181,6 +177,7 @@ internal sealed class ViewerWindow
         public int[] VisibleSearchIndices = Array.Empty<int>();
         public double[] StartRatios = Array.Empty<double>();
         public double StartDividerPosition;
+        public double[] MinimumPanelRatios = Array.Empty<double>();
     }
 
     private sealed class PausedSearchCheckpoint
@@ -363,12 +360,6 @@ internal sealed class ViewerWindow
         return parent == IntPtr.Zero ? null : FromHandle(parent);
     }
 
-    private static ViewerWindow? FromSearchResizeGripHandle(IntPtr hwnd)
-    {
-        IntPtr parent = NativeMethods.GetParent(hwnd);
-        return parent == IntPtr.Zero ? null : FromHandle(parent);
-    }
-
     private static IntPtr SearchEditProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
     {
         ViewerWindow? self = FromSearchEditHandle(hwnd);
@@ -386,39 +377,6 @@ internal sealed class ViewerWindow
         return originalProc == IntPtr.Zero
             ? NativeMethods.DefWindowProcW(hwnd, msg, wParam, lParam)
             : NativeMethods.CallWindowProcW(originalProc, hwnd, msg, wParam, lParam);
-    }
-
-    private static IntPtr SearchResizeGripProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
-    {
-        ViewerWindow? self = FromSearchResizeGripHandle(hwnd);
-        switch (msg)
-        {
-            case NativeMethods.WM_SETCURSOR:
-                NativeMethods.SetCursor(NativeMethods.LoadCursorW(IntPtr.Zero, NativeMethods.IDC_SIZENS));
-                return new IntPtr(1);
-            case NativeMethods.WM_LBUTTONDOWN:
-                self?.BeginSearchResultsResizeFromGrip(lParam);
-                return IntPtr.Zero;
-            case NativeMethods.WM_MOUSEMOVE:
-                self?.UpdateSearchResultsResizeFromGrip(lParam);
-                return IntPtr.Zero;
-            case NativeMethods.WM_LBUTTONUP:
-                self?.EndSearchResultsResize();
-                return IntPtr.Zero;
-            case NativeMethods.WM_ERASEBKGND:
-                return new IntPtr(1);
-            case NativeMethods.WM_PAINT:
-                NativeMethods.PAINTSTRUCT ps;
-                IntPtr hdc = NativeMethods.BeginPaint(hwnd, out ps);
-                if (hdc != IntPtr.Zero)
-                {
-                    NativeMethods.EndPaint(hwnd, ref ps);
-                }
-
-                return IntPtr.Zero;
-            default:
-                return NativeMethods.DefWindowProcW(hwnd, msg, wParam, lParam);
-        }
     }
 
     private static IntPtr WindowProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
@@ -485,13 +443,6 @@ internal sealed class ViewerWindow
                 case NativeMethods.WM_MOUSEMOVE:
                     self.OnMouseMove(lParam);
                     return IntPtr.Zero;
-                case NativeMethods.WM_LBUTTONDOWN:
-                    if (self.OnLButtonDown(lParam))
-                    {
-                        return IntPtr.Zero;
-                    }
-
-                    return NativeMethods.DefWindowProcW(hwnd, msg, wParam, lParam);
                 case NativeMethods.WM_LBUTTONUP:
                     self.OnLButtonUp();
                     return IntPtr.Zero;
@@ -593,15 +544,12 @@ internal sealed class ViewerWindow
             italicFont: _italicFont,
             boldItalicFont: _boldItalicFont,
             onUsefulPaint: OnMainPaneUsefulPaint,
-            onPasteRequested: OpenClipboardText,
-            onHostVerticalResizeHit: OnMainPaneResizeHit,
-            onHostVerticalResizeBegin: OnMainPaneResizeBegin);
+            onPasteRequested: OpenClipboardText);
         _mainPane.Create(_hwnd, hInstance);
         _mainPane.SetHighlightRules(_compiledHighlightRules);
         _mainPane.SetStatus("Loading file...");
 
         CreateSearchLevel(hInstance);
-        CreateSearchResizeGrip(hInstance);
 
         UpdateLayout();
     }
@@ -1752,56 +1700,6 @@ internal sealed class ViewerWindow
         return level;
     }
 
-    private void CreateSearchResizeGrip(IntPtr hInstance)
-    {
-        EnsureSearchResizeGripClassRegistered(hInstance);
-        _searchResizeGrip = NativeMethods.CreateWindowExW(
-            NativeMethods.WS_EX_TRANSPARENT,
-            SearchResizeGripClassName,
-            string.Empty,
-            NativeMethods.WS_CHILD,
-            0,
-            0,
-            1,
-            1,
-            _hwnd,
-            IntPtr.Zero,
-            hInstance,
-            IntPtr.Zero);
-
-        if (_searchResizeGrip == IntPtr.Zero)
-        {
-            throw new InvalidOperationException("CreateWindowExW failed for search resize grip.");
-        }
-    }
-
-    private static void EnsureSearchResizeGripClassRegistered(IntPtr hInstance)
-    {
-        if (s_searchResizeGripRegistered)
-        {
-            return;
-        }
-
-        NativeMethods.WNDCLASSEXW wc = new()
-        {
-            cbSize = (uint)Marshal.SizeOf<NativeMethods.WNDCLASSEXW>(),
-            style = 0,
-            lpfnWndProc = s_searchResizeGripProc,
-            hInstance = hInstance,
-            hCursor = NativeMethods.LoadCursorW(IntPtr.Zero, NativeMethods.IDC_SIZENS),
-            hbrBackground = IntPtr.Zero,
-            lpszClassName = SearchResizeGripClassName
-        };
-
-        ushort atom = NativeMethods.RegisterClassExW(ref wc);
-        if (atom == 0)
-        {
-            throw new InvalidOperationException("RegisterClassExW failed for search resize grip.");
-        }
-
-        s_searchResizeGripRegistered = true;
-    }
-
     private void LoadContentSource(LogContentSource contentSource)
     {
         _contentSource = contentSource;
@@ -2185,7 +2083,7 @@ internal sealed class ViewerWindow
 
     private bool OnSetCursor()
     {
-        if (_searchPanelResize is not null || IsSearchResizeHit(GetClientCursorY()))
+        if (_searchPanelResize is not null)
         {
             NativeMethods.SetCursor(NativeMethods.LoadCursorW(IntPtr.Zero, NativeMethods.IDC_SIZENS));
             return true;
@@ -2194,54 +2092,18 @@ internal sealed class ViewerWindow
         return false;
     }
 
-    private bool OnLButtonDown(IntPtr lParam)
-    {
-        int y = NativeMethods.HighWord(lParam);
-        if (!TryGetSearchResizeHit(y, out bool resizeSearchArea, out int index))
-        {
-            return false;
-        }
-
-        BeginSearchResize(resizeSearchArea, index, y, _hwnd);
-        return true;
-    }
-
-    private void BeginSearchResultsResizeFromGrip(IntPtr lParam)
-    {
-        int y = GetGripMouseYInHost(lParam);
-        if (TryGetSearchResizeHit(y, out bool resizeSearchArea, out int index))
-        {
-            BeginSearchResize(resizeSearchArea, index, y, _searchResizeGrip);
-        }
-    }
-
-    private void BeginSearchResize(bool resizeSearchArea, int index, int y, IntPtr captureHwnd)
-    {
-        BeginSearchPanelResize(resizeSearchArea, index, y, captureHwnd);
-    }
-
-    private void BeginSearchAreaResize(int y, IntPtr captureHwnd)
-    {
-        BeginSearchPanelResize(resizeSearchArea: true, searchResultIndex: -1, y, captureHwnd);
-    }
-
     private void BeginSearchResultsResize(int index, int y, IntPtr captureHwnd)
     {
-        BeginSearchPanelResize(
-            resizeSearchArea: GetVisibleActiveSearchResultCount() <= 1,
-            index,
-            y,
-            captureHwnd);
+        BeginSearchPanelResize(index, y, captureHwnd);
     }
 
     private void BeginSearchPanelResize(
-        bool resizeSearchArea,
         int searchResultIndex,
         int y,
         IntPtr captureHwnd)
     {
         if (!HasActiveSearch ||
-            !TryGetSearchPanelDividerIndex(resizeSearchArea, searchResultIndex, out int dividerIndex))
+            !TryGetSearchPanelDividerIndex(searchResultIndex, out int dividerIndex))
         {
             return;
         }
@@ -2249,7 +2111,11 @@ internal sealed class ViewerWindow
         int[] visibleSearchIndices = GetVisibleActiveSearchResultIndices();
         bool includesMainPanel = IsMainPanelVisibleForResize();
         double[] startRatios = GetVisiblePanelRatios(includesMainPanel, visibleSearchIndices, out int availableHeight);
-        if (availableHeight <= 0 || dividerIndex >= startRatios.Length - 1)
+        int[] minimumPanelHeights = GetVisiblePanelMinimumHeights(
+            includesMainPanel,
+            visibleSearchIndices);
+        if (!HasPanelResizeCapacity(availableHeight, minimumPanelHeights) ||
+            dividerIndex >= startRatios.Length - 1)
         {
             return;
         }
@@ -2268,7 +2134,11 @@ internal sealed class ViewerWindow
             IncludesMainPanel = includesMainPanel,
             VisibleSearchIndices = visibleSearchIndices,
             StartRatios = startRatios,
-            StartDividerPosition = Math.Clamp(startDividerPosition, 0d, 1d)
+            StartDividerPosition = Math.Clamp(startDividerPosition, 0d, 1d),
+            MinimumPanelRatios = GetVisiblePanelMinimumRatios(
+                includesMainPanel,
+                visibleSearchIndices,
+                availableHeight)
         };
         NativeMethods.SetCapture(captureHwnd);
         NativeMethods.SetCursor(NativeMethods.LoadCursorW(IntPtr.Zero, NativeMethods.IDC_SIZENS));
@@ -2284,16 +2154,6 @@ internal sealed class ViewerWindow
         ResizeSearchPanels(NativeMethods.HighWord(lParam));
     }
 
-    private void UpdateSearchResultsResizeFromGrip(IntPtr lParam)
-    {
-        if (_searchPanelResize is null)
-        {
-            return;
-        }
-
-        ResizeSearchPanels(GetGripMouseYInHost(lParam));
-    }
-
     private void ResizeSearchPanels(int y)
     {
         SearchPanelResizeState? resize = _searchPanelResize;
@@ -2307,7 +2167,8 @@ internal sealed class ViewerWindow
         double[] resizedRatios = ResizePanelRatiosAtDivider(
             resize.StartRatios,
             resize.DividerIndex,
-            requestedDividerPosition);
+            requestedDividerPosition,
+            resize.MinimumPanelRatios);
         ApplyVisiblePanelRatios(
             resizedRatios,
             resize.IncludesMainPanel,
@@ -2329,76 +2190,6 @@ internal sealed class ViewerWindow
 
         _searchPanelResize = null;
         NativeMethods.ReleaseCapture();
-    }
-
-    private int GetGripMouseYInHost(IntPtr lParam) =>
-        NativeMethods.HighWord(lParam) + GetSearchResizeGripTop();
-
-    private int GetSearchResizeGripTop() =>
-        Math.Max(_layout.ClientRect.top, _layout.SearchAreaRect.top - SearchResizeHitSlopPx);
-
-    private bool IsSearchResizeHit(int y)
-        => TryGetSearchResizeHit(y, out _, out _);
-
-    private bool TryGetSearchResizeHit(int y, out bool resizeSearchArea, out int index)
-    {
-        resizeSearchArea = false;
-        index = -1;
-        if (TryGetSearchAreaResizeHit(y))
-        {
-            resizeSearchArea = true;
-            return TryGetSearchPanelDividerIndex(resizeSearchArea, index, out _);
-        }
-
-        if (!TryGetSearchResultResizeHit(y, out index))
-        {
-            return false;
-        }
-
-        resizeSearchArea = GetVisibleActiveSearchResultCount() <= 1;
-        return TryGetSearchPanelDividerIndex(resizeSearchArea, index, out _);
-    }
-
-    private bool TryGetSearchAreaResizeHit(int y)
-    {
-        if (!HasActiveSearch || IsZeroRect(_layout.SearchAreaRect))
-        {
-            return false;
-        }
-
-        return Math.Abs(y - _layout.SearchAreaRect.top) <= SearchResizeHitSlopPx;
-    }
-
-    private bool TryGetSearchResultResizeHit(int y, out int index)
-    {
-        index = -1;
-        if (!HasActiveSearch || _layout.SearchLevelLayouts is null)
-        {
-            return false;
-        }
-
-        int count = Math.Min(_activeSearchLevelCount, _layout.SearchLevelLayouts.Length);
-        for (int i = 0; i < count; i++)
-        {
-            int dividerY = _layout.SearchLevelLayouts[i].SearchResultsDividerY;
-            if (dividerY >= 0 && Math.Abs(y - dividerY) <= SearchResizeHitSlopPx)
-            {
-                index = i;
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private int GetClientCursorY()
-    {
-        if (!NativeMethods.GetCursorPos(out NativeMethods.POINT point))
-        {
-            return int.MinValue;
-        }
-
-        return NativeMethods.ScreenToClient(_hwnd, ref point) ? point.y : int.MinValue;
     }
 
     private bool HasActiveSearch => _activeSearchLevelCount > 0;
@@ -2445,27 +2236,11 @@ internal sealed class ViewerWindow
         return indices.ToArray();
     }
 
-    private int GetVisibleActiveSearchResultCount()
-    {
-        int activeCount = GetActiveSearchResultCount();
-        int visibleCount = 0;
-        for (int i = 0; i < activeCount; i++)
-        {
-            if (IsSearchResultVisible(i))
-            {
-                visibleCount++;
-            }
-        }
-
-        return visibleCount;
-    }
-
     private bool IsMainPanelVisibleForResize() =>
         _mainPane is not null &&
         ShouldShowMainPaneForSearchInputs(_activeSearchLevelCount, IsSearchInputVisible(0));
 
     private bool TryGetSearchPanelDividerIndex(
-        bool resizeSearchArea,
         int searchResultIndex,
         out int dividerIndex)
     {
@@ -2478,25 +2253,36 @@ internal sealed class ViewerWindow
             return false;
         }
 
-        if (resizeSearchArea)
-        {
-            if (!includesMainPanel || visibleSearchIndices.Length == 0)
-            {
-                return false;
-            }
-
-            dividerIndex = 0;
-            return true;
-        }
-
-        int visibleOrdinal = Array.IndexOf(visibleSearchIndices, searchResultIndex);
-        if (visibleOrdinal < 0)
+        dividerIndex = GetSearchPanelDividerIndex(
+            visibleSearchIndices,
+            includesMainPanel,
+            searchResultIndex);
+        if (dividerIndex < 0)
         {
             return false;
         }
 
-        dividerIndex = includesMainPanel ? visibleOrdinal : visibleOrdinal - 1;
         return dividerIndex >= 0 && dividerIndex < panelCount - 1;
+    }
+
+    internal static int GetSearchPanelDividerIndex(
+        IReadOnlyList<int> visibleSearchIndices,
+        bool includesMainPanel,
+        int searchResultIndex)
+    {
+        int visibleOrdinal = -1;
+        for (int i = 0; i < visibleSearchIndices.Count; i++)
+        {
+            if (visibleSearchIndices[i] == searchResultIndex)
+            {
+                visibleOrdinal = i;
+                break;
+            }
+        }
+
+        return visibleOrdinal < 0
+            ? -1
+            : includesMainPanel ? visibleOrdinal : visibleOrdinal - 1;
     }
 
     private SearchLevelState? FindSearchLevelByEdit(IntPtr hwnd)
@@ -2559,49 +2345,26 @@ internal sealed class ViewerWindow
         return -1;
     }
 
-    private bool OnMainPaneResizeHit(ViewportPaneWindow pane, int paneY)
-        => TryGetMainPaneResizeHit(pane, paneY, out _);
-
-    private bool OnMainPaneResizeBegin(ViewportPaneWindow pane, int paneY)
-    {
-        if (!TryGetMainPaneResizeHit(pane, paneY, out int hostY))
-        {
-            return false;
-        }
-
-        BeginSearchAreaResize(hostY, _hwnd);
-        return true;
-    }
-
-    private bool TryGetMainPaneResizeHit(ViewportPaneWindow pane, int paneY, out int hostY)
-    {
-        hostY = int.MinValue;
-        if (!ReferenceEquals(_mainPane, pane) || !HasActiveSearch || IsZeroRect(_layout.ViewerRect))
-        {
-            return false;
-        }
-
-        hostY = _layout.ViewerRect.top + paneY;
-        return TryGetSearchAreaResizeHit(hostY);
-    }
-
     private bool OnResultsPaneResizeHit(ViewportPaneWindow pane, int paneY)
-        => TryGetResultsPaneResizeHit(pane, paneY, out _, out _, out _);
+        => TryGetResultsPaneResizeHit(pane, paneY, out _, out _);
 
     private bool OnResultsPaneResizeBegin(ViewportPaneWindow pane, int paneY)
     {
-        if (!TryGetResultsPaneResizeHit(pane, paneY, out bool resizeSearchArea, out int index, out int hostY))
+        if (!TryGetResultsPaneResizeHit(pane, paneY, out int index, out int hostY))
         {
             return false;
         }
 
-        BeginSearchResize(resizeSearchArea, index, hostY, _hwnd);
+        BeginSearchResultsResize(index, hostY, _hwnd);
         return true;
     }
 
-    private bool TryGetResultsPaneResizeHit(ViewportPaneWindow pane, int paneY, out bool resizeSearchArea, out int index, out int hostY)
+    private bool TryGetResultsPaneResizeHit(
+        ViewportPaneWindow pane,
+        int paneY,
+        out int index,
+        out int hostY)
     {
-        resizeSearchArea = false;
         index = FindSearchLevelIndexByResultsPane(pane);
         hostY = int.MinValue;
         if (index < 0 ||
@@ -2623,8 +2386,40 @@ internal sealed class ViewerWindow
             return false;
         }
 
-        resizeSearchArea = GetVisibleActiveSearchResultCount() <= 1;
-        return true;
+        return TryGetSearchPanelDividerIndex(index, out _) &&
+            CanResizeVisibleSearchPanels();
+    }
+
+    private bool CanResizeVisibleSearchPanels()
+    {
+        int[] visibleSearchIndices = GetVisibleActiveSearchResultIndices();
+        bool includesMainPanel = IsMainPanelVisibleForResize();
+        _ = GetVisiblePanelRatios(
+            includesMainPanel,
+            visibleSearchIndices,
+            out int availableHeight);
+        int[] minimumPanelHeights = GetVisiblePanelMinimumHeights(
+            includesMainPanel,
+            visibleSearchIndices);
+        return HasPanelResizeCapacity(availableHeight, minimumPanelHeights);
+    }
+
+    internal static bool HasPanelResizeCapacity(
+        int availableHeight,
+        IReadOnlyList<int> minimumPanelHeights)
+    {
+        if (minimumPanelHeights.Count <= 1 || availableHeight <= 0)
+        {
+            return false;
+        }
+
+        long requiredHeight = 0;
+        for (int i = 0; i < minimumPanelHeights.Count; i++)
+        {
+            requiredHeight += Math.Max(0, minimumPanelHeights[i]);
+        }
+
+        return availableHeight > requiredHeight;
     }
 
     private void ReadSearchLevelFromControls(SearchLevelState level)
@@ -5365,19 +5160,21 @@ internal sealed class ViewerWindow
             return 0;
         }
 
-        int fixedHeight = GetSearchFixedAreaHeight();
-        if (GetVisibleActiveSearchResultCount() == 0)
+        int visibleResultCount = GetVisibleActiveSearchResultIndices().Length;
+        int fixedHeight = GetSearchFixedAreaHeight(visibleResultCount);
+        if (visibleResultCount == 0)
         {
             return Math.Min(clientHeight, fixedHeight);
         }
 
-        int requestedHeight = (int)Math.Round(clientHeight * GetSearchAreaRatio());
-        return ClampSearchAreaHeight(requestedHeight, clientHeight);
-    }
+        if (!IsMainPanelVisibleForResize())
+        {
+            return clientHeight;
+        }
 
-    private double GetSearchAreaRatio()
-    {
-        return GetSearchAreaRatio(GetVisibleActiveSearchResultCount());
+        int requestedHeight = (int)Math.Round(
+            clientHeight * GetSearchAreaRatio(visibleResultCount));
+        return ClampSearchAreaHeight(requestedHeight, clientHeight);
     }
 
     private double GetSearchAreaRatio(int activeSearchCount)
@@ -5407,10 +5204,17 @@ internal sealed class ViewerWindow
         return Math.Clamp(requestedHeight, 0, clientHeight);
     }
 
-    private int GetSearchFixedAreaHeight()
+    private int GetSearchFixedAreaHeight(int visibleResultCount)
     {
-        int levelCount = Math.Max(1, _searchLevels.Count);
-        int activeCount = Math.Min(GetVisibleActiveSearchResultCount(), levelCount);
+        return CalculateSearchFixedAreaHeight(_searchLevels.Count, visibleResultCount);
+    }
+
+    internal static int CalculateSearchFixedAreaHeight(
+        int searchLevelCount,
+        int visibleResultCount)
+    {
+        int levelCount = Math.Max(1, searchLevelCount);
+        int activeCount = Math.Clamp(visibleResultCount, 0, levelCount);
         return (SearchVerticalPadding * 2) +
             (levelCount * SearchInputRowHeight) +
             (Math.Max(0, levelCount - 1) * SearchLevelVerticalGap) +
@@ -5419,8 +5223,12 @@ internal sealed class ViewerWindow
             SearchProgressRowHeight;
     }
 
-    private int GetAvailableSearchResultHeight(int searchAreaHeight)
-        => Math.Max(0, searchAreaHeight - GetSearchFixedAreaHeight());
+    private int GetAvailableSearchResultHeight(
+        int searchAreaHeight,
+        int visibleResultCount)
+        => Math.Max(
+            0,
+            searchAreaHeight - GetSearchFixedAreaHeight(visibleResultCount));
 
     private double[] GetNormalizedSearchResultRatios(int activeSearchCount)
     {
@@ -5455,17 +5263,17 @@ internal sealed class ViewerWindow
         return ratios;
     }
 
-    private double[] GetNormalizedVisibleSearchResultRatios()
+    private double[] GetNormalizedVisibleSearchResultRatios(
+        IReadOnlyList<int> visibleIndices)
     {
         int activeCount = GetActiveSearchResultCount();
         double[] ratios = new double[activeCount];
-        int[] visibleIndices = GetVisibleActiveSearchResultIndices();
-        if (visibleIndices.Length == 0)
+        if (visibleIndices.Count == 0)
         {
             return ratios;
         }
 
-        double defaultRatio = 1d / visibleIndices.Length;
+        double defaultRatio = 1d / visibleIndices.Count;
         double total = 0d;
         foreach (int index in visibleIndices)
         {
@@ -5543,9 +5351,11 @@ internal sealed class ViewerWindow
         }
 
         double[] normalizedRatios = NormalizeRatios(panelRatios, panelCount);
-        NativeMethods.GetClientRect(_hwnd, out NativeMethods.RECT clientRect);
+        NativeMethods.RECT clientRect = GetLayoutClientRect();
         int contentHeight = Math.Max(0, GetRectHeight(clientRect) - TopBarHeight);
-        int fixedHeight = Math.Min(contentHeight, GetSearchFixedAreaHeight());
+        int fixedHeight = Math.Min(
+            contentHeight,
+            GetSearchFixedAreaHeight(visibleSearchIndices.Count));
         int flexibleHeight = Math.Max(0, contentHeight - fixedHeight);
         int resultOffset = includesMainPanel ? 1 : 0;
         if (includesMainPanel)
@@ -5583,10 +5393,194 @@ internal sealed class ViewerWindow
         }
     }
 
+    private int[] GetVisiblePanelMinimumHeights(
+        bool includesMainPanel,
+        IReadOnlyList<int> visibleSearchIndices)
+    {
+        int[] minimumHeights = new int[
+            visibleSearchIndices.Count + (includesMainPanel ? 1 : 0)];
+        int resultOffset = 0;
+        if (includesMainPanel && _mainPane is not null)
+        {
+            minimumHeights[0] = _mainPane.MinimumHeightForOneDataLine;
+            resultOffset = 1;
+        }
+
+        for (int i = 0; i < visibleSearchIndices.Count; i++)
+        {
+            int searchIndex = visibleSearchIndices[i];
+            if (searchIndex < 0 || searchIndex >= _searchLevels.Count)
+            {
+                minimumHeights[resultOffset + i] = _lineHeight;
+                continue;
+            }
+
+            ViewportPaneWindow? pane = _searchLevels[searchIndex].ResultsPane;
+            minimumHeights[resultOffset + i] = pane?.MinimumHeightForOneDataLine ?? _lineHeight;
+        }
+
+        return minimumHeights;
+    }
+
+    private NativeMethods.RECT GetLayoutClientRect()
+    {
+        NativeMethods.GetClientRect(_hwnd, out NativeMethods.RECT clientRect);
+        int[] visibleSearchIndices = GetVisibleActiveSearchResultIndices();
+        bool includesMainPanel = IsMainPanelVisibleForResize();
+        int[] minimumPanelHeights = GetVisiblePanelMinimumHeights(
+            includesMainPanel,
+            visibleSearchIndices);
+        int minimumClientHeight = CalculateMinimumLayoutClientHeight(
+            TopBarHeight,
+            GetSearchFixedAreaHeight(visibleSearchIndices.Length),
+            minimumPanelHeights);
+        int layoutClientHeight = CalculateLayoutClientHeight(
+            GetRectHeight(clientRect),
+            minimumClientHeight);
+        clientRect.bottom = clientRect.top + layoutClientHeight;
+        return clientRect;
+    }
+
+    internal static int CalculateMinimumLayoutClientHeight(
+        int topBarHeight,
+        int fixedSearchHeight,
+        IReadOnlyList<int> minimumPanelHeights)
+    {
+        long minimumClientHeight =
+            Math.Max(0, topBarHeight) +
+            Math.Max(0, fixedSearchHeight);
+        for (int i = 0; i < minimumPanelHeights.Count; i++)
+        {
+            minimumClientHeight += Math.Max(0, minimumPanelHeights[i]);
+        }
+
+        return (int)Math.Min(int.MaxValue, minimumClientHeight);
+    }
+
+    internal static int CalculateLayoutClientHeight(
+        int actualClientHeight,
+        int minimumClientHeight) =>
+        Math.Max(Math.Max(0, actualClientHeight), Math.Max(0, minimumClientHeight));
+
+    private double[] GetVisiblePanelMinimumRatios(
+        bool includesMainPanel,
+        IReadOnlyList<int> visibleSearchIndices,
+        int availableHeight)
+    {
+        int[] minimumHeights = GetVisiblePanelMinimumHeights(
+            includesMainPanel,
+            visibleSearchIndices);
+        double[] minimumRatios = new double[minimumHeights.Length];
+        if (availableHeight <= 0)
+        {
+            return minimumRatios;
+        }
+
+        for (int i = 0; i < minimumHeights.Length; i++)
+        {
+            minimumRatios[i] = Math.Max(0, minimumHeights[i]) / (double)availableHeight;
+        }
+
+        return minimumRatios;
+    }
+
+    private double[] GetConfiguredVisiblePanelRatios(
+        bool includesMainPanel,
+        IReadOnlyList<int> visibleSearchIndices,
+        int contentHeight,
+        int fixedHeight)
+    {
+        int panelCount = visibleSearchIndices.Count + (includesMainPanel ? 1 : 0);
+        double[] panelRatios = new double[panelCount];
+        int flexibleHeight = Math.Max(0, contentHeight - fixedHeight);
+        if (panelCount == 0 || flexibleHeight <= 0)
+        {
+            return panelRatios;
+        }
+
+        int resultOffset = includesMainPanel ? 1 : 0;
+        double resultTotalRatio = 1d;
+        if (includesMainPanel)
+        {
+            int searchAreaHeight = GetPreferredSearchAreaHeight(contentHeight);
+            int resultHeight = Math.Clamp(
+                searchAreaHeight - fixedHeight,
+                0,
+                flexibleHeight);
+            resultTotalRatio = resultHeight / (double)flexibleHeight;
+            panelRatios[0] = 1d - resultTotalRatio;
+        }
+
+        double[] searchResultRatios = GetNormalizedVisibleSearchResultRatios(
+            visibleSearchIndices);
+        for (int i = 0; i < visibleSearchIndices.Count; i++)
+        {
+            int searchIndex = visibleSearchIndices[i];
+            panelRatios[resultOffset + i] = searchIndex >= 0 && searchIndex < searchResultRatios.Length
+                ? resultTotalRatio * searchResultRatios[searchIndex]
+                : 0d;
+        }
+
+        return NormalizeRatios(panelRatios, panelCount);
+    }
+
+    private void ConstrainVisiblePanelRatiosToMinimums()
+    {
+        int[] visibleSearchIndices = GetVisibleActiveSearchResultIndices();
+        bool includesMainPanel = IsMainPanelVisibleForResize();
+        NativeMethods.RECT clientRect = GetLayoutClientRect();
+        int contentHeight = Math.Max(0, GetRectHeight(clientRect) - TopBarHeight);
+        int fixedHeight = Math.Min(
+            contentHeight,
+            GetSearchFixedAreaHeight(visibleSearchIndices.Length));
+        int flexibleHeight = Math.Max(0, contentHeight - fixedHeight);
+        int panelCount = visibleSearchIndices.Length + (includesMainPanel ? 1 : 0);
+        if (panelCount == 0 || flexibleHeight <= 0)
+        {
+            return;
+        }
+
+        double[] configuredRatios = GetConfiguredVisiblePanelRatios(
+            includesMainPanel,
+            visibleSearchIndices,
+            contentHeight,
+            fixedHeight);
+        double[] minimumRatios = GetVisiblePanelMinimumRatios(
+            includesMainPanel,
+            visibleSearchIndices,
+            flexibleHeight);
+        double[] constrainedRatios = ConstrainPanelRatiosToMinimums(
+            configuredRatios,
+            minimumRatios);
+        ApplyVisiblePanelRatios(
+            constrainedRatios,
+            includesMainPanel,
+            visibleSearchIndices);
+    }
+
     internal static double[] ResizePanelRatiosAtDivider(
         IReadOnlyList<double> startRatios,
         int dividerIndex,
-        double requestedDividerPosition)
+        double requestedDividerPosition,
+        double minimumPanelRatio = 0d)
+    {
+        double[] minimumRatios = new double[startRatios.Count];
+        double sanitizedMinimumRatio = double.IsFinite(minimumPanelRatio)
+            ? Math.Max(0d, minimumPanelRatio)
+            : 0d;
+        Array.Fill(minimumRatios, sanitizedMinimumRatio);
+        return ResizePanelRatiosAtDivider(
+            startRatios,
+            dividerIndex,
+            requestedDividerPosition,
+            minimumRatios);
+    }
+
+    internal static double[] ResizePanelRatiosAtDivider(
+        IReadOnlyList<double> startRatios,
+        int dividerIndex,
+        double requestedDividerPosition,
+        IReadOnlyList<double> minimumPanelRatios)
     {
         if (startRatios.Count == 0)
         {
@@ -5599,6 +5593,19 @@ internal sealed class ViewerWindow
             return normalizedRatios;
         }
 
+        double[] minimumRatios = NormalizeMinimumRatios(
+            minimumPanelRatios,
+            normalizedRatios.Length);
+        double totalMinimumRatio = 0d;
+        for (int i = 0; i < minimumRatios.Length; i++)
+        {
+            totalMinimumRatio += minimumRatios[i];
+        }
+
+        normalizedRatios = ConstrainPanelRatiosToMinimums(
+            normalizedRatios,
+            minimumRatios);
+
         double startLeftRatio = 0d;
         for (int i = 0; i <= dividerIndex; i++)
         {
@@ -5608,30 +5615,198 @@ internal sealed class ViewerWindow
         double targetLeftRatio = double.IsFinite(requestedDividerPosition)
             ? Math.Clamp(requestedDividerPosition, 0d, 1d)
             : Math.Clamp(startLeftRatio, 0d, 1d);
-        double startRightRatio = Math.Max(0d, 1d - startLeftRatio);
-        double targetRightRatio = Math.Max(0d, 1d - targetLeftRatio);
         int leftCount = dividerIndex + 1;
         int rightCount = normalizedRatios.Length - leftCount;
-        double[] resizedRatios = new double[normalizedRatios.Length];
-
+        double minimumLeftRatio = 0d;
         for (int i = 0; i < leftCount; i++)
         {
-            resizedRatios[i] = startLeftRatio > 0d
-                ? normalizedRatios[i] * (targetLeftRatio / startLeftRatio)
-                : targetLeftRatio / leftCount;
+            minimumLeftRatio += minimumRatios[i];
         }
 
-        for (int i = leftCount; i < resizedRatios.Length; i++)
-        {
-            resizedRatios[i] = startRightRatio > 0d
-                ? normalizedRatios[i] * (targetRightRatio / startRightRatio)
-                : targetRightRatio / rightCount;
-        }
+        double minimumRightRatio = Math.Max(0d, totalMinimumRatio - minimumLeftRatio);
+        targetLeftRatio = Math.Clamp(
+            targetLeftRatio,
+            minimumLeftRatio,
+            1d - minimumRightRatio);
+        double targetRightRatio = Math.Max(0d, 1d - targetLeftRatio);
+        double[] resizedRatios = new double[normalizedRatios.Length];
+        AllocatePanelRatios(
+            normalizedRatios,
+            minimumRatios,
+            startIndex: 0,
+            leftCount,
+            targetLeftRatio,
+            resizedRatios);
+        AllocatePanelRatios(
+            normalizedRatios,
+            minimumRatios,
+            startIndex: leftCount,
+            rightCount,
+            targetRightRatio,
+            resizedRatios);
 
         return resizedRatios;
     }
 
-    private int[] CalculateSearchResultHeights(int availableResultHeight)
+    internal static double[] ConstrainPanelRatiosToMinimums(
+        IReadOnlyList<double> panelRatios,
+        IReadOnlyList<double> minimumPanelRatios)
+    {
+        if (panelRatios.Count == 0)
+        {
+            return Array.Empty<double>();
+        }
+
+        double[] normalizedRatios = NormalizeRatios(panelRatios, panelRatios.Count);
+        double[] normalizedMinimumRatios = NormalizeMinimumRatios(
+            minimumPanelRatios,
+            normalizedRatios.Length);
+        double[] constrainedRatios = new double[normalizedRatios.Length];
+        AllocatePanelRatios(
+            normalizedRatios,
+            normalizedMinimumRatios,
+            startIndex: 0,
+            normalizedRatios.Length,
+            targetTotalRatio: 1d,
+            constrainedRatios);
+        return constrainedRatios;
+    }
+
+    private static double[] NormalizeMinimumRatios(
+        IReadOnlyList<double> minimumRatios,
+        int count)
+    {
+        double[] normalizedMinimumRatios = SanitizeMinimumRatios(minimumRatios, count);
+        double total = 0d;
+        for (int i = 0; i < normalizedMinimumRatios.Length; i++)
+        {
+            total += normalizedMinimumRatios[i];
+        }
+
+        if (total > 1d)
+        {
+            for (int i = 0; i < normalizedMinimumRatios.Length; i++)
+            {
+                normalizedMinimumRatios[i] /= total;
+            }
+        }
+
+        return normalizedMinimumRatios;
+    }
+
+    private static double[] SanitizeMinimumRatios(
+        IReadOnlyList<double> minimumRatios,
+        int count)
+    {
+        double[] sanitizedMinimumRatios = new double[count];
+        for (int i = 0; i < count; i++)
+        {
+            sanitizedMinimumRatios[i] =
+                i < minimumRatios.Count && double.IsFinite(minimumRatios[i])
+                    ? Math.Max(0d, minimumRatios[i])
+                    : 0d;
+        }
+
+        return sanitizedMinimumRatios;
+    }
+
+    private static void AllocatePanelRatios(
+        IReadOnlyList<double> weights,
+        IReadOnlyList<double> minimumRatios,
+        int startIndex,
+        int count,
+        double targetTotalRatio,
+        double[] destination)
+    {
+        if (count <= 0)
+        {
+            return;
+        }
+
+        bool[] fixedAtMinimum = new bool[count];
+        int remainingCount = count;
+        double minimumTotalRatio = 0d;
+        double remainingWeight = 0d;
+        for (int i = 0; i < count; i++)
+        {
+            minimumTotalRatio += minimumRatios[startIndex + i];
+            remainingWeight += weights[startIndex + i];
+        }
+
+        double remainingTotalRatio = Math.Max(targetTotalRatio, minimumTotalRatio);
+
+        while (remainingCount > 0)
+        {
+            if (remainingWeight <= 0d)
+            {
+                double remainingMinimumRatio = 0d;
+                for (int i = 0; i < count; i++)
+                {
+                    if (!fixedAtMinimum[i])
+                    {
+                        remainingMinimumRatio += minimumRatios[startIndex + i];
+                    }
+                }
+
+                double extraRatio = Math.Max(
+                    0d,
+                    remainingTotalRatio - remainingMinimumRatio) / remainingCount;
+                for (int i = 0; i < count; i++)
+                {
+                    if (!fixedAtMinimum[i])
+                    {
+                        destination[startIndex + i] =
+                            minimumRatios[startIndex + i] + extraRatio;
+                    }
+                }
+
+                return;
+            }
+
+            double scale = remainingTotalRatio / remainingWeight;
+            bool fixedAnyPanel = false;
+            for (int i = 0; i < count; i++)
+            {
+                if (fixedAtMinimum[i])
+                {
+                    continue;
+                }
+
+                double weight = weights[startIndex + i];
+                double minimumRatio = minimumRatios[startIndex + i];
+                if ((weight * scale) >= minimumRatio)
+                {
+                    continue;
+                }
+
+                fixedAtMinimum[i] = true;
+                destination[startIndex + i] = minimumRatio;
+                remainingCount--;
+                remainingTotalRatio = Math.Max(0d, remainingTotalRatio - minimumRatio);
+                remainingWeight = Math.Max(0d, remainingWeight - weight);
+                fixedAnyPanel = true;
+            }
+
+            if (fixedAnyPanel)
+            {
+                continue;
+            }
+
+            for (int i = 0; i < count; i++)
+            {
+                if (!fixedAtMinimum[i])
+                {
+                    destination[startIndex + i] = weights[startIndex + i] * scale;
+                }
+            }
+
+            return;
+        }
+    }
+
+    private int[] CalculateSearchResultHeights(
+        int availableResultHeight,
+        IReadOnlyList<int> visibleSearchIndices)
     {
         int activeCount = GetActiveSearchResultCount();
         int[] heights = new int[activeCount];
@@ -5640,7 +5815,8 @@ internal sealed class ViewerWindow
             return heights;
         }
 
-        double[] ratios = GetNormalizedVisibleSearchResultRatios();
+        double[] ratios = GetNormalizedVisibleSearchResultRatios(
+            visibleSearchIndices);
         for (int i = 0; i < heights.Length; i++)
         {
             double ratio = i < ratios.Length ? ratios[i] : 0d;
@@ -5653,18 +5829,47 @@ internal sealed class ViewerWindow
 
     private void UpdateLayout(LayoutRedrawMode redrawMode = LayoutRedrawMode.Deferred)
     {
-        RecalculateLayout();
+        RecalculateLayoutWithMinimumPanelConstraints();
         ApplyLayout(redrawMode);
+    }
+
+    private void RecalculateLayoutWithMinimumPanelConstraints()
+    {
+        double? configuredSearchAreaRatio = _customSearchAreaRatio;
+        double?[] configuredResultRatios = new double?[_searchLevels.Count];
+        for (int i = 0; i < _searchLevels.Count; i++)
+        {
+            configuredResultRatios[i] = _searchLevels[i].CustomResultRatio;
+        }
+
+        try
+        {
+            ConstrainVisiblePanelRatiosToMinimums();
+            RecalculateLayout();
+        }
+        finally
+        {
+            _customSearchAreaRatio = configuredSearchAreaRatio;
+            for (int i = 0; i < _searchLevels.Count && i < configuredResultRatios.Length; i++)
+            {
+                _searchLevels[i].CustomResultRatio = configuredResultRatios[i];
+            }
+        }
     }
 
     private void RecalculateLayout()
     {
-        NativeMethods.GetClientRect(_hwnd, out NativeMethods.RECT clientRect);
+        int[] visibleSearchIndices = GetVisibleActiveSearchResultIndices();
+        NativeMethods.RECT clientRect = GetLayoutClientRect();
         int clientHeight = GetRectHeight(clientRect);
         int contentHeight = Math.Max(0, clientHeight - TopBarHeight);
         int searchAreaHeight = GetPreferredSearchAreaHeight(contentHeight);
-        int availableResultHeight = GetAvailableSearchResultHeight(searchAreaHeight);
-        int[] searchResultHeights = CalculateSearchResultHeights(availableResultHeight);
+        int availableResultHeight = GetAvailableSearchResultHeight(
+            searchAreaHeight,
+            visibleSearchIndices.Length);
+        int[] searchResultHeights = CalculateSearchResultHeights(
+            availableResultHeight,
+            visibleSearchIndices);
         int topBarBottom = Math.Min(clientRect.bottom, clientRect.top + TopBarHeight);
         NativeMethods.RECT topBarRect = new()
         {
@@ -5960,7 +6165,7 @@ internal sealed class ViewerWindow
 
         _mainPane?.SetBounds(
             _layout.ViewerRect,
-            ShouldShowMainPaneForSearchInputs(_activeSearchLevelCount, IsSearchInputVisible(0)));
+            IsMainPanelVisibleForResize());
 
         for (int i = 0; i < _searchLevels.Count && i < _layout.SearchLevelLayouts.Length; i++)
         {
@@ -6014,25 +6219,7 @@ internal sealed class ViewerWindow
             level.ResultsPane?.SetBounds(levelLayout.SearchResultsRect, resultsVisible);
         }
 
-        ApplySearchResizeGripLayout();
         RedrawHostAfterLayout(redrawMode);
-    }
-
-    private void ApplySearchResizeGripLayout()
-    {
-        if (_searchResizeGrip == IntPtr.Zero)
-        {
-            return;
-        }
-
-        NativeMethods.SetWindowPos(
-            _searchResizeGrip,
-            NativeMethods.HWND_TOP,
-            _layout.ClientRect.left,
-            _layout.ClientRect.top,
-            GetRectWidth(_layout.ClientRect),
-            1,
-            NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_HIDEWINDOW);
     }
 
     private void ScheduleSearch()
@@ -6118,11 +6305,6 @@ internal sealed class ViewerWindow
             _regexReferenceTooltipText = IntPtr.Zero;
         }
 
-        if (_searchResizeGrip != IntPtr.Zero)
-        {
-            NativeMethods.DestroyWindow(_searchResizeGrip);
-        }
-
         if (_searchInputVisibilityFont != IntPtr.Zero && _searchInputVisibilityFont != _font)
         {
             NativeMethods.DeleteObject(_searchInputVisibilityFont);
@@ -6137,7 +6319,6 @@ internal sealed class ViewerWindow
         DeleteOwnedFont(ref _boldFont);
         DeleteOwnedFont(ref _italicFont);
         DeleteOwnedFont(ref _boldItalicFont);
-        _searchResizeGrip = IntPtr.Zero;
         _font = IntPtr.Zero;
         _pasteTransferCancellation.Dispose();
     }

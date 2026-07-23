@@ -67,6 +67,13 @@ internal sealed class ViewportPaneWindow : IDisposable
     private const int GridDividerThicknessPx = 1;
     private const int MaximumHighlightStyleCacheEntries = 2048;
     private const int InactiveSelectionColor = 0x00FAF0E8;
+    private const int WindowStyle =
+        NativeMethods.WS_CHILD |
+        NativeMethods.WS_VISIBLE |
+        NativeMethods.WS_TABSTOP |
+        NativeMethods.WS_BORDER |
+        NativeMethods.WS_VSCROLL |
+        NativeMethods.WS_HSCROLL;
     private static readonly int EmptyTrailingAreaColor = NativeMethods.RGB(200, 200, 200);
     private const string WindowClassName = "LogBladeViewportPaneWindow";
 
@@ -212,6 +219,45 @@ internal sealed class ViewportPaneWindow : IDisposable
     public int VisibleDataLineCount => Math.Max(1, _visibleLineCount - GetHeaderLineCount(_reader));
     public bool IsVisible => _isVisible;
     public bool HasSelection => HasTextSelection || _selectionSelectAllRows || _selectionRanges.Count > 0 || _cellSelectionColumns.Count > 0;
+    public int MinimumHeightForOneDataLine
+    {
+        get
+        {
+            int requiredClientHeight = CalculateRequiredClientHeightForOneDataLine(
+                _lineHeight,
+                GetHeaderLineCount(_reader) > 0);
+            int fallbackChromeHeight =
+                NativeMethods.GetSystemMetrics(NativeMethods.SM_CYHSCROLL) +
+                (2 * NativeMethods.GetSystemMetrics(NativeMethods.SM_CYBORDER));
+            if (_hwnd != IntPtr.Zero &&
+                _hasAppliedBounds &&
+                NativeMethods.GetClientRect(_hwnd, out NativeMethods.RECT clientRect))
+            {
+                return CalculateMinimumOuterHeight(
+                    requiredClientHeight,
+                    GetRectHeight(_appliedBounds),
+                    GetRectHeight(clientRect),
+                    fallbackChromeHeight);
+            }
+
+            return requiredClientHeight + Math.Max(0, fallbackChromeHeight);
+        }
+    }
+
+    internal static int CalculateMinimumOuterHeight(
+        int requiredClientHeight,
+        int currentOuterHeight,
+        int currentClientHeight,
+        int fallbackChromeHeight = 0) =>
+        Math.Max(1, requiredClientHeight) +
+        Math.Max(
+            Math.Max(0, fallbackChromeHeight),
+            Math.Max(0, currentOuterHeight - currentClientHeight));
+
+    internal static int CalculateRequiredClientHeightForOneDataLine(
+        int lineHeight,
+        bool hasHeader) =>
+        Math.Max(1, lineHeight) * (hasHeader ? 2 : 1);
 
     public void Create(IntPtr parentHwnd, IntPtr hInstance)
     {
@@ -221,7 +267,7 @@ internal sealed class ViewportPaneWindow : IDisposable
             0,
             WindowClassName,
             string.Empty,
-            NativeMethods.WS_CHILD | NativeMethods.WS_VISIBLE | NativeMethods.WS_TABSTOP | NativeMethods.WS_BORDER | NativeMethods.WS_VSCROLL | NativeMethods.WS_HSCROLL,
+            WindowStyle,
             0,
             0,
             1,

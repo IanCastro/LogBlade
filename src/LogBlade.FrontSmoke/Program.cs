@@ -39,6 +39,8 @@ internal static class Program
             Run("parser processing equivalence", RunParserProcessingEquivalence);
             Run("search input visibility", RunSearchInputVisibility);
             Run("panel divider resize", RunPanelDividerResize);
+            Run("viewport minimum height", RunViewportMinimumHeight);
+            Run("undersized layout clipping", RunUndersizedLayoutClipping);
             Run("viewport focus restore", RunViewportFocusRestore);
             Run("output export", () => RunOutputExport(tempRoot));
             Run("window state store", () => RunWindowStateStore(tempRoot));
@@ -426,9 +428,295 @@ internal static class Program
             ViewerWindow.ResizePanelRatiosAtDivider(new[] { 0.25d, 0.75d }, 0, 0.40d),
             0.40d,
             0.60d);
+        AssertPanelRatios(
+            "minimum panel size clamps the left endpoint",
+            ViewerWindow.ResizePanelRatiosAtDivider(
+                new[] { 0.25d, 0.25d, 0.25d, 0.25d },
+                1,
+                0d,
+                0.10d),
+            0.10d,
+            0.10d,
+            0.40d,
+            0.40d);
+        AssertPanelRatios(
+            "minimum panel size clamps the right endpoint",
+            ViewerWindow.ResizePanelRatiosAtDivider(
+                new[] { 0.25d, 0.25d, 0.25d, 0.25d },
+                1,
+                1d,
+                0.10d),
+            0.40d,
+            0.40d,
+            0.10d,
+            0.10d);
+        AssertPanelRatios(
+            "minimum panel size applies to the first divider",
+            ViewerWindow.ResizePanelRatiosAtDivider(
+                new[] { 0.25d, 0.25d, 0.25d, 0.25d },
+                0,
+                0d,
+                0.10d),
+            0.10d,
+            0.30d,
+            0.30d,
+            0.30d);
+        AssertPanelRatios(
+            "minimum panel size applies to the last divider",
+            ViewerWindow.ResizePanelRatiosAtDivider(
+                new[] { 0.25d, 0.25d, 0.25d, 0.25d },
+                2,
+                1d,
+                0.10d),
+            0.30d,
+            0.30d,
+            0.30d,
+            0.10d);
+        AssertPanelRatios(
+            "panel at minimum does not block another lower panel",
+            ViewerWindow.ResizePanelRatiosAtDivider(
+                new[] { 0.50d, 0.10d, 0.40d },
+                0,
+                0.70d,
+                0.10d),
+            0.70d,
+            0.10d,
+            0.20d);
+        AssertPanelRatios(
+            "divider stops only when all lower panels reach minimum",
+            ViewerWindow.ResizePanelRatiosAtDivider(
+                new[] { 0.50d, 0.10d, 0.40d },
+                0,
+                1d,
+                0.10d),
+            0.80d,
+            0.10d,
+            0.10d);
+        AssertPanelRatios(
+            "lower panels freeze successively",
+            ViewerWindow.ResizePanelRatiosAtDivider(
+                new[] { 0.30d, 0.10d, 0.15d, 0.45d },
+                0,
+                0.65d,
+                0.10d),
+            0.65d,
+            0.10d,
+            0.10d,
+            0.15d);
+        AssertPanelRatios(
+            "upper panels use the same progressive minimum",
+            ViewerWindow.ResizePanelRatiosAtDivider(
+                new[] { 0.40d, 0.10d, 0.50d },
+                1,
+                0.30d,
+                0.10d),
+            0.20d,
+            0.10d,
+            0.70d);
+        AssertPanelRatios(
+            "expanding side releases a panel from minimum",
+            ViewerWindow.ResizePanelRatiosAtDivider(
+                new[] { 0.50d, 0.10d, 0.40d },
+                0,
+                0.40d,
+                0.10d),
+            0.40d,
+            0.12d,
+            0.48d);
+        AssertPanelRatios(
+            "main pane uses its smaller individual minimum",
+            ViewerWindow.ResizePanelRatiosAtDivider(
+                new[] { 0.50d, 0.25d, 0.25d },
+                0,
+                0d,
+                new[] { 0.05d, 0.10d, 0.10d }),
+            0.05d,
+            0.475d,
+            0.475d);
+        AssertPanelRatios(
+            "different result minimums clamp independently",
+            ViewerWindow.ResizePanelRatiosAtDivider(
+                new[] { 0.50d, 0.25d, 0.25d },
+                0,
+                1d,
+                new[] { 0.05d, 0.10d, 0.15d }),
+            0.75d,
+            0.10d,
+            0.15d);
+        AssertPanelRatios(
+            "window resize redistributes panels that cross their minimum",
+            ViewerWindow.ConstrainPanelRatiosToMinimums(
+                new[] { 0.70d, 0.10d, 0.20d },
+                new[] { 0.10d, 0.20d, 0.20d }),
+            0.60d,
+            0.20d,
+            0.20d);
+        AssertDividerPositions(
+            "minimum does not change a valid proportional resize",
+            ViewerWindow.ResizePanelRatiosAtDivider(startRatios, 1, 0.25d, 0.05d),
+            0.15d,
+            0.25d,
+            0.40d);
+        AssertPanelRatios(
+            "undersized starting panel is restored to the minimum",
+            ViewerWindow.ResizePanelRatiosAtDivider(
+                new[] { 0d, 0.50d, 0.25d, 0.25d },
+                1,
+                0.30d,
+                0.10d),
+            0.10d,
+            0.20d,
+            0.35d,
+            0.35d);
         AssertEqual(
             "empty panel ratios stay empty",
             ViewerWindow.ResizePanelRatiosAtDivider(Array.Empty<double>(), 0, 0.50d).Length,
+            0);
+    }
+
+    private static void RunViewportMinimumHeight()
+    {
+        AssertEqual(
+            "raw viewport needs one line",
+            ViewportPaneWindow.CalculateRequiredClientHeightForOneDataLine(
+                lineHeight: 16,
+                hasHeader: false),
+            16);
+        AssertEqual(
+            "tabular viewport needs header and one data line",
+            ViewportPaneWindow.CalculateRequiredClientHeightForOneDataLine(
+                lineHeight: 16,
+                hasHeader: true),
+            32);
+        AssertEqual(
+            "minimum includes the existing border and horizontal scrollbar",
+            ViewportPaneWindow.CalculateMinimumOuterHeight(
+                requiredClientHeight: 32,
+                currentOuterHeight: 34,
+                currentClientHeight: 15),
+            51);
+        AssertEqual(
+            "minimum ignores invalid negative chrome",
+            ViewportPaneWindow.CalculateMinimumOuterHeight(
+                requiredClientHeight: 16,
+                currentOuterHeight: 10,
+                currentClientHeight: 12),
+            16);
+        AssertEqual(
+            "hidden viewport keeps scrollbar and border fallback",
+            ViewportPaneWindow.CalculateMinimumOuterHeight(
+                requiredClientHeight: 32,
+                currentOuterHeight: 0,
+                currentClientHeight: 0,
+                fallbackChromeHeight: 19),
+            51);
+    }
+
+    private static void RunUndersizedLayoutClipping()
+    {
+        const int topBarHeight = 30;
+        int fixedSearchHeight = ViewerWindow.CalculateSearchFixedAreaHeight(
+            searchLevelCount: 3,
+            visibleResultCount: 2);
+        AssertEqual(
+            "fixed search layout keeps three rows followed by status",
+            fixedSearchHeight,
+            100);
+
+        int[] minimumPanelHeights = { 35, 51, 51 };
+        int minimumClientHeight = ViewerWindow.CalculateMinimumLayoutClientHeight(
+            topBarHeight,
+            fixedSearchHeight,
+            minimumPanelHeights);
+        AssertEqual(
+            "minimum client height includes fixed controls and every pane",
+            minimumClientHeight,
+            267);
+        AssertEqual(
+            "window above minimum uses its actual height",
+            ViewerWindow.CalculateLayoutClientHeight(
+                actualClientHeight: 320,
+                minimumClientHeight),
+            320);
+        AssertEqual(
+            "window below minimum keeps a virtual minimum-height canvas",
+            ViewerWindow.CalculateLayoutClientHeight(
+                actualClientHeight: 220,
+                minimumClientHeight),
+            minimumClientHeight);
+        AssertEqual(
+            "extreme window height still keeps the full virtual canvas",
+            ViewerWindow.CalculateLayoutClientHeight(
+                actualClientHeight: 0,
+                minimumClientHeight),
+            minimumClientHeight);
+        AssertEqual(
+            "virtual canvas leaves every pane at its minimum",
+            minimumClientHeight - topBarHeight - fixedSearchHeight,
+            137);
+        AssertEqual(
+            "manually hidden pane stays outside the virtual canvas",
+            ViewerWindow.CalculateMinimumLayoutClientHeight(
+                topBarHeight,
+                fixedSearchHeight,
+                minimumPanelHeights: new[] { 35, 51 }),
+            216);
+
+        const double combinedPanelMinimum = 137d;
+        AssertPanelRatios(
+            "panes remain at their individual minimums in the virtual canvas",
+            ViewerWindow.ConstrainPanelRatiosToMinimums(
+                new[] { 0.70d, 0.10d, 0.20d },
+                new[]
+                {
+                    35d / combinedPanelMinimum,
+                    51d / combinedPanelMinimum,
+                    51d / combinedPanelMinimum
+                }),
+            35d / combinedPanelMinimum,
+            51d / combinedPanelMinimum,
+            51d / combinedPanelMinimum);
+
+        AssertEqual(
+            "dividers are disabled at the combined minimum",
+            ViewerWindow.HasPanelResizeCapacity(
+                availableHeight: (int)combinedPanelMinimum,
+                minimumPanelHeights),
+            false);
+        AssertEqual(
+            "dividers return after recovering spare height",
+            ViewerWindow.HasPanelResizeCapacity(
+                availableHeight: (int)combinedPanelMinimum + 1,
+                minimumPanelHeights),
+            true);
+
+        AssertEqual(
+            "enabled result keeps its divider",
+            ViewerWindow.GetSearchPanelDividerIndex(
+                visibleSearchIndices: new[] { 0, 1 },
+                includesMainPanel: true,
+                searchResultIndex: 1),
+            1);
+        AssertEqual(
+            "manually hidden result has no divider",
+            ViewerWindow.GetSearchPanelDividerIndex(
+                visibleSearchIndices: new[] { 0, 1 },
+                includesMainPanel: true,
+                searchResultIndex: 2),
+            -1);
+        AssertEqual(
+            "first result without main has no upper divider",
+            ViewerWindow.GetSearchPanelDividerIndex(
+                visibleSearchIndices: new[] { 0, 1 },
+                includesMainPanel: false,
+                searchResultIndex: 0),
+            -1);
+        AssertEqual(
+            "second result without main owns the internal divider",
+            ViewerWindow.GetSearchPanelDividerIndex(
+                visibleSearchIndices: new[] { 0, 1 },
+                includesMainPanel: false,
+                searchResultIndex: 1),
             0);
     }
 
